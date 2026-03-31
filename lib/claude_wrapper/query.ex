@@ -278,7 +278,11 @@ defmodule ClaudeWrapper.Query do
   @spec execute(t(), Config.t()) :: {:ok, Result.t()} | {:error, term()}
   def execute(%__MODULE__{} = query, %Config{} = config) do
     query = %{query | output_format: :json}
-    args = Config.base_args(config) ++ build_args(query)
+    # Strip --verbose from base args: it causes the CLI to emit non-JSON
+    # output (NDJSON stream lines, stdin warnings) that breaks JSON parsing.
+    # Verbose is only meaningful for stream-json output.
+    base = Config.base_args(config) -- ["--verbose"]
+    args = base ++ build_args(query)
     opts = Config.cmd_opts(config)
 
     case run_cmd(config.binary, args, opts, config.timeout) do
