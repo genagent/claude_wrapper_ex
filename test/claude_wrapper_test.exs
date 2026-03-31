@@ -1,7 +1,7 @@
 defmodule ClaudeWrapperTest do
   use ExUnit.Case, async: true
 
-  alias ClaudeWrapper.{Config, Query, Result, StreamEvent}
+  alias ClaudeWrapper.{Config, McpConfig, Query, Result, Retry, Session, StreamEvent}
 
   describe "Config" do
     test "new with defaults" do
@@ -160,6 +160,164 @@ defmodule ClaudeWrapperTest do
     test "cost_usd extracts from event" do
       event = %StreamEvent{type: "result", data: %{"cost_usd" => 0.03}}
       assert StreamEvent.cost_usd(event) == 0.03
+    end
+  end
+
+  describe "Session" do
+    test "new creates session with config" do
+      config = Config.new()
+      session = Session.new(config)
+      assert session.config == config
+      assert session.session_id == nil
+      assert session.history == []
+    end
+
+    test "new with query opts" do
+      config = Config.new()
+      session = Session.new(config, model: "sonnet", max_turns: 5)
+      assert session.query_opts == [model: "sonnet", max_turns: 5]
+    end
+
+    test "resume sets session_id" do
+      config = Config.new()
+      session = Session.resume(config, "abc-123")
+      assert Session.session_id(session) == "abc-123"
+    end
+
+    test "turn_count starts at zero" do
+      config = Config.new()
+      session = Session.new(config)
+      assert Session.turn_count(session) == 0
+    end
+
+    test "total_cost starts at zero" do
+      config = Config.new()
+      session = Session.new(config)
+      assert Session.total_cost(session) == 0.0
+    end
+
+    test "last_result returns nil when no turns" do
+      config = Config.new()
+      session = Session.new(config)
+      assert Session.last_result(session) == nil
+    end
+
+    test "turns returns history" do
+      config = Config.new()
+      session = Session.new(config)
+      assert Session.turns(session) == []
+    end
+  end
+
+  describe "McpConfig" do
+    test "new creates empty config" do
+      config = McpConfig.new()
+      assert config.servers == %{}
+    end
+
+    test "add_stdio adds a server" do
+      config =
+        McpConfig.new()
+        |> McpConfig.add_stdio("my-server", "npx", ["-y", "pkg"])
+
+      assert McpConfig.server_names(config) == ["my-server"]
+      server = McpConfig.get_server(config, "my-server")
+      assert server.type == "stdio"
+      assert server.command == "npx"
+      assert server.args == ["-y", "pkg"]
+    end
+
+    test "add_stdio with env" do
+      config =
+        McpConfig.new()
+        |> McpConfig.add_stdio("srv", "cmd", [], env: %{"KEY" => "val"})
+
+      server = McpConfig.get_server(config, "srv")
+      assert server.env == %{"KEY" => "val"}
+    end
+
+    test "add_sse adds an SSE server" do
+      config =
+        McpConfig.new()
+        |> McpConfig.add_sse("remote", "https://example.com/mcp")
+
+      server = McpConfig.get_server(config, "remote")
+      assert server.type == "sse"
+      assert server.url == "https://example.com/mcp"
+    end
+
+    test "remove deletes a server" do
+      config =
+        McpConfig.new()
+        |> McpConfig.add_stdio("a", "cmd", [])
+        |> McpConfig.add_stdio("b", "cmd2", [])
+        |> McpConfig.remove("a")
+
+      assert McpConfig.server_names(config) == ["b"]
+    end
+
+    test "to_json produces valid JSON" do
+      config =
+        McpConfig.new()
+        |> McpConfig.add_stdio("test", "echo", ["hello"])
+
+      json = McpConfig.to_json(config)
+      assert {:ok, data} = Jason.decode(json)
+      assert data["mcpServers"]["test"]["command"] == "echo"
+      assert data["mcpServers"]["test"]["args"] == ["hello"]
+    end
+
+    test "roundtrip through to_json and from_map" do
+      config =
+        McpConfig.new()
+        |> McpConfig.add_stdio("srv", "npx", ["-y", "pkg"], env: %{"K" => "V"})
+        |> McpConfig.add_sse("remote", "https://example.com")
+
+      json = McpConfig.to_json(config)
+      {:ok, data} = Jason.decode(json)
+      roundtripped = McpConfig.from_map(data)
+
+      assert McpConfig.server_names(roundtripped) |> Enum.sort() ==
+               McpConfig.server_names(config) |> Enum.sort()
+
+      assert McpConfig.get_server(roundtripped, "srv").command == "npx"
+      assert McpConfig.get_server(roundtripped, "remote").url == "https://example.com"
+    end
+
+    test "write! and read roundtrip" do
+      path = Path.join(System.tmp_dir!(), "test_mcp_#{:rand.uniform(100_000)}.json")
+
+      config =
+        McpConfig.new()
+        |> McpConfig.add_stdio("test", "echo", ["hi"], env: %{"A" => "B"})
+
+      McpConfig.write!(config, path)
+      assert {:ok, loaded} = McpConfig.read(path)
+      assert McpConfig.get_server(loaded, "test").command == "echo"
+      assert McpConfig.get_server(loaded, "test").env == %{"A" => "B"}
+
+      File.rm!(path)
+    end
+  end
+
+  describe "Retry" do
+    test "compute_delay without jitter" do
+      assert Retry.compute_delay(0, 1000, 30_000, 2, false) == 1000
+      assert Retry.compute_delay(1, 1000, 30_000, 2, false) == 2000
+      assert Retry.compute_delay(2, 1000, 30_000, 2, false) == 4000
+      assert Retry.compute_delay(3, 1000, 30_000, 2, false) == 8000
+    end
+
+    test "compute_delay respects max_delay" do
+      assert Retry.compute_delay(10, 1000, 5000, 2, false) == 5000
+    end
+
+    test "compute_delay with jitter is bounded" do
+      for _ <- 1..50 do
+        delay = Retry.compute_delay(2, 1000, 30_000, 2, true)
+        assert delay >= 0
+        assert delay <= 4000
+      end
     end
   end
 end

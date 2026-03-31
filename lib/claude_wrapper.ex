@@ -53,6 +53,30 @@ defmodule ClaudeWrapper do
   alias ClaudeWrapper.{Config, Query, Result}
 
   @doc """
+  Run an arbitrary CLI command that isn't wrapped by a dedicated module.
+
+  This is the escape hatch for new or experimental CLI subcommands.
+
+  ## Examples
+
+      ClaudeWrapper.raw(["config", "list"])
+      ClaudeWrapper.raw(["plugin", "install", "my-plugin"], working_dir: "/tmp")
+  """
+  @spec raw([String.t()], keyword()) :: {:ok, String.t()} | {:error, term()}
+  def raw(args, opts \\ []) when is_list(args) do
+    config = Config.new(opts)
+    all_args = Config.base_args(config) ++ args
+    cmd_opts = Config.cmd_opts(config)
+
+    case System.cmd(config.binary, all_args, cmd_opts) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, code} -> {:error, {:exit, code, output}}
+    end
+  rescue
+    e in ErlangError -> {:error, {:system_cmd, e}}
+  end
+
+  @doc """
   Execute a one-shot query and return the result.
 
   Convenience wrapper that builds a `Config` and `Query` from keyword options.
