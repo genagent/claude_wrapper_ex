@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.2.1...v0.3.0) (2026-03-31)
+
+
+### Features
+
+* add agents command (list configured agents) ([#18](https://github.com/joshrotenberg/claude_wrapper_ex/issues/18)) ([0529109](https://github.com/joshrotenberg/claude_wrapper_ex/commit/05291094907098709d0fd79511e557919fafcc6e)), closes [#8](https://github.com/joshrotenberg/claude_wrapper_ex/issues/8)
+
+
+### Bug Fixes
+
+* strip --verbose from execute args to preserve JSON parsing ([#16](https://github.com/joshrotenberg/claude_wrapper_ex/issues/16)) ([5d8d51f](https://github.com/joshrotenberg/claude_wrapper_ex/commit/5d8d51f5af574696b6ea668976350e80b4f7d995))
+
 ## [0.2.1](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.2.0...v0.2.1) (2026-03-31)
 
 
