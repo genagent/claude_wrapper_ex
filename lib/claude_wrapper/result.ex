@@ -34,7 +34,7 @@ defmodule ClaudeWrapper.Result do
     %__MODULE__{
       result: data["result"] || "",
       session_id: data["session_id"],
-      cost_usd: data["cost_usd"],
+      cost_usd: data["total_cost_usd"] || data["cost_usd"],
       duration_ms: data["duration_ms"],
       num_turns: data["num_turns"],
       is_error: data["is_error"] || false,
@@ -43,6 +43,7 @@ defmodule ClaudeWrapper.Result do
           "result",
           "session_id",
           "cost_usd",
+          "total_cost_usd",
           "duration_ms",
           "num_turns",
           "is_error"
