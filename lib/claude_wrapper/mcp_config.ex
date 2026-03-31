@@ -161,22 +161,21 @@ defmodule ClaudeWrapper.McpConfig do
   # --- Private ---
 
   defp encode_servers(servers) do
-    Map.new(servers, fn {name, server} ->
-      entry =
-        case server.type do
-          "stdio" ->
-            base = %{"type" => "stdio", "command" => server.command, "args" => server.args}
-            if server.env == %{}, do: base, else: Map.put(base, "env", server.env)
-
-          "sse" ->
-            base = %{"type" => "sse", "url" => server.url}
-            if server.env == %{}, do: base, else: Map.put(base, "env", server.env)
-
-          other ->
-            %{"type" => other}
-        end
-
-      {name, entry}
-    end)
+    Map.new(servers, fn {name, server} -> {name, encode_server(server)} end)
   end
+
+  defp encode_server(%{type: "stdio"} = server) do
+    %{"type" => "stdio", "command" => server.command, "args" => server.args}
+    |> maybe_add_env(server.env)
+  end
+
+  defp encode_server(%{type: "sse"} = server) do
+    %{"type" => "sse", "url" => server.url}
+    |> maybe_add_env(server.env)
+  end
+
+  defp encode_server(%{type: type}), do: %{"type" => type}
+
+  defp maybe_add_env(map, env) when env == %{}, do: map
+  defp maybe_add_env(map, env), do: Map.put(map, "env", env)
 end

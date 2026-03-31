@@ -50,7 +50,7 @@ defmodule ClaudeWrapper do
   3. System PATH lookup
   """
 
-  alias ClaudeWrapper.{Config, Query, Result}
+  alias ClaudeWrapper.{Commands, Config, Query, Result}
 
   @doc """
   Run an arbitrary CLI command that isn't wrapped by a dedicated module.
@@ -131,7 +131,7 @@ defmodule ClaudeWrapper do
   @spec version(keyword()) :: {:ok, map()} | {:error, term()}
   def version(opts \\ []) do
     config = Config.new(opts)
-    ClaudeWrapper.Commands.Version.execute(config)
+    Commands.Version.execute(config)
   end
 
   @doc """
@@ -140,7 +140,7 @@ defmodule ClaudeWrapper do
   @spec auth_status(keyword()) :: {:ok, map()} | {:error, term()}
   def auth_status(opts \\ []) do
     config = Config.new(opts)
-    ClaudeWrapper.Commands.Auth.status(config)
+    Commands.Auth.status(config)
   end
 
   @doc """
@@ -149,7 +149,7 @@ defmodule ClaudeWrapper do
   @spec doctor(keyword()) :: {:ok, String.t()} | {:error, term()}
   def doctor(opts \\ []) do
     config = Config.new(opts)
-    ClaudeWrapper.Commands.Doctor.execute(config)
+    Commands.Doctor.execute(config)
   end
 
   # --- Private ---

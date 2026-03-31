@@ -59,7 +59,11 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def add(%Config{} = config, name, command, command_args \\ [], opts \\ []) do
     args = Config.base_args(config) ++ ["mcp", "add", name, command] ++ command_args
     args = args ++ scope_args(opts[:scope])
-    args = if opts[:env], do: args ++ Enum.flat_map(opts[:env], fn {k, v} -> ["-e", "#{k}=#{v}"] end), else: args
+
+    args =
+      if opts[:env],
+        do: args ++ Enum.flat_map(opts[:env], fn {k, v} -> ["-e", "#{k}=#{v}"] end),
+        else: args
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}

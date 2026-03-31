@@ -122,7 +122,7 @@ defmodule ClaudeWrapper.Query do
 
   # Builder functions — each returns the updated struct for piping.
 
-  @doc "Set the model (e.g. \"sonnet\", \"opus\", \"haiku\")."
+  @doc ~s[Set the model (e.g. "sonnet", "opus", "haiku").]
   @spec model(t(), String.t()) :: t()
   def model(%__MODULE__{} = q, model), do: %{q | model: model}
 
@@ -283,9 +283,13 @@ defmodule ClaudeWrapper.Query do
 
     case run_cmd(config.binary, args, opts, config.timeout) do
       {:ok, stdout} ->
-        case Jason.decode(stdout) do
-          {:ok, data} -> {:ok, Result.from_json(data)}
-          {:error, reason} -> {:error, {:json_decode, reason, stdout}}
+        parse_json_output(stdout)
+
+      {:error, {:exit, code, stdout}} ->
+        # CLI may exit non-zero but still produce valid JSON (e.g. max_turns reached)
+        case parse_json_output(stdout) do
+          {:ok, result} -> {:ok, result}
+          {:error, _} -> {:error, {:exit, code, stdout}}
         end
 
       {:error, _} = error ->
@@ -303,7 +307,10 @@ defmodule ClaudeWrapper.Query do
   @spec stream(t(), Config.t()) :: Enumerable.t()
   def stream(%__MODULE__{} = query, %Config{} = config) do
     query = %{query | output_format: :stream_json}
-    args = Config.base_args(config) ++ build_args(query)
+    # stream-json with --print requires --verbose
+    base = Config.base_args(config)
+    base = if "--verbose" in base, do: base, else: ["--verbose" | base]
+    args = base ++ build_args(query)
 
     port_opts =
       [:binary, :exit_status, {:line, 1_048_576}, {:args, args}] ++
@@ -429,6 +436,26 @@ defmodule ClaudeWrapper.Query do
   defp format_input_format(nil), do: nil
   defp format_input_format(:text), do: "text"
   defp format_input_format(:stream_json), do: "stream-json"
+
+  defp parse_json_output(stdout) do
+    json_line = extract_json(stdout)
+
+    case Jason.decode(json_line) do
+      {:ok, data} -> {:ok, Result.from_json(data)}
+      {:error, reason} -> {:error, {:json_decode, reason, stdout}}
+    end
+  end
+
+  # Extract the last JSON line from output, skipping warnings/noise.
+  defp extract_json(output) do
+    output
+    |> String.split("\n")
+    |> Enum.reverse()
+    |> Enum.find("", fn line ->
+      trimmed = String.trim(line)
+      String.starts_with?(trimmed, "{")
+    end)
+  end
 
   defp run_cmd(binary, args, opts, nil) do
     case System.cmd(binary, args, opts) do
