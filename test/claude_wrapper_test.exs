@@ -1,7 +1,16 @@
 defmodule ClaudeWrapperTest do
   use ExUnit.Case, async: true
 
-  alias ClaudeWrapper.{Config, McpConfig, Query, Result, Retry, Session, StreamEvent}
+  alias ClaudeWrapper.{
+    Config,
+    McpConfig,
+    Query,
+    Result,
+    Retry,
+    Session,
+    SessionServer,
+    StreamEvent
+  }
 
   describe "Config" do
     test "new with defaults" do
@@ -318,6 +327,80 @@ defmodule ClaudeWrapperTest do
         assert delay >= 0
         assert delay <= 4000
       end
+    end
+  end
+
+  describe "SessionServer" do
+    test "start_link and initial state" do
+      config = Config.new()
+      {:ok, pid} = SessionServer.start_link(config: config)
+
+      assert SessionServer.session_id(pid) == nil
+      assert SessionServer.turn_count(pid) == 0
+      assert SessionServer.total_cost(pid) == 0.0
+      assert SessionServer.last_result(pid) == nil
+      assert SessionServer.history(pid) == []
+    end
+
+    test "start_link with query opts" do
+      config = Config.new()
+      {:ok, pid} = SessionServer.start_link(config: config, query_opts: [model: "sonnet"])
+
+      session = SessionServer.get_session(pid)
+      assert session.query_opts == [model: "sonnet"]
+    end
+
+    test "start_link with session_id for resume" do
+      config = Config.new()
+      {:ok, pid} = SessionServer.start_link(config: config, session_id: "abc-123")
+
+      assert SessionServer.session_id(pid) == "abc-123"
+    end
+
+    test "start_link with name registration" do
+      config = Config.new()
+
+      {:ok, _pid} =
+        SessionServer.start_link(config: config, name: :test_session_server)
+
+      assert SessionServer.turn_count(:test_session_server) == 0
+    end
+
+    test "child_spec for supervision" do
+      config = Config.new()
+      spec = SessionServer.child_spec(config: config, name: :supervised_test)
+
+      assert spec.id == SessionServer
+
+      assert spec.start ==
+               {SessionServer, :start_link, [[config: config, name: :supervised_test]]}
+    end
+  end
+
+  describe "Commands.Plugin" do
+    alias ClaudeWrapper.Commands.Plugin
+
+    test "module is loaded and has expected functions" do
+      Code.ensure_loaded!(Plugin)
+      assert {:list, 2} in Plugin.__info__(:functions)
+      assert {:install, 3} in Plugin.__info__(:functions)
+      assert {:uninstall, 3} in Plugin.__info__(:functions)
+      assert {:enable, 3} in Plugin.__info__(:functions)
+      assert {:disable, 3} in Plugin.__info__(:functions)
+      assert {:update, 3} in Plugin.__info__(:functions)
+      assert {:validate, 2} in Plugin.__info__(:functions)
+    end
+  end
+
+  describe "Commands.Marketplace" do
+    alias ClaudeWrapper.Commands.Marketplace
+
+    test "module is loaded and has expected functions" do
+      Code.ensure_loaded!(Marketplace)
+      assert {:list, 1} in Marketplace.__info__(:functions)
+      assert {:add, 3} in Marketplace.__info__(:functions)
+      assert {:remove, 2} in Marketplace.__info__(:functions)
+      assert {:update, 2} in Marketplace.__info__(:functions)
     end
   end
 end

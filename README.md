@@ -99,6 +99,52 @@ ClaudeWrapper.Retry.execute(query, config,
 )
 ```
 
+## SessionServer (GenServer)
+
+For OTP applications that need a supervised, process-based session:
+
+```elixir
+{:ok, pid} = ClaudeWrapper.SessionServer.start_link(
+  config: config,
+  query_opts: [model: "sonnet", max_turns: 5]
+)
+
+{:ok, result} = ClaudeWrapper.SessionServer.send_message(pid, "Fix the tests")
+ClaudeWrapper.SessionServer.total_cost(pid)
+```
+
+Works with supervision trees:
+
+```elixir
+children = [
+  {ClaudeWrapper.SessionServer,
+   name: :my_agent, config: config, query_opts: [model: "sonnet"]}
+]
+```
+
+## Plugin management
+
+```elixir
+alias ClaudeWrapper.Commands.Plugin
+
+{:ok, plugins} = Plugin.list(config)
+{:ok, _} = Plugin.install(config, "my-plugin", scope: :project)
+{:ok, _} = Plugin.enable(config, "my-plugin")
+{:ok, _} = Plugin.disable(config, "my-plugin")
+{:ok, _} = Plugin.uninstall(config, "my-plugin")
+```
+
+## Marketplace management
+
+```elixir
+alias ClaudeWrapper.Commands.Marketplace
+
+{:ok, marketplaces} = Marketplace.list(config)
+{:ok, _} = Marketplace.add(config, "https://github.com/org/marketplace")
+{:ok, _} = Marketplace.remove(config, "my-marketplace")
+{:ok, _} = Marketplace.update(config)
+```
+
 ## Raw CLI escape hatch
 
 For subcommands not yet wrapped:
@@ -117,10 +163,13 @@ ClaudeWrapper.raw(["config", "list"])
 | `ClaudeWrapper.Result` | Parsed JSON result |
 | `ClaudeWrapper.StreamEvent` | NDJSON streaming event |
 | `ClaudeWrapper.Session` | Multi-turn session management |
+| `ClaudeWrapper.SessionServer` | GenServer wrapper for sessions |
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |
 | `ClaudeWrapper.Commands.Auth` | Auth management |
 | `ClaudeWrapper.Commands.Mcp` | MCP server CRUD |
+| `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update |
+| `ClaudeWrapper.Commands.Marketplace` | Marketplace add/remove/list/update |
 | `ClaudeWrapper.Commands.Doctor` | CLI health check |
 | `ClaudeWrapper.Commands.Version` | CLI version |
 
