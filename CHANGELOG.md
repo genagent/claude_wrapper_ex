@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.2.0...v0.2.1) (2026-03-31)
+
+
+### Bug Fixes
+
+* move hex publish into release workflow ([#13](https://github.com/joshrotenberg/claude_wrapper_ex/issues/13)) ([39f0446](https://github.com/joshrotenberg/claude_wrapper_ex/commit/39f0446724c9109a1baca2826afb5395d86056b8))
+* resolve doc warnings for Config.new/1 references ([#15](https://github.com/joshrotenberg/claude_wrapper_ex/issues/15)) ([dcc6869](https://github.com/joshrotenberg/claude_wrapper_ex/commit/dcc6869db17102ab8165e1737657008528f1958b))
+
 ## [0.2.0](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.1.0...v0.2.0) (2026-03-31)
 
 
