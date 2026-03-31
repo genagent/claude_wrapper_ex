@@ -152,6 +152,23 @@ defmodule ClaudeWrapper do
     Commands.Doctor.execute(config)
   end
 
+  @doc """
+  List configured agents.
+
+  Returns a list of agent maps with `:name` and `:model` keys.
+
+  ## Options
+
+    * `:setting_sources` - comma-separated setting sources (e.g. `"user,project"`)
+
+  """
+  @spec agents(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def agents(opts \\ []) do
+    {config_opts, agent_opts} = split_opts(opts)
+    config = Config.new(config_opts)
+    Commands.Agents.list(config, agent_opts)
+  end
+
   # --- Private ---
 
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]

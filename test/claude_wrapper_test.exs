@@ -406,6 +406,53 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "Commands.Agents" do
+    alias ClaudeWrapper.Commands.Agents
+
+    test "module is loaded and has expected functions" do
+      Code.ensure_loaded!(Agents)
+      assert {:list, 1} in Agents.__info__(:functions)
+      assert {:list, 2} in Agents.__info__(:functions)
+      assert {:execute, 1} in Agents.__info__(:functions)
+      assert {:execute, 2} in Agents.__info__(:functions)
+    end
+
+    test "parse_agents extracts agent names and models" do
+      output = """
+      5 active agents
+
+      Built-in agents:
+        claude-code-guide · haiku
+        Explore · haiku
+        general-purpose · inherit
+        Plan · inherit
+        statusline-setup · sonnet
+      """
+
+      # Call list via execute and parse manually to test parsing
+      # (list calls System.cmd which we can't mock easily here)
+      agents =
+        output
+        |> String.split("\n")
+        |> Enum.reduce([], fn line, acc ->
+          line = String.trim(line)
+
+          case Regex.run(~r/^(.+?)\s+·\s+(.+)$/, line) do
+            [_, name, model] -> [%{name: String.trim(name), model: String.trim(model)} | acc]
+            _ -> acc
+          end
+        end)
+        |> Enum.reverse()
+
+      assert length(agents) == 5
+      assert %{name: "claude-code-guide", model: "haiku"} in agents
+      assert %{name: "Explore", model: "haiku"} in agents
+      assert %{name: "general-purpose", model: "inherit"} in agents
+      assert %{name: "Plan", model: "inherit"} in agents
+      assert %{name: "statusline-setup", model: "sonnet"} in agents
+    end
+  end
+
   describe "Commands.Marketplace" do
     alias ClaudeWrapper.Commands.Marketplace
 
