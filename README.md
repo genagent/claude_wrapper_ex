@@ -58,6 +58,34 @@ ClaudeWrapper.Session.total_cost(session)
 #=> 0.12
 ```
 
+## IEx REPL
+
+Use Claude conversationally from IEx:
+
+```elixir
+iex> import ClaudeWrapper.IEx
+
+iex> chat("explain this codebase", working_dir: ".", model: "sonnet")
+# => prints response
+# ($0.07, 1 turn)
+
+iex> say("now add tests for the retry module")
+# => continues the conversation
+# ($0.04 this turn, $0.11 total, 2 turns)
+
+iex> cost()
+# $0.11 across 2 turns
+
+iex> history()
+# prints full conversation
+
+iex> session_id()
+# "abc-123" -- save this to resume later
+
+iex> reset()
+# start fresh
+```
+
 ## Query builder
 
 For full control, use the `Query` struct directly:
@@ -166,6 +194,7 @@ ClaudeWrapper.raw(["config", "list"])
 | `ClaudeWrapper.SessionServer` | GenServer wrapper for sessions |
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |
+| `ClaudeWrapper.IEx` | Interactive REPL helpers |
 | `ClaudeWrapper.Commands.Auth` | Auth management |
 | `ClaudeWrapper.Commands.Mcp` | MCP server CRUD |
 | `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update |
