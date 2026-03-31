@@ -84,7 +84,7 @@ defmodule ClaudeWrapper do
 
   ## Options
 
-  Config options (passed to `Config.new/1`):
+  Config options (passed to `ClaudeWrapper.Config.new/1`):
     * `:binary` - Path to claude binary
     * `:working_dir` - Working directory
     * `:env` - Environment variables
