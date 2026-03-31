@@ -403,4 +403,61 @@ defmodule ClaudeWrapperTest do
       assert {:update, 2} in Marketplace.__info__(:functions)
     end
   end
+
+  describe "IEx helpers" do
+    alias ClaudeWrapper.IEx, as: CIEx
+
+    setup do
+      # Clean process dictionary state between tests
+      Process.delete(:claude_wrapper_iex_session)
+      Process.delete(:claude_wrapper_iex_config)
+      :ok
+    end
+
+    test "cost returns :no_session when no session active" do
+      assert CIEx.cost() == :no_session
+    end
+
+    test "say returns :no_session when no session active" do
+      assert CIEx.say("hello") == :no_session
+    end
+
+    test "session_id returns nil when no session active" do
+      assert CIEx.session_id() == nil
+    end
+
+    test "last returns nil when no session active" do
+      assert CIEx.last() == nil
+    end
+
+    test "history returns :no_session when no session active" do
+      assert CIEx.history() == :no_session
+    end
+
+    test "reset clears state" do
+      assert CIEx.reset() == :ok
+    end
+
+    test "resume sets up session state" do
+      assert CIEx.resume("test-session-id") == :ok
+      assert CIEx.session_id() == "test-session-id"
+    end
+
+    test "resume with options" do
+      assert CIEx.resume("sid-123", working_dir: "/tmp") == :ok
+      assert CIEx.session_id() == "sid-123"
+    end
+
+    test "module exports expected functions" do
+      Code.ensure_loaded!(CIEx)
+      assert {:chat, 2} in CIEx.__info__(:functions)
+      assert {:say, 2} in CIEx.__info__(:functions)
+      assert {:cost, 0} in CIEx.__info__(:functions)
+      assert {:history, 0} in CIEx.__info__(:functions)
+      assert {:reset, 0} in CIEx.__info__(:functions)
+      assert {:session_id, 0} in CIEx.__info__(:functions)
+      assert {:resume, 2} in CIEx.__info__(:functions)
+      assert {:last, 0} in CIEx.__info__(:functions)
+    end
+  end
 end

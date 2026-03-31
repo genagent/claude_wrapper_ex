@@ -98,4 +98,32 @@ defmodule ClaudeWrapper.IntegrationTest do
       assert result.result =~ "pong"
     end
   end
+
+  describe "IEx helpers" do
+    alias ClaudeWrapper.IEx, as: CIEx
+
+    setup do
+      CIEx.reset()
+      :ok
+    end
+
+    test "chat and say multi-turn" do
+      assert :ok =
+               CIEx.chat("Respond with exactly: hello",
+                 max_turns: 1,
+                 dangerously_skip_permissions: true,
+                 no_session_persistence: true
+               )
+
+      assert CIEx.session_id() != nil
+      assert CIEx.last().result =~ "hello"
+
+      assert :ok = CIEx.say("Respond with exactly: goodbye")
+      assert CIEx.last().result =~ "goodbye"
+
+      total = CIEx.cost()
+      assert is_float(total)
+      assert total > 0.0
+    end
+  end
 end
