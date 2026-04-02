@@ -2,7 +2,8 @@ configure(
   working_dir: ".",
   model: "sonnet",
   permission_mode: :bypass_permissions,
-  context: "claude_wrapper_ex - Elixir wrapper for Claude CLI. Mix project."
+  context: "claude_wrapper_ex - Elixir wrapper for Claude CLI. Mix project.",
+  mcp: [port: 4222]
 )
 
 agent(:impl, "You write clean, well-tested Elixir code.", max_turns: 15)
