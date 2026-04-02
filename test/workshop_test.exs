@@ -199,6 +199,13 @@ defmodule ClaudeWrapper.WorkshopTest do
     end
   end
 
+  describe "cast queuing" do
+    test "info shows queue_depth 0 for idle agent" do
+      Workshop.agent(:impl)
+      assert Workshop.info(:impl).queue_depth == 0
+    end
+  end
+
   describe "permissions" do
     test "defaults to permission_mode :auto" do
       Workshop.agent(:impl, "Coder")
