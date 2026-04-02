@@ -241,6 +241,27 @@ defmodule ClaudeWrapper.WorkshopTest do
     end
   end
 
+  describe "load/1" do
+    test "loads a workshop setup file" do
+      path = Path.join(System.tmp_dir!(), "test_workshop_#{:rand.uniform(100_000)}.exs")
+
+      File.write!(path, """
+      configure(model: "sonnet")
+      agent(:loaded, "From file")
+      """)
+
+      assert :ok = Workshop.load(path)
+      assert :loaded in Workshop.agents()
+      assert Workshop.info(:loaded).model == "sonnet"
+
+      File.rm!(path)
+    end
+
+    test "returns error for missing file" do
+      assert {:error, :not_found} = Workshop.load("nonexistent.exs")
+    end
+  end
+
   describe "error handling" do
     test "ask raises for unknown agent" do
       assert_raise ArgumentError, fn ->

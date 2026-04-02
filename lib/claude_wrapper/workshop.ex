@@ -58,6 +58,8 @@ defmodule ClaudeWrapper.Workshop do
 
   ## Lifecycle
 
+    * `load/0` -- load `.workshop.exs` (auto-loaded on startup if present)
+    * `load/1` -- load a specific setup file
     * `reset/1` -- clear an agent's conversation (keeps role and config)
     * `dismiss/1` -- remove an agent entirely
     * `reset_all/0` -- stop everything, clear config
@@ -435,6 +437,43 @@ defmodule ClaudeWrapper.Workshop do
     agents() |> Enum.each(&dismiss/1)
     Agent.update(@state, fn _ -> default_state() end)
     :ok
+  end
+
+  @doc """
+  Load a Workshop setup file (`.exs`).
+
+  The file is evaluated with `import ClaudeWrapper.Workshop` in scope,
+  so it can call `configure/1`, `agent/3`, etc. directly.
+
+  With no argument, looks for `.workshop.exs` in the current directory.
+
+  ## Example file (.workshop.exs)
+
+      configure(working_dir: ".", model: "sonnet",
+        context: "Elixir project. Run mix test before committing.")
+
+      agent(:impl, "You write clean code.", max_turns: 15)
+      agent(:reviewer, "Review only.", model: "opus",
+        allowed_tools: ["Read", "Bash"])
+
+  ## Examples
+
+      load()                        # loads .workshop.exs
+      load("setups/review.exs")     # loads a specific file
+  """
+  @spec load(String.t()) :: :ok | {:error, :not_found}
+  def load(path \\ ".workshop.exs") do
+    path = Path.expand(path)
+
+    if File.exists?(path) do
+      code = "import ClaudeWrapper.Workshop\n" <> File.read!(path)
+      Code.eval_string(code, [], file: path)
+      print_info("Loaded #{path}")
+      :ok
+    else
+      print_error("File not found: #{path}")
+      {:error, :not_found}
+    end
   end
 
   # ── Interaction ───────────────────────────────────────────────

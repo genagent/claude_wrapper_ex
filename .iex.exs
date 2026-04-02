@@ -13,4 +13,9 @@ IO.puts("""
   pipe(:impl, :reviewer, "Review this")
   info(:impl)                 \e[33m# agent details\e[0m
   inspect_agent(:impl)        \e[33m# show CLI command\e[0m
+  load()                      \e[33m# load .workshop.exs\e[0m
 """)
+
+if File.exists?(".workshop.exs") do
+  ClaudeWrapper.Workshop.load()
+end
