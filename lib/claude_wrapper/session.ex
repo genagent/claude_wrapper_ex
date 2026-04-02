@@ -199,6 +199,9 @@ defmodule ClaudeWrapper.Session do
         {:dangerously_skip_permissions, true}, q ->
           Query.dangerously_skip_permissions(q)
 
+        {:worktree, true}, q ->
+          Query.worktree(q)
+
         {:no_session_persistence, true}, q ->
           Query.no_session_persistence(q)
 
