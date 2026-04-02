@@ -134,14 +134,35 @@ if Code.ensure_loaded?(Anubis.Server) do
 
     schema do
       field(:agent, :string, required: true, description: "agent name to wait for")
+
+      field(:timeout, :integer,
+        description: "max milliseconds to wait (default: 120000). 0 to just check status."
+      )
     end
 
     @impl true
-    def execute(%{agent: name}, frame) do
+    def execute(%{agent: name} = params, frame) do
       atom_name = String.to_existing_atom(name)
-      ClaudeWrapper.Workshop.await(atom_name)
-      text = ClaudeWrapper.Workshop.result(atom_name) || "(no result)"
-      {:reply, Response.text(Response.tool(), text), frame}
+      timeout = Map.get(params, :timeout, 120_000)
+
+      info = ClaudeWrapper.Workshop.info(atom_name)
+
+      if info.status == :idle do
+        text = ClaudeWrapper.Workshop.result(atom_name) || "(no result yet)"
+        {:reply, Response.text(Response.tool(), text), frame}
+      else
+        if timeout == 0 do
+          {:reply,
+           Response.text(
+             Response.tool(),
+             "#{name} is still working. Call await again later, or use status to check."
+           ), frame}
+        else
+          ClaudeWrapper.Workshop.await(atom_name, timeout)
+          text = ClaudeWrapper.Workshop.result(atom_name) || "(no result)"
+          {:reply, Response.text(Response.tool(), text), frame}
+        end
+      end
     end
   end
 
@@ -151,20 +172,36 @@ if Code.ensure_loaded?(Anubis.Server) do
     alias Anubis.Server.Response
 
     schema do
+      field(:timeout, :integer,
+        description: "max milliseconds to wait per agent (default: 120000). 0 to just check."
+      )
     end
 
     @impl true
-    def execute(_params, frame) do
-      ClaudeWrapper.Workshop.await_all()
+    def execute(params, frame) do
+      timeout = Map.get(params, :timeout, 120_000)
       agents = ClaudeWrapper.Workshop.agents()
 
-      results =
-        Enum.map_join(agents, "\n\n", fn name ->
-          text = ClaudeWrapper.Workshop.result(name)
-          "## #{name}\n#{text || "(no result)"}"
+      any_busy? =
+        Enum.any?(agents, fn name ->
+          ClaudeWrapper.Workshop.info(name).status == :working
         end)
 
+      if any_busy? and timeout > 0 do
+        ClaudeWrapper.Workshop.await_all(timeout)
+      end
+
+      results = collect_results(agents)
       {:reply, Response.text(Response.tool(), results), frame}
+    end
+
+    defp collect_results(agents) do
+      Enum.map_join(agents, "\n\n", fn name ->
+        info = ClaudeWrapper.Workshop.info(name)
+        status = if info.status == :working, do: " (still working)", else: ""
+        text = ClaudeWrapper.Workshop.result(name)
+        "## #{name}#{status}\n#{text || "(no result yet)"}"
+      end)
     end
   end
 
@@ -502,6 +539,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     ## Options
 
       * `:port` - HTTP port (default: 4222)
+      * `:request_timeout` - MCP request timeout in ms (default: 300_000 / 5 min)
+      * `:session_idle_timeout` - Session idle timeout in ms (default: 1_800_000 / 30 min)
 
     ## Example
 
@@ -510,6 +549,8 @@ if Code.ensure_loaded?(Anubis.Server) do
     @spec start(keyword()) :: Supervisor.on_start()
     def start(opts \\ []) do
       port = Keyword.get(opts, :port, 4222)
+      request_timeout = Keyword.get(opts, :request_timeout, 300_000)
+      session_idle_timeout = Keyword.get(opts, :session_idle_timeout, 1_800_000)
 
       unless Code.ensure_loaded?(Bandit) do
         raise "Bandit is required for HTTP transport. Add {:bandit, \"~> 1.0\"} to your deps."
@@ -519,7 +560,10 @@ if Code.ensure_loaded?(Anubis.Server) do
       ClaudeWrapper.Workshop.configure()
 
       children = [
-        {ClaudeWrapper.Workshop.MCP.Server, transport: {:streamable_http, start: true}},
+        {ClaudeWrapper.Workshop.MCP.Server,
+         transport: {:streamable_http, start: true},
+         request_timeout: request_timeout,
+         session_idle_timeout: session_idle_timeout},
         {Bandit, plug: ClaudeWrapper.Workshop.MCP.Router, port: port, scheme: :http}
       ]
 
