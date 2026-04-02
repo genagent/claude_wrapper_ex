@@ -199,6 +199,13 @@ defmodule ClaudeWrapper.WorkshopTest do
     end
   end
 
+  describe "cast queuing" do
+    test "info shows queue_depth 0 for idle agent" do
+      Workshop.agent(:impl)
+      assert Workshop.info(:impl).queue_depth == 0
+    end
+  end
+
   describe "error handling" do
     test "ask raises for unknown agent" do
       assert_raise ArgumentError, fn ->

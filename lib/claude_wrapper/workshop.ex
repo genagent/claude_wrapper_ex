@@ -81,6 +81,7 @@ defmodule ClaudeWrapper.Workshop do
   @supervisor ClaudeWrapper.Workshop.Supervisor
 
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
+  @max_queue_size 5
 
   # ── Boot ──────────────────────────────────────────────────────
 
@@ -280,6 +281,7 @@ defmodule ClaudeWrapper.Workshop do
       status: :idle,
       task: nil,
       task_text: nil,
+      queue: [],
       cumulative_cost: 0.0,
       turn_count: 0,
       last_result: nil
@@ -385,6 +387,7 @@ defmodule ClaudeWrapper.Workshop do
         status: :idle,
         task: nil,
         task_text: nil,
+        queue: [],
         cumulative_cost: 0.0,
         turn_count: 0,
         last_result: nil
@@ -441,27 +444,42 @@ defmodule ClaudeWrapper.Workshop do
   The agent works in the background while you do other things.
   Use `status/0` to check progress, `await/1` to collect the result.
 
-  Returns `{:error, :busy}` if the agent is already working on a
-  previous `cast`. Call `await/1` first to clear it.
+  If the agent is already working, the message is queued (up to
+  #{@max_queue_size} deep). Queued messages are processed in order
+  after the current task finishes.
 
   ## Examples
 
       cast(:impl, "Implement the caching layer from issue #12")
       cast(:tests, "Add property-based tests for lib/myapp/encoder.ex")
 
+      # Queue a follow-up while :impl is still working
+      cast(:impl, "Also add the cache invalidation")
+
       # Go think about something else...
-      status()        # see who's done
-      await(:impl)    # block until :impl finishes, prints result
+      status()        # see who's done (shows queue depth)
+      await(:impl)    # block until current + queued work finishes
       await_all()     # wait for everyone
   """
-  @spec cast(atom(), String.t()) :: :ok | {:error, :busy}
+  @spec cast(atom(), String.t()) :: :ok | {:error, :queue_full}
   def cast(name, prompt) do
     ensure_started()
     entry = get_agent!(name)
 
     if entry.status == :working do
-      print_error("#{inspect(name)} is busy. Use await(#{inspect(name)}) first.")
-      {:error, :busy}
+      if length(entry.queue) >= @max_queue_size do
+        print_error(
+          "#{inspect(name)} queue is full (#{@max_queue_size}). Use await(#{inspect(name)}) first."
+        )
+
+        {:error, :queue_full}
+      else
+        updated_queue = entry.queue ++ [prompt]
+        update_agent(name, %{entry | queue: updated_queue})
+        position = length(updated_queue)
+        print_info("#{inspect(name)}: queued (position #{position})")
+        :ok
+      end
     else
       # Clean up any completed task before starting new one
       consume_pending_task(name)
@@ -554,7 +572,7 @@ defmodule ClaudeWrapper.Workshop do
         Enum.map(entries, fn {name, e} ->
           {
             " #{inspect(name)}",
-            to_string(e.status),
+            format_status(e),
             truncate(e.task_text || "", 36),
             format_cost(e.cumulative_cost),
             to_string(e.turn_count)
@@ -714,7 +732,8 @@ defmodule ClaudeWrapper.Workshop do
       permission_mode: Keyword.get(entry.query_opts, :permission_mode),
       max_turns: Keyword.get(entry.query_opts, :max_turns),
       allowed_tools: Keyword.get(entry.query_opts, :allowed_tools),
-      system_prompt: Keyword.get(entry.query_opts, :system_prompt)
+      system_prompt: Keyword.get(entry.query_opts, :system_prompt),
+      queue_depth: length(entry.queue)
     }
   end
 
@@ -911,7 +930,8 @@ defmodule ClaudeWrapper.Workshop do
     :ok
   end
 
-  # Update ETS with async task result (called from within the task process)
+  # Update ETS with async task result, then drain the queue.
+  # Called from within the task process.
   defp record_async_result(agent_name, {:ok, result}) do
     case get_agent(agent_name) do
       nil ->
@@ -925,13 +945,34 @@ defmodule ClaudeWrapper.Workshop do
             turn_count: current.turn_count + 1,
             last_result: result
         })
+
+        maybe_drain_queue(agent_name)
     end
   end
 
   defp record_async_result(agent_name, {:error, _}) do
     case get_agent(agent_name) do
-      nil -> :ok
-      current -> update_agent(agent_name, %{current | status: :idle})
+      nil ->
+        :ok
+
+      current ->
+        update_agent(agent_name, %{current | status: :idle})
+        maybe_drain_queue(agent_name)
+    end
+  end
+
+  # If there are queued messages, start the next one as an async task.
+  defp maybe_drain_queue(agent_name) do
+    case get_agent(agent_name) do
+      nil ->
+        :ok
+
+      %{queue: []} ->
+        :ok
+
+      %{queue: [next | rest]} = entry ->
+        update_agent(agent_name, %{entry | queue: rest})
+        do_send_async(agent_name, next)
     end
   end
 
@@ -1045,6 +1086,11 @@ defmodule ClaudeWrapper.Workshop do
   defp print_info(msg) do
     IO.puts(IO.ANSI.yellow() <> msg <> IO.ANSI.reset())
   end
+
+  defp format_status(%{status: :working, queue: [_ | _] = queue}),
+    do: "working +#{length(queue)}"
+
+  defp format_status(%{status: status}), do: to_string(status)
 
   defp format_cost(amount) when is_number(amount) do
     "$#{:erlang.float_to_binary(amount / 1, decimals: 2)}"
