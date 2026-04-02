@@ -474,6 +474,7 @@ if Code.ensure_loaded?(Anubis.Server) do
       use Plug.Router
 
       alias Anubis.Server.Transport.StreamableHTTP
+      alias ClaudeWrapper.Workshop.MCP, as: WorkshopMCP
 
       plug(:match)
       plug(:dispatch)
@@ -481,9 +482,21 @@ if Code.ensure_loaded?(Anubis.Server) do
       # forward/2 calls Plug.init at compile time, but the Anubis server
       # supervisor sets up persistent_term at runtime. Dispatch manually
       # to defer init to request time.
+      #
+      # We also pass request_timeout from the stored config so the Plug's
+      # GenServer.call timeout matches the server supervisor's timeout.
+      # Without this, the Plug defaults to 30s and long tool calls fail
+      # with "Server unavailable".
       match _ do
         if String.starts_with?(conn.request_path, "/mcp") do
-          opts = StreamableHTTP.Plug.init(server: ClaudeWrapper.Workshop.MCP.Server)
+          timeout = WorkshopMCP.request_timeout()
+
+          opts =
+            StreamableHTTP.Plug.init(
+              server: ClaudeWrapper.Workshop.MCP.Server,
+              request_timeout: timeout
+            )
+
           StreamableHTTP.Plug.call(conn, opts)
         else
           send_resp(conn, 404, "not found")
@@ -533,6 +546,14 @@ if Code.ensure_loaded?(Anubis.Server) do
     | cost | Show costs across all agents |
     """
 
+    @default_request_timeout 300_000
+
+    @doc false
+    @spec request_timeout() :: pos_integer()
+    def request_timeout do
+      :persistent_term.get({__MODULE__, :request_timeout}, @default_request_timeout)
+    end
+
     @doc """
     Start the Workshop MCP server over HTTP.
 
@@ -546,15 +567,19 @@ if Code.ensure_loaded?(Anubis.Server) do
 
         ClaudeWrapper.Workshop.MCP.start(port: 4222)
     """
+
     @spec start(keyword()) :: Supervisor.on_start()
     def start(opts \\ []) do
       port = Keyword.get(opts, :port, 4222)
-      request_timeout = Keyword.get(opts, :request_timeout, 300_000)
+      request_timeout = Keyword.get(opts, :request_timeout, @default_request_timeout)
       session_idle_timeout = Keyword.get(opts, :session_idle_timeout, 1_800_000)
 
       unless Code.ensure_loaded?(Bandit) do
         raise "Bandit is required for HTTP transport. Add {:bandit, \"~> 1.0\"} to your deps."
       end
+
+      # Store timeout so the Router can pass it to the Plug
+      :persistent_term.put({__MODULE__, :request_timeout}, request_timeout)
 
       # Ensure Workshop is running
       ClaudeWrapper.Workshop.configure()
