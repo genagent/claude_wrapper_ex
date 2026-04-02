@@ -82,6 +82,7 @@ defmodule ClaudeWrapper.Workshop do
 
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
   @max_queue_size 5
+  @valid_permission_modes [:default, :accept_edits, :bypass_permissions, :dont_ask, :plan, :auto]
 
   # ── Boot ──────────────────────────────────────────────────────
 
@@ -157,7 +158,7 @@ defmodule ClaudeWrapper.Workshop do
   end
 
   defp default_state do
-    %{config_opts: [], query_opts: [], context: nil}
+    %{config_opts: [], query_opts: [permission_mode: :auto], context: nil}
   end
 
   # ── Configuration ─────────────────────────────────────────────
@@ -184,6 +185,14 @@ defmodule ClaudeWrapper.Workshop do
         \"""
       )
 
+  ## Permissions
+
+  Workshop defaults to `permission_mode: :auto` so agents can work
+  non-interactively (the CLI default of `:default` would hang waiting
+  for approval that never comes). Override here to change for all agents:
+
+      configure(permission_mode: :bypass_permissions)
+
   ## Options
 
   Config options: `:binary`, `:working_dir`, `:env`, `:timeout`, `:verbose`, `:debug`
@@ -199,9 +208,15 @@ defmodule ClaudeWrapper.Workshop do
 
     {context, opts} = Keyword.pop(opts, :context)
     {config_opts, query_opts} = split_opts(opts)
+    validate_opts!(query_opts)
 
-    Agent.update(@state, fn _state ->
-      %{config_opts: config_opts, query_opts: query_opts, context: context}
+    Agent.update(@state, fn state ->
+      %{
+        state
+        | config_opts: config_opts,
+          query_opts: Keyword.merge(state.query_opts, query_opts),
+          context: context
+      }
     end)
 
     :ok
@@ -233,6 +248,20 @@ defmodule ClaudeWrapper.Workshop do
       # Options without a role
       agent(:fast, model: "haiku", max_turns: 3)
 
+  ## Permissions
+
+  Workshop defaults to `permission_mode: :auto` so agents can work
+  non-interactively. Override per-agent or globally via `configure/1`:
+
+      # Global: all agents use bypass
+      configure(permission_mode: :bypass_permissions)
+
+      # Per-agent: restrict the reviewer to default
+      agent(:reviewer, "Review only.", permission_mode: :default)
+
+  Valid modes: `:default`, `:accept_edits`, `:bypass_permissions`,
+  `:dont_ask`, `:plan`, `:auto`.
+
   ## Options
 
   Accepts any query option supported by `ClaudeWrapper.Session`: `:model`,
@@ -256,6 +285,7 @@ defmodule ClaudeWrapper.Workshop do
 
     # Merge global query opts with agent-specific opts (agent wins)
     {_agent_config_opts, agent_query_opts} = split_opts(opts)
+    validate_opts!(agent_query_opts)
     query_opts = Keyword.merge(global.query_opts, agent_query_opts)
 
     query_opts =
@@ -1052,6 +1082,18 @@ defmodule ClaudeWrapper.Workshop do
 
   defp split_opts(opts) do
     Enum.split_with(opts, fn {k, _v} -> k in @config_keys end)
+  end
+
+  defp validate_opts!(opts) do
+    case Keyword.fetch(opts, :permission_mode) do
+      {:ok, mode} when mode not in @valid_permission_modes ->
+        raise ArgumentError,
+              "invalid permission_mode #{inspect(mode)}. " <>
+                "Valid modes: #{inspect(@valid_permission_modes)}"
+
+      _ ->
+        :ok
+    end
   end
 
   defp compose_system_prompt(context, role) do
