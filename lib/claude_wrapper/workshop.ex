@@ -40,6 +40,13 @@ defmodule ClaudeWrapper.Workshop do
     * `pipe/3` -- wait for one agent, forward its result to another
     * `fan/2` -- send the same message to multiple agents in parallel
 
+  `ask/2` and `pipe/3` return the agent name on success, so they
+  compose with Elixir's pipe operator:
+
+      ask(:impl, "implement caching")
+      |> pipe(:reviewer, "review for edge cases")
+      |> pipe(:tests, "write tests for this")
+
   ## Inspecting agents
 
     * `status/0` -- dashboard of all agents
@@ -408,13 +415,18 @@ defmodule ClaudeWrapper.Workshop do
 
   If the agent has a pending async task from `cast/2`, waits for it first.
 
+  Returns the agent name on success, enabling `|>` chaining with `pipe/3`:
+
+      ask(:impl, "implement caching")
+      |> pipe(:reviewer, "review for edge cases")
+
   ## Examples
 
       ask(:impl, "What modules are in this project?")
       ask(:impl, "Now add tests for the retry module")   # continues conversation
       ask(:impl, "What files did you change?")            # still the same session
   """
-  @spec ask(atom(), String.t()) :: :ok | {:error, term()}
+  @spec ask(atom(), String.t()) :: atom() | {:error, term()}
   def ask(name, prompt) do
     ensure_started()
     consume_pending_task(name)
@@ -761,6 +773,12 @@ defmodule ClaudeWrapper.Workshop do
 
   This is synchronous -- it blocks until both agents are done.
 
+  Returns the target agent name on success, so pipes chain:
+
+      ask(:impl, "implement caching")
+      |> pipe(:reviewer, "review for edge cases")
+      |> pipe(:tests, "write tests for this")
+
   ## Examples
 
       # Implement, then review
@@ -772,8 +790,12 @@ defmodule ClaudeWrapper.Workshop do
       # ... do other stuff ...
       pipe(:impl, :tests)   # awaits :impl, sends result to :tests
   """
-  @spec pipe(atom(), atom(), String.t() | nil) :: :ok | {:error, term()}
-  def pipe(from, to, message \\ nil) do
+  @spec pipe(atom() | {:error, term()}, atom(), String.t() | nil) :: atom() | {:error, term()}
+  def pipe(from, to, message \\ nil)
+
+  def pipe({:error, _} = err, _to, _message), do: err
+
+  def pipe(from, to, message) when is_atom(from) do
     await(from)
     from_text = result(from)
 
@@ -834,7 +856,7 @@ defmodule ClaudeWrapper.Workshop do
         })
 
         print_result(name, result)
-        :ok
+        name
 
       {:error, reason} = err ->
         current = get_agent!(name)

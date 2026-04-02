@@ -153,6 +153,11 @@ await_all()         # wait for everyone
 ask(:impl, "Implement the caching layer")
 pipe(:impl, :reviewer, "Review for cache invalidation edge cases")
 
+# Chain with |> (ask and pipe return the agent name)
+ask(:impl, "Implement retry logic")
+|> pipe(:reviewer, "Review for edge cases")
+|> pipe(:tests, "Write tests for this")
+
 # Fan: same question to multiple agents
 fan("What issues do you see in lib/myapp/retry.ex?", [:impl, :reviewer])
 await_all()
