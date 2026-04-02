@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.3.0...v0.4.0) (2026-04-02)
+
+
+### Features
+
+* add streaming mode to Workshop (stream/2) ([#27](https://github.com/joshrotenberg/claude_wrapper_ex/issues/27)) ([24fd0e3](https://github.com/joshrotenberg/claude_wrapper_ex/commit/24fd0e39197daceb0e186935b8ce910a8a845e98)), closes [#19](https://github.com/joshrotenberg/claude_wrapper_ex/issues/19)
+* add Workshop multi-agent IEx API ([#21](https://github.com/joshrotenberg/claude_wrapper_ex/issues/21)) ([5587520](https://github.com/joshrotenberg/claude_wrapper_ex/commit/5587520eb1e6a3025b3607cea3d7401522ac5c54))
+* add Workshop.load/1 for setup files ([#28](https://github.com/joshrotenberg/claude_wrapper_ex/issues/28)) ([75f4753](https://github.com/joshrotenberg/claude_wrapper_ex/commit/75f4753d5c343cdc13afbc2fc4966f5ca45f397c))
+* cast queuing for busy agents ([#26](https://github.com/joshrotenberg/claude_wrapper_ex/issues/26)) ([662872b](https://github.com/joshrotenberg/claude_wrapper_ex/commit/662872b1694debd1330766b10faa4b32225694eb)), closes [#20](https://github.com/joshrotenberg/claude_wrapper_ex/issues/20)
+* MCP server exposing Workshop as tools ([#29](https://github.com/joshrotenberg/claude_wrapper_ex/issues/29)) ([3021cc4](https://github.com/joshrotenberg/claude_wrapper_ex/commit/3021cc49debe2d701b597edaebc5bf1f2824e248))
+* Workshop permission mode defaults and validation ([#25](https://github.com/joshrotenberg/claude_wrapper_ex/issues/25)) ([454c84d](https://github.com/joshrotenberg/claude_wrapper_ex/commit/454c84d90208df9039da35bbd2e9115f44cc77e0))
+
+
+### Bug Fixes
+
+* pass request_timeout to MCP Plug to prevent session drops ([#31](https://github.com/joshrotenberg/claude_wrapper_ex/issues/31)) ([29ca19c](https://github.com/joshrotenberg/claude_wrapper_ex/commit/29ca19c14381eae6eb50266137503df5af8b709f)), closes [#30](https://github.com/joshrotenberg/claude_wrapper_ex/issues/30)
+
 ## [0.3.0](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.2.1...v0.3.0) (2026-03-31)
 
 
