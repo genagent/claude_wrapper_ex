@@ -137,7 +137,9 @@ defmodule ClaudeWrapper.Workshop do
   @spec stop() :: :ok
   def stop do
     case Process.whereis(@supervisor) do
-      nil -> :ok
+      nil ->
+        :ok
+
       pid ->
         try do
           Supervisor.stop(pid, :normal)
@@ -734,17 +736,38 @@ defmodule ClaudeWrapper.Workshop do
 
     query =
       Enum.reduce(entry.query_opts, Query.new(prompt), fn
-        {:model, v}, q -> Query.model(q, v)
-        {:system_prompt, v}, q -> Query.system_prompt(q, v)
-        {:max_turns, v}, q -> Query.max_turns(q, v)
-        {:permission_mode, v}, q -> Query.permission_mode(q, v)
-        {:max_budget_usd, v}, q -> Query.max_budget_usd(q, v)
-        {:effort, v}, q -> Query.effort(q, v)
-        {:allowed_tools, tools}, q -> Enum.reduce(tools, q, fn t, acc -> Query.allowed_tool(acc, t) end)
-        {:disallowed_tools, tools}, q -> Enum.reduce(tools, q, fn t, acc -> Query.disallowed_tool(acc, t) end)
-        {:dangerously_skip_permissions, true}, q -> Query.dangerously_skip_permissions(q)
-        {:no_session_persistence, true}, q -> Query.no_session_persistence(q)
-        _other, q -> q
+        {:model, v}, q ->
+          Query.model(q, v)
+
+        {:system_prompt, v}, q ->
+          Query.system_prompt(q, v)
+
+        {:max_turns, v}, q ->
+          Query.max_turns(q, v)
+
+        {:permission_mode, v}, q ->
+          Query.permission_mode(q, v)
+
+        {:max_budget_usd, v}, q ->
+          Query.max_budget_usd(q, v)
+
+        {:effort, v}, q ->
+          Query.effort(q, v)
+
+        {:allowed_tools, tools}, q ->
+          Enum.reduce(tools, q, fn t, acc -> Query.allowed_tool(acc, t) end)
+
+        {:disallowed_tools, tools}, q ->
+          Enum.reduce(tools, q, fn t, acc -> Query.disallowed_tool(acc, t) end)
+
+        {:dangerously_skip_permissions, true}, q ->
+          Query.dangerously_skip_permissions(q)
+
+        {:no_session_persistence, true}, q ->
+          Query.no_session_persistence(q)
+
+        _other, q ->
+          q
       end)
 
     # Add --resume if session has an active session_id
@@ -971,8 +994,12 @@ defmodule ClaudeWrapper.Workshop do
 
   defp get_agent!(name) do
     case get_agent(name) do
-      nil -> raise ArgumentError, "unknown agent #{inspect(name)}. Use agent(#{inspect(name)}) to create one."
-      entry -> entry
+      nil ->
+        raise ArgumentError,
+              "unknown agent #{inspect(name)}. Use agent(#{inspect(name)}) to create one."
+
+      entry ->
+        entry
     end
   end
 
