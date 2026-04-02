@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "workshop": {
+      "type": "http",
+      "url": "http://localhost:4222/mcp"
+    }
+  }
+}

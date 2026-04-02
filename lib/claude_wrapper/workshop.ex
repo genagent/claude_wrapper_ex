@@ -202,14 +202,20 @@ defmodule ClaudeWrapper.Workshop do
 
   Query options: `:model`, `:max_turns`, `:permission_mode`, `:max_budget_usd`, `:effort`
 
-  Special: `:context` -- global system prompt prepended to every agent's role.
-  The effective system prompt for each agent is `context <> "\\n\\n" <> role`.
+  Special:
+
+    * `:context` -- global system prompt prepended to every agent's role.
+      The effective system prompt for each agent is `context <> "\\n\\n" <> role`.
+    * `:mcp` -- start the MCP server. Pass a keyword list of options
+      (e.g. `mcp: [port: 4222]`) or just `mcp: true` for defaults.
+      Requires `anubis_mcp`, `bandit`, and `plug` deps.
   """
   @spec configure(keyword()) :: :ok
   def configure(opts \\ []) do
     ensure_started()
 
     {context, opts} = Keyword.pop(opts, :context)
+    {mcp_opts, opts} = Keyword.pop(opts, :mcp)
     {config_opts, query_opts} = split_opts(opts)
     validate_opts!(query_opts)
 
@@ -222,7 +228,54 @@ defmodule ClaudeWrapper.Workshop do
       }
     end)
 
+    if mcp_opts, do: mcp_server(mcp_opts)
+
     :ok
+  end
+
+  @doc """
+  Start the Workshop MCP server.
+
+  Exposes all Workshop functions as MCP tools over HTTP.
+  Requires `anubis_mcp`, `bandit`, and `plug` deps.
+
+  Can also be triggered via `configure(mcp: [port: 4222])`.
+
+  ## Options
+
+    * `:port` - HTTP port (default: 4222)
+
+  ## Examples
+
+      mcp_server()                # start on default port 4222
+      mcp_server(port: 8080)      # custom port
+  """
+  @spec mcp_server(keyword() | boolean()) :: :ok | {:error, term()}
+  def mcp_server(opts \\ [])
+
+  def mcp_server(true), do: mcp_server([])
+
+  def mcp_server(opts) when is_list(opts) do
+    mcp_mod = ClaudeWrapper.Workshop.MCP
+
+    if Code.ensure_loaded?(mcp_mod) do
+      case mcp_mod.start(opts) do
+        {:ok, _pid} ->
+          port = Keyword.get(opts, :port, 4222)
+          print_info("MCP server started on port #{port}")
+          :ok
+
+        {:error, {:already_started, _pid}} ->
+          :ok
+
+        {:error, reason} ->
+          print_error("MCP server failed to start: #{inspect(reason)}")
+          {:error, reason}
+      end
+    else
+      print_error("MCP server requires anubis_mcp, bandit, and plug deps.")
+      {:error, :deps_missing}
+    end
   end
 
   # ── Agent Management ──────────────────────────────────────────

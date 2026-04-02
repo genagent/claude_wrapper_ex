@@ -8,7 +8,7 @@ defmodule ClaudeWrapper.MixProject do
     [
       app: :claude_wrapper,
       version: @version,
-      elixir: "~> 1.17",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       docs: docs(),
@@ -27,6 +27,9 @@ defmodule ClaudeWrapper.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
+      {:anubis_mcp, "~> 1.0", optional: true},
+      {:bandit, "~> 1.0", optional: true},
+      {:plug, "~> 1.16", optional: true},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
