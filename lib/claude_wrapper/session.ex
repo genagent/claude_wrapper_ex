@@ -166,15 +166,38 @@ defmodule ClaudeWrapper.Session do
 
     query =
       Enum.reduce(merged_opts, query, fn
-        {:model, v}, q -> Query.model(q, v)
-        {:system_prompt, v}, q -> Query.system_prompt(q, v)
-        {:max_turns, v}, q -> Query.max_turns(q, v)
-        {:permission_mode, v}, q -> Query.permission_mode(q, v)
-        {:max_budget_usd, v}, q -> Query.max_budget_usd(q, v)
-        {:effort, v}, q -> Query.effort(q, v)
-        {:dangerously_skip_permissions, true}, q -> Query.dangerously_skip_permissions(q)
-        {:no_session_persistence, true}, q -> Query.no_session_persistence(q)
-        _other, q -> q
+        {:model, v}, q ->
+          Query.model(q, v)
+
+        {:system_prompt, v}, q ->
+          Query.system_prompt(q, v)
+
+        {:max_turns, v}, q ->
+          Query.max_turns(q, v)
+
+        {:permission_mode, v}, q ->
+          Query.permission_mode(q, v)
+
+        {:max_budget_usd, v}, q ->
+          Query.max_budget_usd(q, v)
+
+        {:effort, v}, q ->
+          Query.effort(q, v)
+
+        {:allowed_tools, tools}, q when is_list(tools) ->
+          Enum.reduce(tools, q, fn tool, acc -> Query.allowed_tool(acc, tool) end)
+
+        {:disallowed_tools, tools}, q when is_list(tools) ->
+          Enum.reduce(tools, q, fn tool, acc -> Query.disallowed_tool(acc, tool) end)
+
+        {:dangerously_skip_permissions, true}, q ->
+          Query.dangerously_skip_permissions(q)
+
+        {:no_session_persistence, true}, q ->
+          Query.no_session_persistence(q)
+
+        _other, q ->
+          q
       end)
 
     # Thread session continuity
