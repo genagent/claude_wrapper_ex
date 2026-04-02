@@ -199,6 +199,48 @@ defmodule ClaudeWrapper.WorkshopTest do
     end
   end
 
+  describe "permissions" do
+    test "defaults to permission_mode :auto" do
+      Workshop.agent(:impl, "Coder")
+      info = Workshop.info(:impl)
+      assert info.permission_mode == :auto
+    end
+
+    test "configure overrides default permission_mode" do
+      Workshop.configure(permission_mode: :bypass_permissions)
+      Workshop.agent(:impl, "Coder")
+      info = Workshop.info(:impl)
+      assert info.permission_mode == :bypass_permissions
+    end
+
+    test "agent-level permission_mode overrides global" do
+      Workshop.configure(permission_mode: :auto)
+      Workshop.agent(:reviewer, "Reviewer", permission_mode: :default)
+      info = Workshop.info(:reviewer)
+      assert info.permission_mode == :default
+    end
+
+    test "default persists when configure sets other opts" do
+      Workshop.configure(model: "sonnet")
+      Workshop.agent(:impl)
+      info = Workshop.info(:impl)
+      assert info.permission_mode == :auto
+      assert info.model == "sonnet"
+    end
+
+    test "invalid permission_mode raises in agent" do
+      assert_raise ArgumentError, ~r/invalid permission_mode/, fn ->
+        Workshop.agent(:impl, "Coder", permission_mode: :bogus)
+      end
+    end
+
+    test "invalid permission_mode raises in configure" do
+      assert_raise ArgumentError, ~r/invalid permission_mode/, fn ->
+        Workshop.configure(permission_mode: :nope)
+      end
+    end
+  end
+
   describe "error handling" do
     test "ask raises for unknown agent" do
       assert_raise ArgumentError, fn ->
