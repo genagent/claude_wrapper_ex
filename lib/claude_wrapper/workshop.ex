@@ -30,6 +30,7 @@ defmodule ClaudeWrapper.Workshop do
   Two ways to send messages:
 
     * `ask/2` -- blocks until the agent responds, prints the result
+    * `stream/2` -- like `ask/2` but prints tokens live as they arrive
     * `cast/2` -- returns immediately, agent works in the background
 
   Use `await/1` or `await_all/0` to collect async results. Use `status/0`
@@ -74,7 +75,7 @@ defmodule ClaudeWrapper.Workshop do
         `-- Task.Supervisor (async tasks for cast/2)
   """
 
-  alias ClaudeWrapper.{Config, Query, Result, Session, SessionServer}
+  alias ClaudeWrapper.{Config, Query, Result, Session, SessionServer, StreamEvent}
 
   @table :claude_workshop_agents
   @state :claude_workshop_state
@@ -505,6 +506,29 @@ defmodule ClaudeWrapper.Workshop do
     ensure_started()
     consume_pending_task(name)
     do_send_sync(name, prompt)
+  end
+
+  @doc """
+  Send a message and stream the response live. Prints tokens as they arrive.
+
+  Like `ask/2` but shows output incrementally instead of waiting for
+  the full response. Blocks until the stream completes.
+
+  Returns the agent name on success (like `ask/2`), so it works with `|>`.
+
+  ## Example
+
+      stream(:impl, "Explain the architecture of this project")
+      # tokens print live as they arrive...
+
+      stream(:impl, "Now refactor it")
+      |> pipe(:reviewer, "Review the refactoring")
+  """
+  @spec stream(atom(), String.t()) :: atom() | {:error, term()}
+  def stream(name, prompt) do
+    ensure_started()
+    consume_pending_task(name)
+    do_stream_sync(name, prompt)
   end
 
   @doc """
@@ -997,6 +1021,115 @@ defmodule ClaudeWrapper.Workshop do
 
     update_agent(name, %{entry | status: :working, task: task, task_text: truncate(prompt, 36)})
     :ok
+  end
+
+  defp do_stream_sync(name, prompt) do
+    entry = get_agent!(name)
+    update_agent(name, %{entry | status: :working, task_text: truncate(prompt, 36)})
+
+    IO.puts(IO.ANSI.yellow() <> "#{inspect(name)} streaming..." <> IO.ANSI.reset())
+
+    # Get session snapshot and stream from the caller's process
+    session = SessionServer.get_session(entry.pid)
+    {updated_session, event_stream} = Session.stream(session, prompt)
+    session_ref = updated_session.session_id
+
+    # Consume the stream, printing text live and collecting the result event
+    IO.puts("")
+    result_event = consume_stream_with_output(event_stream)
+    IO.puts("")
+
+    # Receive the session_id that Session.stream captured
+    new_session_id =
+      receive do
+        {^session_ref, :session_id, sid} -> sid
+      after
+        1000 -> Session.session_id(session)
+      end
+
+    # Build a Result from the final event
+    result = build_result_from_stream(result_event, new_session_id)
+
+    # Push updated session back to the SessionServer
+    final_session = %{
+      updated_session
+      | session_id: new_session_id,
+        history: updated_session.history ++ [result]
+    }
+
+    SessionServer.put_session(entry.pid, final_session)
+
+    # Update ETS
+    cost = result.cost_usd || 0.0
+    current = get_agent!(name)
+
+    update_agent(name, %{
+      current
+      | status: :idle,
+        task_text: nil,
+        cumulative_cost: current.cumulative_cost + cost,
+        turn_count: current.turn_count + 1,
+        last_result: result
+    })
+
+    cost_str = if result.cost_usd, do: format_cost(result.cost_usd), else: "n/a"
+
+    IO.puts(
+      IO.ANSI.yellow() <>
+        "(#{inspect(name)}: #{cost_str} this turn)" <>
+        IO.ANSI.reset()
+    )
+
+    name
+  rescue
+    e ->
+      current = get_agent(name)
+      if current, do: update_agent(name, %{current | status: :idle, task_text: nil})
+      print_error("#{inspect(name)}: #{Exception.message(e)}")
+      {:error, {:stream, Exception.message(e)}}
+  end
+
+  defp consume_stream_with_output(stream) do
+    Enum.reduce(stream, nil, fn event, result_event ->
+      print_stream_event(event)
+      if StreamEvent.result?(event), do: event, else: result_event
+    end)
+  end
+
+  defp print_stream_event(%StreamEvent{} = event) do
+    case event.type do
+      "assistant" -> print_stream_text(event.data)
+      "content_block_delta" -> print_stream_delta(event.data)
+      _ -> :ok
+    end
+  end
+
+  defp print_stream_text(data) do
+    case data do
+      %{"content" => [%{"text" => text} | _]} -> IO.write(text)
+      %{"content" => content} when is_binary(content) -> IO.write(content)
+      %{"message" => msg} when is_map(msg) -> print_stream_text(msg)
+      _ -> :ok
+    end
+  end
+
+  defp print_stream_delta(%{"delta" => %{"text" => text}}), do: IO.write(text)
+  defp print_stream_delta(_), do: :ok
+
+  defp build_result_from_stream(nil, session_id) do
+    %Result{result: "", session_id: session_id, is_error: false, extra: %{}}
+  end
+
+  defp build_result_from_stream(%StreamEvent{} = event, session_id) do
+    %Result{
+      result: StreamEvent.result_text(event) || "",
+      session_id: session_id,
+      cost_usd: StreamEvent.cost_usd(event),
+      duration_ms: event.data["duration_ms"],
+      num_turns: event.data["num_turns"],
+      is_error: event.data["is_error"] || false,
+      extra: %{}
+    }
   end
 
   # Update ETS with async task result, then drain the queue.

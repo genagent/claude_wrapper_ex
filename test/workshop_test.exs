@@ -199,6 +199,30 @@ defmodule ClaudeWrapper.WorkshopTest do
     end
   end
 
+  describe "stream/2" do
+    test "raises for unknown agent" do
+      assert_raise ArgumentError, fn ->
+        Workshop.stream(:nonexistent, "hello")
+      end
+    end
+  end
+
+  describe "put_session" do
+    test "SessionServer.put_session updates the session" do
+      config = ClaudeWrapper.Config.new()
+      {:ok, pid} = ClaudeWrapper.SessionServer.start_link(config: config)
+
+      session = ClaudeWrapper.SessionServer.get_session(pid)
+      assert ClaudeWrapper.Session.session_id(session) == nil
+
+      updated = %{session | session_id: "test-sid"}
+      :ok = ClaudeWrapper.SessionServer.put_session(pid, updated)
+
+      assert ClaudeWrapper.SessionServer.session_id(pid) == "test-sid"
+      GenServer.stop(pid)
+    end
+  end
+
   describe "cast queuing" do
     test "info shows queue_depth 0 for idle agent" do
       Workshop.agent(:impl)

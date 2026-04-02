@@ -131,6 +131,17 @@ defmodule ClaudeWrapper.SessionServer do
     GenServer.call(server, :get_session)
   end
 
+  @doc """
+  Replace the underlying `%Session{}` struct.
+
+  Used by `ClaudeWrapper.Workshop.stream/2` to push back the session
+  after consuming a stream outside the GenServer process.
+  """
+  @spec put_session(server(), Session.t()) :: :ok
+  def put_session(server, %Session{} = session) do
+    GenServer.call(server, {:put_session, session})
+  end
+
   # --- Server callbacks ---
 
   @impl true
@@ -175,5 +186,9 @@ defmodule ClaudeWrapper.SessionServer do
 
   def handle_call(:get_session, _from, session) do
     {:reply, session, session}
+  end
+
+  def handle_call({:put_session, new_session}, _from, _session) do
+    {:reply, :ok, new_session}
   end
 end
