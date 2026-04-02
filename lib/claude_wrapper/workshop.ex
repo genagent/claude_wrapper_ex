@@ -210,7 +210,12 @@ defmodule ClaudeWrapper.Workshop do
     validate_opts!(query_opts)
 
     Agent.update(@state, fn state ->
-      %{state | config_opts: config_opts, query_opts: Keyword.merge(state.query_opts, query_opts), context: context}
+      %{
+        state
+        | config_opts: config_opts,
+          query_opts: Keyword.merge(state.query_opts, query_opts),
+          context: context
+      }
     end)
 
     :ok
