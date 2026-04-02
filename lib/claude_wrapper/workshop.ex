@@ -59,6 +59,8 @@ defmodule ClaudeWrapper.Workshop do
 
   ## Lifecycle
 
+    * `load/0` -- load `.workshop.exs` (auto-loaded on startup if present)
+    * `load/1` -- load a specific setup file
     * `reset/1` -- clear an agent's conversation (keeps role and config)
     * `dismiss/1` -- remove an agent entirely
     * `reset_all/0` -- stop everything, clear config
@@ -82,6 +84,8 @@ defmodule ClaudeWrapper.Workshop do
   @supervisor ClaudeWrapper.Workshop.Supervisor
 
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
+  @max_queue_size 5
+  @valid_permission_modes [:default, :accept_edits, :bypass_permissions, :dont_ask, :plan, :auto]
 
   # ── Boot ──────────────────────────────────────────────────────
 
@@ -157,7 +161,7 @@ defmodule ClaudeWrapper.Workshop do
   end
 
   defp default_state do
-    %{config_opts: [], query_opts: [], context: nil}
+    %{config_opts: [], query_opts: [permission_mode: :auto], context: nil}
   end
 
   # ── Configuration ─────────────────────────────────────────────
@@ -184,6 +188,14 @@ defmodule ClaudeWrapper.Workshop do
         \"""
       )
 
+  ## Permissions
+
+  Workshop defaults to `permission_mode: :auto` so agents can work
+  non-interactively (the CLI default of `:default` would hang waiting
+  for approval that never comes). Override here to change for all agents:
+
+      configure(permission_mode: :bypass_permissions)
+
   ## Options
 
   Config options: `:binary`, `:working_dir`, `:env`, `:timeout`, `:verbose`, `:debug`
@@ -199,9 +211,15 @@ defmodule ClaudeWrapper.Workshop do
 
     {context, opts} = Keyword.pop(opts, :context)
     {config_opts, query_opts} = split_opts(opts)
+    validate_opts!(query_opts)
 
-    Agent.update(@state, fn _state ->
-      %{config_opts: config_opts, query_opts: query_opts, context: context}
+    Agent.update(@state, fn state ->
+      %{
+        state
+        | config_opts: config_opts,
+          query_opts: Keyword.merge(state.query_opts, query_opts),
+          context: context
+      }
     end)
 
     :ok
@@ -233,6 +251,20 @@ defmodule ClaudeWrapper.Workshop do
       # Options without a role
       agent(:fast, model: "haiku", max_turns: 3)
 
+  ## Permissions
+
+  Workshop defaults to `permission_mode: :auto` so agents can work
+  non-interactively. Override per-agent or globally via `configure/1`:
+
+      # Global: all agents use bypass
+      configure(permission_mode: :bypass_permissions)
+
+      # Per-agent: restrict the reviewer to default
+      agent(:reviewer, "Review only.", permission_mode: :default)
+
+  Valid modes: `:default`, `:accept_edits`, `:bypass_permissions`,
+  `:dont_ask`, `:plan`, `:auto`.
+
   ## Options
 
   Accepts any query option supported by `ClaudeWrapper.Session`: `:model`,
@@ -256,6 +288,7 @@ defmodule ClaudeWrapper.Workshop do
 
     # Merge global query opts with agent-specific opts (agent wins)
     {_agent_config_opts, agent_query_opts} = split_opts(opts)
+    validate_opts!(agent_query_opts)
     query_opts = Keyword.merge(global.query_opts, agent_query_opts)
 
     query_opts =
@@ -281,6 +314,7 @@ defmodule ClaudeWrapper.Workshop do
       status: :idle,
       task: nil,
       task_text: nil,
+      queue: [],
       cumulative_cost: 0.0,
       turn_count: 0,
       last_result: nil
@@ -386,6 +420,7 @@ defmodule ClaudeWrapper.Workshop do
         status: :idle,
         task: nil,
         task_text: nil,
+        queue: [],
         cumulative_cost: 0.0,
         turn_count: 0,
         last_result: nil
@@ -406,6 +441,43 @@ defmodule ClaudeWrapper.Workshop do
     agents() |> Enum.each(&dismiss/1)
     Agent.update(@state, fn _ -> default_state() end)
     :ok
+  end
+
+  @doc """
+  Load a Workshop setup file (`.exs`).
+
+  The file is evaluated with `import ClaudeWrapper.Workshop` in scope,
+  so it can call `configure/1`, `agent/3`, etc. directly.
+
+  With no argument, looks for `.workshop.exs` in the current directory.
+
+  ## Example file (.workshop.exs)
+
+      configure(working_dir: ".", model: "sonnet",
+        context: "Elixir project. Run mix test before committing.")
+
+      agent(:impl, "You write clean code.", max_turns: 15)
+      agent(:reviewer, "Review only.", model: "opus",
+        allowed_tools: ["Read", "Bash"])
+
+  ## Examples
+
+      load()                        # loads .workshop.exs
+      load("setups/review.exs")     # loads a specific file
+  """
+  @spec load(String.t()) :: :ok | {:error, :not_found}
+  def load(path \\ ".workshop.exs") do
+    path = Path.expand(path)
+
+    if File.exists?(path) do
+      code = "import ClaudeWrapper.Workshop\n" <> File.read!(path)
+      Code.eval_string(code, [], file: path)
+      print_info("Loaded #{path}")
+      :ok
+    else
+      print_error("File not found: #{path}")
+      {:error, :not_found}
+    end
   end
 
   # ── Interaction ───────────────────────────────────────────────
@@ -465,27 +537,42 @@ defmodule ClaudeWrapper.Workshop do
   The agent works in the background while you do other things.
   Use `status/0` to check progress, `await/1` to collect the result.
 
-  Returns `{:error, :busy}` if the agent is already working on a
-  previous `cast`. Call `await/1` first to clear it.
+  If the agent is already working, the message is queued (up to
+  #{@max_queue_size} deep). Queued messages are processed in order
+  after the current task finishes.
 
   ## Examples
 
       cast(:impl, "Implement the caching layer from issue #12")
       cast(:tests, "Add property-based tests for lib/myapp/encoder.ex")
 
+      # Queue a follow-up while :impl is still working
+      cast(:impl, "Also add the cache invalidation")
+
       # Go think about something else...
-      status()        # see who's done
-      await(:impl)    # block until :impl finishes, prints result
+      status()        # see who's done (shows queue depth)
+      await(:impl)    # block until current + queued work finishes
       await_all()     # wait for everyone
   """
-  @spec cast(atom(), String.t()) :: :ok | {:error, :busy}
+  @spec cast(atom(), String.t()) :: :ok | {:error, :queue_full}
   def cast(name, prompt) do
     ensure_started()
     entry = get_agent!(name)
 
     if entry.status == :working do
-      print_error("#{inspect(name)} is busy. Use await(#{inspect(name)}) first.")
-      {:error, :busy}
+      if length(entry.queue) >= @max_queue_size do
+        print_error(
+          "#{inspect(name)} queue is full (#{@max_queue_size}). Use await(#{inspect(name)}) first."
+        )
+
+        {:error, :queue_full}
+      else
+        updated_queue = entry.queue ++ [prompt]
+        update_agent(name, %{entry | queue: updated_queue})
+        position = length(updated_queue)
+        print_info("#{inspect(name)}: queued (position #{position})")
+        :ok
+      end
     else
       # Clean up any completed task before starting new one
       consume_pending_task(name)
@@ -578,7 +665,7 @@ defmodule ClaudeWrapper.Workshop do
         Enum.map(entries, fn {name, e} ->
           {
             " #{inspect(name)}",
-            to_string(e.status),
+            format_status(e),
             truncate(e.task_text || "", 36),
             format_cost(e.cumulative_cost),
             to_string(e.turn_count)
@@ -738,7 +825,8 @@ defmodule ClaudeWrapper.Workshop do
       permission_mode: Keyword.get(entry.query_opts, :permission_mode),
       max_turns: Keyword.get(entry.query_opts, :max_turns),
       allowed_tools: Keyword.get(entry.query_opts, :allowed_tools),
-      system_prompt: Keyword.get(entry.query_opts, :system_prompt)
+      system_prompt: Keyword.get(entry.query_opts, :system_prompt),
+      queue_depth: length(entry.queue)
     }
   end
 
@@ -1044,7 +1132,8 @@ defmodule ClaudeWrapper.Workshop do
     }
   end
 
-  # Update ETS with async task result (called from within the task process)
+  # Update ETS with async task result, then drain the queue.
+  # Called from within the task process.
   defp record_async_result(agent_name, {:ok, result}) do
     case get_agent(agent_name) do
       nil ->
@@ -1058,13 +1147,34 @@ defmodule ClaudeWrapper.Workshop do
             turn_count: current.turn_count + 1,
             last_result: result
         })
+
+        maybe_drain_queue(agent_name)
     end
   end
 
   defp record_async_result(agent_name, {:error, _}) do
     case get_agent(agent_name) do
-      nil -> :ok
-      current -> update_agent(agent_name, %{current | status: :idle})
+      nil ->
+        :ok
+
+      current ->
+        update_agent(agent_name, %{current | status: :idle})
+        maybe_drain_queue(agent_name)
+    end
+  end
+
+  # If there are queued messages, start the next one as an async task.
+  defp maybe_drain_queue(agent_name) do
+    case get_agent(agent_name) do
+      nil ->
+        :ok
+
+      %{queue: []} ->
+        :ok
+
+      %{queue: [next | rest]} = entry ->
+        update_agent(agent_name, %{entry | queue: rest})
+        do_send_async(agent_name, next)
     end
   end
 
@@ -1146,6 +1256,18 @@ defmodule ClaudeWrapper.Workshop do
     Enum.split_with(opts, fn {k, _v} -> k in @config_keys end)
   end
 
+  defp validate_opts!(opts) do
+    case Keyword.fetch(opts, :permission_mode) do
+      {:ok, mode} when mode not in @valid_permission_modes ->
+        raise ArgumentError,
+              "invalid permission_mode #{inspect(mode)}. " <>
+                "Valid modes: #{inspect(@valid_permission_modes)}"
+
+      _ ->
+        :ok
+    end
+  end
+
   defp compose_system_prompt(context, role) do
     [context, role]
     |> Enum.reject(fn s -> is_nil(s) or String.trim(s) == "" end)
@@ -1178,6 +1300,11 @@ defmodule ClaudeWrapper.Workshop do
   defp print_info(msg) do
     IO.puts(IO.ANSI.yellow() <> msg <> IO.ANSI.reset())
   end
+
+  defp format_status(%{status: :working, queue: [_ | _] = queue}),
+    do: "working +#{length(queue)}"
+
+  defp format_status(%{status: status}), do: to_string(status)
 
   defp format_cost(amount) when is_number(amount) do
     "$#{:erlang.float_to_binary(amount / 1, decimals: 2)}"

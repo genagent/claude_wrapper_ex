@@ -223,6 +223,76 @@ defmodule ClaudeWrapper.WorkshopTest do
     end
   end
 
+  describe "cast queuing" do
+    test "info shows queue_depth 0 for idle agent" do
+      Workshop.agent(:impl)
+      assert Workshop.info(:impl).queue_depth == 0
+    end
+  end
+
+  describe "permissions" do
+    test "defaults to permission_mode :auto" do
+      Workshop.agent(:impl, "Coder")
+      info = Workshop.info(:impl)
+      assert info.permission_mode == :auto
+    end
+
+    test "configure overrides default permission_mode" do
+      Workshop.configure(permission_mode: :bypass_permissions)
+      Workshop.agent(:impl, "Coder")
+      info = Workshop.info(:impl)
+      assert info.permission_mode == :bypass_permissions
+    end
+
+    test "agent-level permission_mode overrides global" do
+      Workshop.configure(permission_mode: :auto)
+      Workshop.agent(:reviewer, "Reviewer", permission_mode: :default)
+      info = Workshop.info(:reviewer)
+      assert info.permission_mode == :default
+    end
+
+    test "default persists when configure sets other opts" do
+      Workshop.configure(model: "sonnet")
+      Workshop.agent(:impl)
+      info = Workshop.info(:impl)
+      assert info.permission_mode == :auto
+      assert info.model == "sonnet"
+    end
+
+    test "invalid permission_mode raises in agent" do
+      assert_raise ArgumentError, ~r/invalid permission_mode/, fn ->
+        Workshop.agent(:impl, "Coder", permission_mode: :bogus)
+      end
+    end
+
+    test "invalid permission_mode raises in configure" do
+      assert_raise ArgumentError, ~r/invalid permission_mode/, fn ->
+        Workshop.configure(permission_mode: :nope)
+      end
+    end
+  end
+
+  describe "load/1" do
+    test "loads a workshop setup file" do
+      path = Path.join(System.tmp_dir!(), "test_workshop_#{:rand.uniform(100_000)}.exs")
+
+      File.write!(path, """
+      configure(model: "sonnet")
+      agent(:loaded, "From file")
+      """)
+
+      assert :ok = Workshop.load(path)
+      assert :loaded in Workshop.agents()
+      assert Workshop.info(:loaded).model == "sonnet"
+
+      File.rm!(path)
+    end
+
+    test "returns error for missing file" do
+      assert {:error, :not_found} = Workshop.load("nonexistent.exs")
+    end
+  end
+
   describe "error handling" do
     test "ask raises for unknown agent" do
       assert_raise ArgumentError, fn ->
