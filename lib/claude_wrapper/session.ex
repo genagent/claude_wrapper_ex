@@ -190,6 +190,12 @@ defmodule ClaudeWrapper.Session do
         {:disallowed_tools, tools}, q when is_list(tools) ->
           Enum.reduce(tools, q, fn tool, acc -> Query.disallowed_tool(acc, tool) end)
 
+        {:mcp_config, paths}, q when is_list(paths) ->
+          Enum.reduce(paths, q, fn path, acc -> Query.mcp_config(acc, path) end)
+
+        {:mcp_config, path}, q when is_binary(path) ->
+          Query.mcp_config(q, path)
+
         {:dangerously_skip_permissions, true}, q ->
           Query.dangerously_skip_permissions(q)
 
