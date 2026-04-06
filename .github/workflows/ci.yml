@@ -34,6 +34,7 @@ jobs:
           path: |
             deps
             _build
+            priv/plts
           key: mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
             mix-${{ matrix.elixir }}-${{ matrix.otp }}-
@@ -49,6 +50,9 @@ jobs:
 
       - name: Credo
         run: mix credo --strict
+
+      - name: Dialyzer
+        run: mix dialyzer
 
       - name: Run tests
         run: mix test
