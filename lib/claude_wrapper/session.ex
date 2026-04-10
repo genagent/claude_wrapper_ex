@@ -95,31 +95,22 @@ defmodule ClaudeWrapper.Session do
   @doc """
   Send a message and return a stream of events.
 
-  Updates the session with the session_id from the first result event seen.
-  Returns `{updated_session, stream}`. The session_id is captured from
-  the stream, so consume the stream before sending the next message.
+  Returns `{session, stream}`. The returned `session` is the **same
+  session passed in** — this function does *not* thread `session_id`
+  across turns. If you need multi-turn continuity, use `send/3`
+  instead, which runs the turn synchronously and updates
+  `session_id` from the final result.
+
+  Use `stream/3` when you want to observe events from a single turn
+  (for example, to render intermediate output as the CLI produces
+  it) and do not need to chain into a follow-up turn on the same
+  session.
   """
   @spec stream(t(), String.t(), keyword()) :: {t(), Enumerable.t()}
   def stream(%__MODULE__{} = session, prompt, opts \\ []) do
     query = build_query(session, prompt, opts)
     raw_stream = Query.stream(query, session.config)
-
-    session_ref = make_ref()
-    parent = self()
-
-    wrapped_stream =
-      Stream.each(raw_stream, &maybe_capture_session_id(&1, session_ref, parent))
-
-    {%{session | session_id: session_ref}, wrapped_stream}
-  end
-
-  defp maybe_capture_session_id(event, ref, parent) do
-    if ClaudeWrapper.StreamEvent.result?(event) do
-      case ClaudeWrapper.StreamEvent.session_id(event) do
-        nil -> :ok
-        sid -> Kernel.send(parent, {ref, :session_id, sid})
-      end
-    end
+    {session, raw_stream}
   end
 
   @doc """
