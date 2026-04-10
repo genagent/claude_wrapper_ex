@@ -23,7 +23,7 @@ defmodule ClaudeWrapper.Query do
       |> Stream.run()
   """
 
-  alias ClaudeWrapper.{Config, Result, StreamEvent}
+  alias ClaudeWrapper.{Command, Config, Result, StreamEvent}
 
   @type permission_mode ::
           :default | :accept_edits | :bypass_permissions | :dont_ask | :plan | :auto
@@ -315,15 +315,16 @@ defmodule ClaudeWrapper.Query do
     base = Config.base_args(config)
     base = if "--verbose" in base, do: base, else: ["--verbose" | base]
     args = base ++ build_args(query)
+    shell_args = Command.shell_cmd_args(config.binary, args)
 
     port_opts =
-      [:binary, :exit_status, {:line, 1_048_576}, {:args, args}] ++
+      [:binary, :exit_status, {:line, 1_048_576}, {:args, shell_args}] ++
         port_env_opts(config) ++
         port_cd_opts(config)
 
     Stream.resource(
       fn ->
-        Port.open({:spawn_executable, config.binary}, port_opts)
+        Port.open({:spawn_executable, "/bin/sh"}, port_opts)
       end,
       fn port ->
         receive do
