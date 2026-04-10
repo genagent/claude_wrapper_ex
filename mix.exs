@@ -14,7 +14,8 @@ defmodule ClaudeWrapper.MixProject do
       docs: docs(),
       package: package(),
       name: "ClaudeWrapper",
-      description: "Elixir wrapper for the Claude Code CLI"
+      description: "Elixir wrapper for the Claude Code CLI",
+      dialyzer: [plt_file: {:no_warn, "_build/dev/dialyxir_#{System.otp_release()}.plt"}]
     ]
   end
 
@@ -31,7 +32,8 @@ defmodule ClaudeWrapper.MixProject do
       {:bandit, "~> 1.0", optional: true},
       {:plug, "~> 1.16", optional: true},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 
