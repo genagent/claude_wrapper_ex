@@ -51,4 +51,27 @@ defmodule ClaudeWrapper.Command do
       nil -> {:error, {:timeout, timeout}}
     end
   end
+
+  # Build the `:args` list for a `Port.open({:spawn_executable, "/bin/sh"}, ...)`
+  # call that runs `binary` with `args` and redirects stdin from `/dev/null`.
+  # Used by streaming paths (`Query.stream/2`) to prevent the CLI from
+  # blocking on an inherited-but-empty stdin pipe. `System.cmd`-based
+  # callers (the non-streaming `execute` path) close stdin automatically
+  # and do not need this.
+  @doc false
+  @spec shell_cmd_args(String.t(), [String.t()]) :: [String.t()]
+  def shell_cmd_args(binary, args) do
+    escaped_args = Enum.map_join(args, " ", &shell_escape/1)
+    shell_cmd = "#{binary} #{escaped_args} < /dev/null"
+    ["-c", shell_cmd]
+  end
+
+  @doc false
+  def shell_escape(arg) do
+    if String.contains?(arg, ["'", " ", "\"", "\\", "(", ")", "$", "`", "!", "&", "|", ";", "\n"]) do
+      "'" <> String.replace(arg, "'", "'\\''") <> "'"
+    else
+      arg
+    end
+  end
 end
