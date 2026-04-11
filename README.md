@@ -1,6 +1,6 @@
 # ClaudeWrapper
 
-[![CI](https://github.com/joshrotenberg/claude_wrapper_ex/actions/workflows/ci.yml/badge.svg)](https://github.com/joshrotenberg/claude_wrapper_ex/actions/workflows/ci.yml)
+[![CI](https://github.com/genagent/claude_wrapper_ex/actions/workflows/ci.yml/badge.svg)](https://github.com/genagent/claude_wrapper_ex/actions/workflows/ci.yml)
 [![Hex.pm](https://img.shields.io/hexpm/v/claude_wrapper.svg)](https://hex.pm/packages/claude_wrapper)
 [![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/claude_wrapper)
 
