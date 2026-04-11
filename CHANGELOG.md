@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.4.0...v0.5.0) (2026-04-10)
+
+
+### Features
+
+* add worktree support to Session.build_query ([#39](https://github.com/joshrotenberg/claude_wrapper_ex/issues/39)) ([0a1b078](https://github.com/joshrotenberg/claude_wrapper_ex/commit/0a1b078a44186c9443951081197fcb7c212722e7))
+
+
+### Bug Fixes
+
+* add mcp_config support to Session.build_query ([#37](https://github.com/joshrotenberg/claude_wrapper_ex/issues/37)) ([d12c82d](https://github.com/joshrotenberg/claude_wrapper_ex/commit/d12c82d5904cab36890dc56c7762080fd909d288))
+* close stdin on Query.stream/2 Port path ([#43](https://github.com/joshrotenberg/claude_wrapper_ex/issues/43)) ([4b31435](https://github.com/joshrotenberg/claude_wrapper_ex/commit/4b3143584433ffe77f793e53cb055b3f2b3e0ba9)), closes [#42](https://github.com/joshrotenberg/claude_wrapper_ex/issues/42)
+
 ## [0.4.0](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.3.0...v0.4.0) (2026-04-02)
 
 
