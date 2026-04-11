@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.5.0...v0.5.1) (2026-04-11)
+
+
+### Bug Fixes
+
+* update source URL to genagent org ([#45](https://github.com/genagent/claude_wrapper_ex/issues/45)) ([91b13d4](https://github.com/genagent/claude_wrapper_ex/commit/91b13d4ecf62445d90087aef50e83ba9ceef3365))
+
 ## [0.5.0](https://github.com/joshrotenberg/claude_wrapper_ex/compare/v0.4.0...v0.5.0) (2026-04-10)
 
 
