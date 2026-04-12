@@ -8,12 +8,12 @@ defmodule ClaudeWrapper.StreamEvent do
   ## Event types
 
   Common event types include:
-  - `"system"` — system initialization
-  - `"assistant"` — assistant message content
-  - `"tool_use"` — tool invocation
-  - `"tool_result"` — tool execution result
-  - `"result"` — final result with cost/session info
-  - `"error"` — error during execution
+  - `"system"` -- system initialization
+  - `"assistant"` -- assistant message content
+  - `"tool_use"` -- tool invocation
+  - `"tool_result"` -- tool execution result
+  - `"result"` -- final result with cost/session info
+  - `"error"` -- error during execution
   """
 
   @type t :: %__MODULE__{

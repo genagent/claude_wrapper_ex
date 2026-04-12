@@ -7,7 +7,7 @@ defmodule ClaudeWrapper do
 
   ## Quick start
 
-      # One-shot query (convenience — uses default config)
+      # One-shot query (convenience -- uses default config)
       {:ok, result} = ClaudeWrapper.query("Explain this error: ...")
 
       # With options
@@ -36,11 +36,11 @@ defmodule ClaudeWrapper do
 
   ## Commands
 
-    * `ClaudeWrapper.Query` — the main query/prompt interface
-    * `ClaudeWrapper.Commands.Auth` — login, logout, status, token
-    * `ClaudeWrapper.Commands.Mcp` — MCP server management
-    * `ClaudeWrapper.Commands.Doctor` — CLI health check
-    * `ClaudeWrapper.Commands.Version` — CLI version
+    * `ClaudeWrapper.Query` -- the main query/prompt interface
+    * `ClaudeWrapper.Commands.Auth` -- login, logout, status, token
+    * `ClaudeWrapper.Commands.Mcp` -- MCP server management
+    * `ClaudeWrapper.Commands.Doctor` -- CLI health check
+    * `ClaudeWrapper.Commands.Version` -- CLI version
 
   ## Binary discovery
 

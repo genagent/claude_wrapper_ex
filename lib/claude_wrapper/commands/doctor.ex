@@ -1,6 +1,6 @@
 defmodule ClaudeWrapper.Commands.Doctor do
   @moduledoc """
-  `claude doctor` command — checks CLI health.
+  `claude doctor` command -- checks CLI health.
   """
 
   alias ClaudeWrapper.Config

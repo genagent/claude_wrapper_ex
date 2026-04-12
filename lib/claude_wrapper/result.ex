@@ -2,7 +2,7 @@ defmodule ClaudeWrapper.Result do
   @moduledoc """
   Result from a completed query execution.
 
-  Maps to the Rust `QueryResult` — the parsed JSON output from
+  Maps to the Rust `QueryResult` -- the parsed JSON output from
   `--output-format json`.
   """
 

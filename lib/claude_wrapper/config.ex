@@ -2,7 +2,7 @@ defmodule ClaudeWrapper.Config do
   @moduledoc """
   Shared client configuration for the Claude CLI.
 
-  Equivalent to the Rust `Claude` struct — holds binary path, working directory,
+  Equivalent to the Rust `Claude` struct -- holds binary path, working directory,
   environment variables, and default options that apply across all commands.
 
   ## Usage
