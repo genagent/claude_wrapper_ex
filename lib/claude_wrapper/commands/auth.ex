@@ -1,6 +1,6 @@
 defmodule ClaudeWrapper.Commands.Auth do
   @moduledoc """
-  Authentication commands — login, logout, status, token setup.
+  Authentication commands -- login, logout, status, token setup.
   """
 
   alias ClaudeWrapper.Config
@@ -70,7 +70,7 @@ defmodule ClaudeWrapper.Commands.Auth do
   end
 
   @doc """
-  Login via browser. This is interactive — the CLI will open a browser.
+  Login via browser. This is interactive -- the CLI will open a browser.
   """
   @spec login(Config.t()) :: {:ok, String.t()} | {:error, term()}
   def login(%Config{} = config) do

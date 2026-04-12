@@ -1,6 +1,6 @@
 defmodule ClaudeWrapper.Query do
   @moduledoc """
-  Query command — the primary interface for executing prompts.
+  Query command -- the primary interface for executing prompts.
 
   Wraps `claude -p <prompt>` with the full set of CLI flags.
 
@@ -120,7 +120,7 @@ defmodule ClaudeWrapper.Query do
     %__MODULE__{prompt: prompt}
   end
 
-  # Builder functions — each returns the updated struct for piping.
+  # Builder functions -- each returns the updated struct for piping.
 
   @doc ~s[Set the model (e.g. "sonnet", "opus", "haiku").]
   @spec model(t(), String.t()) :: t()
@@ -335,7 +335,7 @@ defmodule ClaudeWrapper.Query do
             end
 
           {^port, {:data, {:noeol, _partial}}} ->
-            # Line exceeded buffer — skip for now
+            # Line exceeded buffer -- skip for now
             {[], port}
 
           {^port, {:exit_status, _code}} ->
