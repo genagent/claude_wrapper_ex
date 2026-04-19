@@ -22,7 +22,7 @@ defmodule ClaudeWrapper.Session do
       session = ClaudeWrapper.Session.resume(config, "session-id-abc")
   """
 
-  alias ClaudeWrapper.{Config, Query, Result}
+  alias ClaudeWrapper.{Config, Query, Result, Telemetry}
 
   @type t :: %__MODULE__{
           config: Config.t(),
@@ -75,21 +75,23 @@ defmodule ClaudeWrapper.Session do
   def send(%__MODULE__{} = session, prompt, opts \\ []) do
     query = build_query(session, prompt, opts)
 
-    case Query.execute(query, session.config) do
-      {:ok, result} ->
-        new_session_id = result.session_id || session.session_id
+    Telemetry.span_session_turn(session, query, fn ->
+      case Query.execute(query, session.config) do
+        {:ok, result} ->
+          new_session_id = result.session_id || session.session_id
 
-        updated = %{
-          session
-          | session_id: new_session_id,
-            history: session.history ++ [result]
-        }
+          updated = %{
+            session
+            | session_id: new_session_id,
+              history: session.history ++ [result]
+          }
 
-        {:ok, updated, result}
+          {:ok, updated, result}
 
-      {:error, _} = error ->
-        error
-    end
+        {:error, _} = error ->
+          error
+      end
+    end)
   end
 
   @doc """

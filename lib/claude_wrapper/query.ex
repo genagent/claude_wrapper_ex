@@ -23,7 +23,7 @@ defmodule ClaudeWrapper.Query do
       |> Stream.run()
   """
 
-  alias ClaudeWrapper.{Command, Config, Result, StreamEvent}
+  alias ClaudeWrapper.{Command, Config, Result, StreamEvent, Telemetry}
 
   @type permission_mode ::
           :default | :accept_edits | :bypass_permissions | :dont_ask | :plan | :auto
@@ -278,6 +278,11 @@ defmodule ClaudeWrapper.Query do
   @spec execute(t(), Config.t()) :: {:ok, Result.t()} | {:error, term()}
   def execute(%__MODULE__{} = query, %Config{} = config) do
     query = %{query | output_format: :json}
+
+    Telemetry.span_exec(query, fn -> do_execute(query, config) end)
+  end
+
+  defp do_execute(%__MODULE__{} = query, %Config{} = config) do
     # Strip --verbose from base args: it causes the CLI to emit non-JSON
     # output (NDJSON stream lines, stdin warnings) that breaks JSON parsing.
     # Verbose is only meaningful for stream-json output.
@@ -311,6 +316,11 @@ defmodule ClaudeWrapper.Query do
   @spec stream(t(), Config.t()) :: Enumerable.t()
   def stream(%__MODULE__{} = query, %Config{} = config) do
     query = %{query | output_format: :stream_json}
+
+    Telemetry.span_stream(query, fn -> do_stream(query, config) end)
+  end
+
+  defp do_stream(%__MODULE__{} = query, %Config{} = config) do
     # stream-json with --print requires --verbose
     base = Config.base_args(config)
     base = if "--verbose" in base, do: base, else: ["--verbose" | base]

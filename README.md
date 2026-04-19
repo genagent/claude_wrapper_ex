@@ -273,6 +273,52 @@ alias ClaudeWrapper.Commands.Marketplace
 {:ok, _} = Marketplace.update(config)
 ```
 
+## Telemetry
+
+ClaudeWrapper emits `:telemetry` events around its core exec paths
+so downstream applications can observe query/session/stream lifecycle
+with a single handler.
+
+Events (all use the `:telemetry.span/3` shape with `:start`, `:stop`,
+and `:exception` suffixes):
+
+| Event | Emitted by |
+|---|---|
+| `[:claude_wrapper, :exec, _]` | `ClaudeWrapper.Query.execute/2` (one-shot query) |
+| `[:claude_wrapper, :stream, _]` | `ClaudeWrapper.Query.stream/2` (NDJSON streaming) |
+| `[:claude_wrapper, :session, :turn, _]` | `ClaudeWrapper.Session.send/3` (single turn) |
+
+Start metadata:
+
+- `:command` -- atom (`:query`, `:stream`, `:session_turn`)
+- `:session_id` -- when known (resumed or provided)
+- `:model` -- from the query's `model` field
+- `:resume?` -- boolean, whether this call threads a previous session
+
+Stop metadata adds:
+
+- `:cost_usd` -- parsed from the final NDJSON result when available
+- `:exit_code` -- `0` on success, non-zero when the CLI exited with an error
+
+Subscribe with:
+
+```elixir
+:telemetry.attach_many(
+  "claude-wrapper-observer",
+  [
+    [:claude_wrapper, :exec, :stop],
+    [:claude_wrapper, :stream, :stop],
+    [:claude_wrapper, :session, :turn, :stop]
+  ],
+  fn event, measurements, metadata, _config ->
+    IO.inspect({event, measurements.duration, metadata})
+  end,
+  nil
+)
+```
+
+See `ClaudeWrapper.Telemetry` for the full event reference.
+
 ## Raw CLI escape hatch
 
 For subcommands not yet wrapped:
@@ -294,6 +340,7 @@ ClaudeWrapper.raw(["config", "list"])
 | `ClaudeWrapper.SessionServer` | GenServer wrapper for sessions |
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |
+| `ClaudeWrapper.Telemetry` | `:telemetry` spans for exec/stream/session |
 | `ClaudeWrapper.IEx` | Interactive REPL helpers |
 | `ClaudeWrapper.Workshop` | Multi-agent IEx coordination |
 | `ClaudeWrapper.Commands.Auth` | Auth management |

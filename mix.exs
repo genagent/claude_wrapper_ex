@@ -28,6 +28,7 @@ defmodule ClaudeWrapper.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"},
       {:anubis_mcp, "~> 1.0", optional: true},
       {:bandit, "~> 1.0", optional: true},
       {:plug, "~> 1.16", optional: true},
