@@ -1,22 +1,21 @@
-import ClaudeWrapper.Workshop
+import ClaudeWrapper.IEx
 
 IO.puts("""
-\e[36mWorkshop loaded.\e[0m
+\e[36mClaudeWrapper helpers loaded.\e[0m
 
-  \e[33m# set up shared config (do this first)\e[0m
-  configure(working_dir: ".", model: "sonnet", context: "...")
+  \e[33m# Conversational REPL helpers (per-call subprocess):\e[0m
+  chat("explain this codebase", working_dir: ".")
+  say("now add tests for the retry module")
+  cost()
+  history()
+  reset()
 
-  agent(:impl, "You write clean code.", max_turns: 15)
-  ask(:impl, "Implement caching for user lookup")
-  cast(:impl, "Work on this in the background")
-  status()                    \e[33m# dashboard\e[0m
-  pipe(:impl, :reviewer, "Review this")
-  info(:impl)                 \e[33m# agent details\e[0m
-  inspect_agent(:impl)        \e[33m# show CLI command\e[0m
-  mcp_server(port: 4222)      \e[33m# start MCP server\e[0m
-  load()                      \e[33m# load .workshop.exs\e[0m
+  \e[33m# Or use the long-lived duplex session for live streaming:\e[0m
+  alias ClaudeWrapper.DuplexIEx
+  DuplexIEx.start(working_dir: ".")
+  DuplexIEx.say("Explain the README briefly.")
+  DuplexIEx.close()
+
+  \e[33m# Multi-agent coordination has moved to agent_workshop:\e[0m
+  \e[2m# https://hex.pm/packages/agent_workshop\e[0m
 """)
-
-if File.exists?(".workshop.exs") do
-  ClaudeWrapper.Workshop.load()
-end
