@@ -1,7 +1,6 @@
 defmodule ClaudeWrapper.DuplexSession do
   @moduledoc """
-  **EXPERIMENTAL.** Long-lived `claude` session over the CLI's stream-json
-  duplex protocol.
+  Long-lived `claude` session over the CLI's stream-json duplex protocol.
 
   Holds a single `claude` subprocess open across many turns, communicating
   via NDJSON on stdin/stdout. Complementary to `ClaudeWrapper.Query` and
@@ -17,11 +16,6 @@ defmodule ClaudeWrapper.DuplexSession do
 
   See `https://github.com/genagent/claude_wrapper_ex/issues/55` for the
   full design discussion and phased rollout.
-
-  ## Current scope
-
-  Implemented so far: minimal happy path (PR 1), subscribers (PR 2),
-  and permission callbacks (PR 3). Interrupt (PR 4) is **not yet wired**.
 
   ## Usage
 
@@ -112,6 +106,7 @@ defmodule ClaudeWrapper.DuplexSession do
           session_id: String.t() | nil,
           buffer: binary(),
           pending_turn: {GenServer.from(), [map()]} | nil,
+          pending_control: %{String.t() => GenServer.from()},
           subscribers: %{pid() => reference()},
           on_permission: permission_handler()
         }
@@ -123,6 +118,7 @@ defmodule ClaudeWrapper.DuplexSession do
     :on_permission,
     buffer: <<>>,
     pending_turn: nil,
+    pending_control: %{},
     subscribers: %{}
   ]
 
@@ -208,10 +204,39 @@ defmodule ClaudeWrapper.DuplexSession do
   @doc """
   Stop the session. Closes the port, waits for the child to exit, and
   shuts down the GenServer.
+
+  See also `close/1` for a short-form alias.
   """
   @spec stop(GenServer.server(), term(), timeout()) :: :ok
   def stop(server, reason \\ :normal, timeout \\ 5_000) do
     GenServer.stop(server, reason, timeout)
+  end
+
+  @doc """
+  Graceful close: shorthand for `stop(server, :normal, 10_000)`.
+
+  Closes the port (which sends SIGTERM to the child), waits up to
+  10 seconds for it to exit, and shuts down the GenServer.
+  """
+  @spec close(GenServer.server()) :: :ok
+  def close(server), do: stop(server, :normal, 10_000)
+
+  @doc """
+  Send an `interrupt` control_request to the CLI. The CLI cancels any
+  in-flight turn and emits a `result` with a cancel-flavored stop
+  reason; that result still flows through the normal `send/3` reply.
+
+  This call returns once the CLI acknowledges the interrupt with a
+  matching `control_response`. The caller of `send/3` will receive
+  its own reply when the resulting `result` event arrives.
+
+  Calling `interrupt/1` outside of an active turn is harmless: the
+  CLI accepts the request, acks it, and emits a synthetic result the
+  GenServer drops.
+  """
+  @spec interrupt(GenServer.server(), timeout()) :: :ok | {:error, term()}
+  def interrupt(server, timeout \\ 10_000) do
+    GenServer.call(server, :interrupt, timeout)
   end
 
   # --- GenServer callbacks --------------------------------------------
@@ -279,6 +304,23 @@ defmodule ClaudeWrapper.DuplexSession do
   def handle_call({:respond_to_permission, request_id, decision}, _from, state) do
     write_permission_response(state.port, request_id, decision)
     {:reply, :ok, state}
+  end
+
+  def handle_call(:interrupt, _from, %{port: nil} = state) do
+    {:reply, {:error, :port_closed}, state}
+  end
+
+  def handle_call(:interrupt, from, state) do
+    request_id = generate_request_id()
+
+    msg = %{
+      type: "control_request",
+      request_id: request_id,
+      request: %{subtype: "interrupt"}
+    }
+
+    Port.command(state.port, [Jason.encode!(msg), ?\n])
+    {:noreply, %{state | pending_control: Map.put(state.pending_control, request_id, from)}}
   end
 
   @impl true
@@ -400,6 +442,30 @@ defmodule ClaudeWrapper.DuplexSession do
     state
   end
 
+  # Reply to an outbound control_request we sent (e.g. interrupt).
+  # The CLI may also emit control_responses with no matching pending
+  # request_id (e.g. delayed cancellations); those are dropped.
+  defp dispatch(
+         %{"type" => "control_response", "response" => %{"request_id" => id} = resp},
+         state
+       ) do
+    case Map.pop(state.pending_control, id) do
+      {nil, _} ->
+        state
+
+      {from, rest} ->
+        reply =
+          case resp do
+            %{"subtype" => "success"} -> :ok
+            %{"subtype" => "error", "error" => err} -> {:error, err}
+            other -> {:error, other}
+          end
+
+        GenServer.reply(from, reply)
+        %{state | pending_control: rest}
+    end
+  end
+
   # system/init carries the session_id we'll need for resume in later PRs.
   defp dispatch(%{"type" => "system", "subtype" => "init", "session_id" => sid}, state) do
     broadcast(state, {:system_init, sid})
@@ -464,11 +530,29 @@ defmodule ClaudeWrapper.DuplexSession do
     end
   end
 
-  defp fail_pending(%{pending_turn: nil} = state, _reason), do: state
+  defp fail_pending(state, reason) do
+    state
+    |> fail_pending_turn(reason)
+    |> fail_pending_control(reason)
+  end
 
-  defp fail_pending(%{pending_turn: {from, _}} = state, reason) do
+  defp fail_pending_turn(%{pending_turn: nil} = state, _reason), do: state
+
+  defp fail_pending_turn(%{pending_turn: {from, _}} = state, reason) do
     GenServer.reply(from, {:error, reason})
     %{state | pending_turn: nil}
+  end
+
+  defp fail_pending_control(%{pending_control: pending} = state, _reason)
+       when map_size(pending) == 0,
+       do: state
+
+  defp fail_pending_control(%{pending_control: pending} = state, reason) do
+    Enum.each(pending, fn {_id, from} ->
+      GenServer.reply(from, {:error, reason})
+    end)
+
+    %{state | pending_control: %{}}
   end
 
   defp port_env_opts(%Config{env: []}), do: []
@@ -506,4 +590,11 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defp decision_to_permission_response({:deny, reason}) when is_binary(reason),
     do: %{behavior: "deny", message: reason}
+
+  # 16 random bytes -> 32-char lowercase hex. Plenty of entropy to
+  # avoid collisions in our pending_control map and matches the SDK's
+  # use of UUID-shaped strings.
+  defp generate_request_id do
+    :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+  end
 end
