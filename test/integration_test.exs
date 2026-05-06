@@ -6,7 +6,7 @@ defmodule ClaudeWrapper.IntegrationTest do
   """
   use ExUnit.Case, async: false
 
-  alias ClaudeWrapper.{Config, Query, Session}
+  alias ClaudeWrapper.{Config, DuplexSession, Query, Session}
 
   @moduletag :integration
 
@@ -124,6 +124,68 @@ defmodule ClaudeWrapper.IntegrationTest do
       total = CIEx.cost()
       assert is_float(total)
       assert total > 0.0
+    end
+  end
+
+  describe "DuplexSession" do
+    test "round-trips a single turn", %{config: config} do
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          extra_args: [
+            "--permission-mode",
+            "plan",
+            "--max-turns",
+            "1",
+            "--no-session-persistence"
+          ]
+        )
+
+      try do
+        assert {:ok, %ClaudeWrapper.Result{} = result} =
+                 DuplexSession.send(pid, "Respond with exactly: hello world")
+
+        assert is_binary(result.result)
+        assert result.result != ""
+        assert DuplexSession.session_id(pid) != nil
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "rejects overlapping sends with :turn_in_flight", %{config: config} do
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          extra_args: [
+            "--permission-mode",
+            "plan",
+            "--max-turns",
+            "1",
+            "--no-session-persistence"
+          ]
+        )
+
+      try do
+        # Spawn the first send, then immediately try a second; the second
+        # should bounce off pending_turn before the first completes.
+        parent = self()
+
+        spawn_link(fn ->
+          result = DuplexSession.send(pid, "Respond with exactly: first turn done.")
+          Kernel.send(parent, {:first_done, result})
+        end)
+
+        # Give the first call a moment to register pending_turn.
+        Process.sleep(50)
+
+        assert {:error, :turn_in_flight} =
+                 DuplexSession.send(pid, "second", 1_000)
+
+        assert_receive {:first_done, {:ok, %ClaudeWrapper.Result{}}}, 120_000
+      after
+        DuplexSession.stop(pid)
+      end
     end
   end
 end
