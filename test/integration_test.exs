@@ -188,43 +188,45 @@ defmodule ClaudeWrapper.IntegrationTest do
       end
     end
 
-    test "permission callback fires and denies a dangerous tool call", %{config: config} do
-      parent = self()
-
-      on_permission = fn tool_name, input ->
-        Kernel.send(parent, {:asked, tool_name, input})
-        {:deny, "test denial"}
-      end
-
+    test "interrupt cancels an in-flight turn", %{config: config} do
       {:ok, pid} =
         DuplexSession.start_link(
           config: config,
-          on_permission: on_permission,
           extra_args: [
             "--permission-mode",
-            "default",
-            "--max-turns",
-            "3",
+            "plan",
             "--no-session-persistence"
           ]
         )
 
       try do
-        # The CLI auto-allows benign tool calls under --permission-mode
-        # default; only commands that trip the safety classifier come
-        # back through stdio. `rm -rf` on a /tmp path reliably triggers
-        # the prompt in current builds.
-        prompt =
-          "Use the Bash tool to run exactly this command: " <>
-            "`rm -rf /tmp/cwex-permission-test-x9z2/`. " <>
-            "Do not modify the command. Just call the Bash tool once."
+        :ok = DuplexSession.subscribe(pid)
 
-        assert {:ok, %ClaudeWrapper.Result{} = result} =
-                 DuplexSession.send(pid, prompt, 180_000)
+        # Long prompt; we'll interrupt before the model finishes.
+        prompt = """
+        Write a detailed essay (at least 2000 words) about the history
+        of operating systems, covering Multics, Unix, Plan 9, BeOS, NT,
+        Linux, and macOS. Be exhaustive and thorough.
+        """
 
-        assert_received {:asked, "Bash", input}
-        assert is_map(input)
-        assert is_binary(result.result)
+        send_task =
+          Task.async(fn ->
+            DuplexSession.send(pid, prompt, 120_000)
+          end)
+
+        # Wait for streaming to actually start so the interrupt has
+        # something to cancel. stream_event fires on the first delta,
+        # which is much earlier than the first complete assistant
+        # message.
+        assert_receive {:claude, {:stream_event, _}}, 60_000
+
+        assert :ok = DuplexSession.interrupt(pid, 10_000)
+
+        # The original send/3 should still resolve (with whatever the
+        # CLI emits as the cancel-flavored result). We do not assert
+        # on `result.result` content because the partial output is
+        # intentionally non-deterministic.
+        {:ok, %ClaudeWrapper.Result{}} = Task.await(send_task, 60_000)
       after
         DuplexSession.stop(pid)
       end

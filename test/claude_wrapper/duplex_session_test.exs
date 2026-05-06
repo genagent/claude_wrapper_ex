@@ -349,6 +349,173 @@ defmodule ClaudeWrapper.DuplexSessionTest do
     end
   end
 
+  describe "interrupt (with fake claude)" do
+    # Capture the interrupt control_request as the session writes it,
+    # extract the request_id, then synthesize a control_response with
+    # that id. cat echoes our outbound control_request back to us as
+    # if it were inbound -- the dispatch matches on type/request_id,
+    # not direction, so the round-trip works.
+    test "outbound control_request elicits a reply when the matching response arrives" do
+      pid = start_with_fake_claude()
+      parent = self()
+
+      # Fork the interrupt call so we can drive the response from this
+      # test process while the GenServer waits.
+      caller =
+        spawn_link(fn ->
+          result = DuplexSession.interrupt(pid, 5_000)
+          Kernel.send(parent, {:interrupt_returned, result})
+        end)
+
+      try do
+        # Poll the GenServer state until we see the pending_control entry.
+        request_id =
+          poll_for(fn ->
+            case :sys.get_state(pid).pending_control do
+              %{} = m when map_size(m) == 1 -> {:ok, m |> Map.keys() |> hd()}
+              _ -> :not_yet
+            end
+          end)
+
+        # Now inject a synthetic control_response with that id.
+        inject(pid, %{
+          type: "control_response",
+          response: %{
+            subtype: "success",
+            request_id: request_id
+          }
+        })
+
+        assert_receive {:interrupt_returned, :ok}, 5_000
+      after
+        if Process.alive?(caller), do: Process.exit(caller, :kill)
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "control_response with subtype error is propagated" do
+      pid = start_with_fake_claude()
+      parent = self()
+
+      caller =
+        spawn_link(fn ->
+          result = DuplexSession.interrupt(pid, 5_000)
+          Kernel.send(parent, {:interrupt_returned, result})
+        end)
+
+      try do
+        request_id =
+          poll_for(fn ->
+            case :sys.get_state(pid).pending_control do
+              %{} = m when map_size(m) == 1 -> {:ok, m |> Map.keys() |> hd()}
+              _ -> :not_yet
+            end
+          end)
+
+        inject(pid, %{
+          type: "control_response",
+          response: %{
+            subtype: "error",
+            request_id: request_id,
+            error: "boom"
+          }
+        })
+
+        assert_receive {:interrupt_returned, {:error, "boom"}}, 5_000
+      after
+        if Process.alive?(caller), do: Process.exit(caller, :kill)
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "interrupt request_ids are unique" do
+      # Smoke check that consecutive interrupts get distinct ids.
+      # 16 random bytes makes collisions astronomically unlikely; this
+      # is just sanity-checking the helper.
+      ids = for _ <- 1..50, do: uniq_request_id_via_interrupt()
+      assert length(Enum.uniq(ids)) == length(ids)
+    end
+
+    test "control_response with no matching pending request is dropped" do
+      pid = start_with_fake_claude()
+
+      try do
+        # No outbound interrupt issued. Inject a stray response.
+        inject(pid, %{
+          type: "control_response",
+          response: %{subtype: "success", request_id: "stranger-id"}
+        })
+
+        # GenServer should still be alive and responsive.
+        assert Process.alive?(pid)
+        assert :sys.get_state(pid).pending_control == %{}
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+  end
+
+  describe "close/1" do
+    test "is equivalent to stop/3 normal" do
+      pid = start_with_fake_claude()
+      ref = Process.monitor(pid)
+
+      assert :ok = DuplexSession.close(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+      refute Process.alive?(pid)
+    end
+  end
+
+  defp poll_for(fun, deadline_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_poll_for(fun, deadline)
+  end
+
+  defp do_poll_for(fun, deadline) do
+    case fun.() do
+      {:ok, value} ->
+        value
+
+      _ ->
+        if System.monotonic_time(:millisecond) > deadline do
+          flunk("poll_for: condition not met before deadline")
+        else
+          Process.sleep(10)
+          do_poll_for(fun, deadline)
+        end
+    end
+  end
+
+  # Fire an interrupt and return its request_id, without waiting for
+  # any response. Used by the uniqueness smoke test.
+  defp uniq_request_id_via_interrupt do
+    pid = start_with_fake_claude_quiet()
+
+    spawn(fn ->
+      _ = DuplexSession.interrupt(pid, 1_000)
+    end)
+
+    request_id =
+      poll_for(fn ->
+        case :sys.get_state(pid).pending_control do
+          %{} = m when map_size(m) == 1 -> {:ok, m |> Map.keys() |> hd()}
+          _ -> :not_yet
+        end
+      end)
+
+    GenServer.stop(pid, :normal, 1_000)
+    request_id
+  end
+
+  defp start_with_fake_claude_quiet do
+    # Trap so the test process stays alive even if the spawned interrupt
+    # caller crashes when we kill the session.
+    Process.flag(:trap_exit, true)
+    config = Config.new(binary: System.find_executable("cat"))
+    {:ok, pid} = DuplexSession.start_link(config: config, args_override: [])
+    pid
+  end
+
   defp wait_until(fun, deadline_ms \\ 1_000) do
     deadline = System.monotonic_time(:millisecond) + deadline_ms
     do_wait_until(fun, deadline)
