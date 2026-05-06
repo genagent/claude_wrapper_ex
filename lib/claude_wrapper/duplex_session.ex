@@ -43,8 +43,21 @@ defmodule ClaudeWrapper.DuplexSession do
   ## Permission callback
 
   The optional `:on_permission` callback runs synchronously inside the
-  GenServer when the CLI emits a `can_use_tool` control request. It must
-  return one of:
+  GenServer when the CLI emits a `can_use_tool` control request. Two
+  arities are supported and detected at call time:
+
+    * `(tool_name, input) -> decision` -- when the decision can be made
+      from the tool name and input alone (allow/deny lists, role-based
+      policy, etc.).
+
+    * `(tool_name, input, request_id) -> decision` -- when the handler
+      may return `:defer` and a separate process needs to call
+      `respond_to_permission/3` later. The `request_id` lets the
+      handler correlate the deferred response with the original
+      request (e.g. broadcast `{:permission_request, request_id, ...}`
+      to a UI; the UI eventually answers via `respond_to_permission/3`).
+
+  The decision is one of:
 
     * `:allow` -- allow the tool with the original input
     * `{:allow, updated_input}` -- allow the tool with a modified input
@@ -52,12 +65,10 @@ defmodule ClaudeWrapper.DuplexSession do
     * `{:deny, reason}` -- deny the tool with a reason string the model
       will see
     * `:defer` -- do not respond synchronously; the caller is expected
-      to invoke `respond_to_permission/3` later. Use this when a human
-      decision is required and the GenServer must not block
+      to invoke `respond_to_permission/3` later
 
   The callback runs in the GenServer process, so synchronous decisions
-  must be fast. For slow decisions, return `:defer` and answer later
-  via `respond_to_permission/3`.
+  must be fast. For slow decisions, return `:defer` and answer later.
 
   The default callback is `&deny_all/2`, which denies every tool call.
   Without an explicit callback or one of the CLI's other permission
@@ -91,7 +102,26 @@ defmodule ClaudeWrapper.DuplexSession do
           | {:deny, String.t()}
           | :defer
 
-  @type permission_handler :: (String.t(), tool_input() -> permission_decision())
+  @typedoc """
+  Permission decision callback. Two arities are supported:
+
+    * `(tool_name, input) -> decision` -- the original signature.
+      Use when the decision can be made from the tool name and input
+      alone (allow/deny lists, role-based policy, etc.).
+
+    * `(tool_name, input, request_id) -> decision` -- carries the
+      `request_id` of the inbound `can_use_tool` control request.
+      Required if the handler returns `:defer` and a different
+      process needs to call `respond_to_permission/3` later (chat
+      UI: handler broadcasts the request to a LiveView, which
+      surfaces approve/deny and answers asynchronously).
+
+  Arity is detected at call time so existing 2-arity callbacks keep
+  working unchanged.
+  """
+  @type permission_handler ::
+          (String.t(), tool_input() -> permission_decision())
+          | (String.t(), tool_input(), String.t() -> permission_decision())
 
   @type option ::
           {:config, Config.t()}
@@ -424,11 +454,11 @@ defmodule ClaudeWrapper.DuplexSession do
 
     decision =
       try do
-        state.on_permission.(tool_name, input)
+        invoke_permission_handler(state.on_permission, tool_name, input, id)
       rescue
         e ->
           Logger.error(
-            "DuplexSession: on_permission/2 raised for #{inspect(tool_name)}: #{inspect(e)}"
+            "DuplexSession: on_permission raised for #{inspect(tool_name)}: #{inspect(e)}"
           )
 
           {:deny, "permission handler raised: #{Exception.message(e)}"}
@@ -504,6 +534,16 @@ defmodule ClaudeWrapper.DuplexSession do
   # accumulate inside an active turn so callers that later inspect the
   # turn record can see them, but do not broadcast as a typed event.
   defp dispatch(msg, state), do: accumulate(state, msg)
+
+  # Detect the user's callback arity once and apply with the right
+  # number of arguments. 3-arity gets the request_id so a deferred
+  # handler can correlate respond_to_permission/3 calls later.
+  defp invoke_permission_handler(handler, tool_name, input, request_id) do
+    case :erlang.fun_info(handler, :arity) do
+      {:arity, 3} -> handler.(tool_name, input, request_id)
+      {:arity, 2} -> handler.(tool_name, input)
+    end
+  end
 
   defp accumulate(%{pending_turn: {from, events}} = state, msg) do
     %{state | pending_turn: {from, [msg | events]}}
