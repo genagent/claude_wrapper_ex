@@ -2,10 +2,42 @@ defmodule ClaudeWrapper do
   @moduledoc """
   Elixir wrapper for the Claude Code CLI.
 
-  Provides a typed interface for executing queries against the `claude` CLI,
-  with support for one-shot execution and streaming NDJSON output.
+  Two ways to drive `claude` from Elixir:
 
-  ## Quick start
+  1. `ClaudeWrapper.DuplexSession` -- a `GenServer` that holds **one**
+     `claude` subprocess open for the lifetime of a conversation.
+     Streams partial tokens as they arrive, supports clean mid-turn
+     cancellation, and routes tool-permission prompts back to the
+     host. The right fit for chat UIs, agent runtimes, Phoenix
+     servers, and any long-running OTP host.
+  2. The convenience `ClaudeWrapper.query/2` and `ClaudeWrapper.stream/2`
+     functions in this module -- one subprocess per turn, simple
+     request/response. The right fit for `mix` tasks, escripts, batch
+     jobs, and anything else that runs and exits.
+
+  Both modes are first-class. Pick whichever matches the lifecycle
+  of the host using `claude_wrapper`.
+
+  ## Long-lived chat-style sessions (DuplexSession)
+
+      config = ClaudeWrapper.Config.new(working_dir: ".")
+      {:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config)
+
+      ClaudeWrapper.DuplexSession.subscribe(pid)
+      {:ok, result} = ClaudeWrapper.DuplexSession.send(pid, "Explain this codebase.")
+
+      # Subscriber inbox now holds streaming events:
+      #   {:claude, {:assistant, msg}}
+      #   {:claude, {:stream_event, msg}}    -- partial token deltas
+      #   {:claude, {:result, %ClaudeWrapper.Result{}}}
+
+      ClaudeWrapper.DuplexSession.close(pid)
+
+  See `ClaudeWrapper.DuplexSession` for the permission callback,
+  interrupt API, and full event vocabulary. `ClaudeWrapper.DuplexIEx`
+  wraps it with REPL helpers that stream tokens to stdout live.
+
+  ## One-shot queries
 
       # One-shot query (convenience -- uses default config)
       {:ok, result} = ClaudeWrapper.query("Explain this error: ...")
@@ -34,17 +66,27 @@ defmodule ClaudeWrapper do
       |> ClaudeWrapper.Query.max_turns(10)
       |> ClaudeWrapper.Query.execute(config)
 
-  ## Commands
+  ## Multi-turn continuity for one-shot mode (Session)
 
-    * `ClaudeWrapper.Query` -- the main query/prompt interface
-    * `ClaudeWrapper.Commands.Auth` -- login, logout, status, token
-    * `ClaudeWrapper.Commands.Mcp` -- MCP server management
-    * `ClaudeWrapper.Commands.Doctor` -- CLI health check
-    * `ClaudeWrapper.Commands.Version` -- CLI version
+  `ClaudeWrapper.Session` threads `--resume <session_id>` across
+  one-shot calls so you can have a multi-turn conversation without
+  holding a subprocess open. Use it when you want a struct-passing
+  API rather than a process API, or when turns are far enough apart
+  that cold-start cost doesn't matter.
+
+  ## Other modules
+
+    * `ClaudeWrapper.Query` -- the query builder
+    * `ClaudeWrapper.SessionServer` -- supervised wrapper for `Session`
+    * `ClaudeWrapper.McpConfig` -- programmatic `.mcp.json` builder
+    * `ClaudeWrapper.Retry` -- exponential backoff
+    * `ClaudeWrapper.Telemetry` -- `:telemetry` spans for exec/stream/session
+    * `ClaudeWrapper.Commands.{Auth, Mcp, Plugin, Marketplace, Doctor, Version}` -- CLI subcommand wrappers
 
   ## Binary discovery
 
   The `claude` binary is found via (in order):
+
   1. `:binary` option passed directly
   2. `CLAUDE_CLI` environment variable
   3. System PATH lookup
