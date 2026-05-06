@@ -106,6 +106,31 @@ defmodule ClaudeWrapper.DuplexIExTest do
     end
   end
 
+  describe "format_cost/1 (regression: #64)" do
+    test "integer 0 does not raise (the original bug)" do
+      # The CLI sometimes reports cost as an integer 0 -- e.g. cache-only
+      # turns, or turns interrupted before billing. Float.round/2 is
+      # strictly typed and raises FunctionClauseError on an integer.
+      assert DuplexIEx.format_cost(0) == "$0.0"
+    end
+
+    test "non-zero integer cost is coerced and formatted" do
+      assert DuplexIEx.format_cost(2) == "$2.0"
+    end
+
+    test "float cost is rounded to 4 decimals" do
+      assert DuplexIEx.format_cost(0.123456789) == "$0.1235"
+    end
+
+    test "nil cost is rendered as ?" do
+      assert DuplexIEx.format_cost(nil) == "?"
+    end
+
+    test "small float survives round-trip" do
+      assert DuplexIEx.format_cost(0.0123) == "$0.0123"
+    end
+  end
+
   describe "handle_event/1 (stream printing)" do
     test "prints text deltas to stdout" do
       output =

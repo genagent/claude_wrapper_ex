@@ -295,13 +295,21 @@ defmodule ClaudeWrapper.DuplexIEx do
   # --- Private --------------------------------------------------------
 
   defp print_meta(%Result{} = result) do
-    cost_str =
-      if result.cost_usd, do: "$#{Float.round(result.cost_usd, 4)}", else: "?"
-
+    cost_str = format_cost(result.cost_usd)
     turns_str = "#{result.num_turns || 1} turn#{plural(result.num_turns || 1)}"
 
     IO.puts("\e[33m(#{cost_str}, #{turns_str})\e[0m")
   end
+
+  # Cost arrives from the CLI as either a float (typical) or an integer
+  # zero (when a turn finishes without billing -- e.g. cache-only or
+  # interrupted very early). Float.round/2 raises FunctionClauseError on
+  # an integer; coerce by adding 0.0 so both shapes format the same way.
+  # Reported in #64.
+  @doc false
+  @spec format_cost(number() | nil) :: String.t()
+  def format_cost(nil), do: "?"
+  def format_cost(cost) when is_number(cost), do: "$#{Float.round(cost + 0.0, 4)}"
 
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
 

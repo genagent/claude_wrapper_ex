@@ -89,7 +89,7 @@ defmodule ClaudeWrapper.IEx do
       session ->
         total = Session.total_cost(session)
         turns = Session.turn_count(session)
-        IO.puts("\e[33m$#{Float.round(total, 4)} across #{turns} turn#{plural(turns)}\e[0m")
+        IO.puts("\e[33m#{format_cost(total)} across #{turns} turn#{plural(turns)}\e[0m")
         total
     end
   end
@@ -174,7 +174,7 @@ defmodule ClaudeWrapper.IEx do
   end
 
   defp print_turn({result, i}) do
-    cost_str = if result.cost_usd, do: " ($#{Float.round(result.cost_usd, 4)})", else: ""
+    cost_str = if result.cost_usd, do: " (#{format_cost(result.cost_usd)})", else: ""
     error_str = if result.is_error, do: " \e[31m[error]\e[0m", else: ""
 
     IO.puts("\e[36m--- Turn #{i}#{cost_str}#{error_str} ---\e[0m")
@@ -202,19 +202,29 @@ defmodule ClaudeWrapper.IEx do
     IO.puts(result.result)
     IO.puts("")
 
-    cost_str = if result.cost_usd, do: "$#{Float.round(result.cost_usd, 4)}", else: "?"
+    cost_str = format_cost(result.cost_usd)
     total = Session.total_cost(session)
     turns = Session.turn_count(session)
 
     meta =
       if turns > 1 do
-        "\e[33m(#{cost_str} this turn, $#{Float.round(total, 4)} total, #{turns} turns)\e[0m"
+        "\e[33m(#{cost_str} this turn, #{format_cost(total)} total, #{turns} turns)\e[0m"
       else
         "\e[33m(#{cost_str}, #{turns} turn)\e[0m"
       end
 
     IO.puts(meta)
   end
+
+  # Cost arrives from the CLI as either a float (typical) or an integer
+  # zero (when a turn finishes without billing -- e.g. cache-only or
+  # interrupted very early). Float.round/2 raises FunctionClauseError on
+  # an integer; coerce by adding 0.0 so both shapes format the same way.
+  # Reported in #64.
+  @doc false
+  @spec format_cost(number() | nil) :: String.t()
+  def format_cost(nil), do: "?"
+  def format_cost(cost) when is_number(cost), do: "$#{Float.round(cost + 0.0, 4)}"
 
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
 
