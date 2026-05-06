@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.6.0...v0.6.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* handle integer cost_usd in IEx printers (Float.round coercion) ([#65](https://github.com/genagent/claude_wrapper_ex/issues/65)) ([10a8019](https://github.com/genagent/claude_wrapper_ex/commit/10a8019ae088339cecf7ecff0c761dd18b1a909e))
+
 ## [0.6.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.5.1...v0.6.0) (2026-05-06)
 
 
