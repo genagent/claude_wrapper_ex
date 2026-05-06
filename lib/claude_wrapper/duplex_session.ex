@@ -472,16 +472,6 @@ defmodule ClaudeWrapper.DuplexSession do
     state
   end
 
-  # Detect the user's callback arity once and apply with the right
-  # number of arguments. 3-arity gets the request_id so a deferred
-  # handler can correlate respond_to_permission/3 calls later.
-  defp invoke_permission_handler(handler, tool_name, input, request_id) do
-    case :erlang.fun_info(handler, :arity) do
-      {:arity, 3} -> handler.(tool_name, input, request_id)
-      {:arity, 2} -> handler.(tool_name, input)
-    end
-  end
-
   # Reply to an outbound control_request we sent (e.g. interrupt).
   # The CLI may also emit control_responses with no matching pending
   # request_id (e.g. delayed cancellations); those are dropped.
@@ -544,6 +534,16 @@ defmodule ClaudeWrapper.DuplexSession do
   # accumulate inside an active turn so callers that later inspect the
   # turn record can see them, but do not broadcast as a typed event.
   defp dispatch(msg, state), do: accumulate(state, msg)
+
+  # Detect the user's callback arity once and apply with the right
+  # number of arguments. 3-arity gets the request_id so a deferred
+  # handler can correlate respond_to_permission/3 calls later.
+  defp invoke_permission_handler(handler, tool_name, input, request_id) do
+    case :erlang.fun_info(handler, :arity) do
+      {:arity, 3} -> handler.(tool_name, input, request_id)
+      {:arity, 2} -> handler.(tool_name, input)
+    end
+  end
 
   defp accumulate(%{pending_turn: {from, events}} = state, msg) do
     %{state | pending_turn: {from, [msg | events]}}
