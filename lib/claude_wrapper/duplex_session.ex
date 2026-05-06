@@ -18,24 +18,43 @@ defmodule ClaudeWrapper.DuplexSession do
   See `https://github.com/genagent/claude_wrapper_ex/issues/55` for the
   full design discussion and phased rollout.
 
-  ## PR 1 scope
+  ## Current scope
 
-  This module currently implements the minimal happy path: `start_link/1`,
-  `send/3`, port spawn, line buffering, and `result -> reply`. Subscribers,
-  permission callbacks, and interrupt are **not yet wired** -- they land in
-  follow-up PRs.
+  Implemented so far: minimal happy path (PR 1) and subscribers (PR 2).
+  Permission callbacks (PR 3) and interrupt (PR 4) are **not yet wired**.
 
   ## Usage
 
       config = ClaudeWrapper.Config.new()
 
       {:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config)
+
+      # Subscribe the calling process to streaming events.
+      :ok = ClaudeWrapper.DuplexSession.subscribe(pid)
+
       {:ok, result} = ClaudeWrapper.DuplexSession.send(pid, "Say hi.")
 
-      ClaudeWrapper.DuplexSession.session_id(pid)
-      #=> "abc123-..."
+      # Drain subscriber mailbox for streaming events.
+      flush()
+      #=> {:claude, {:system_init, "abc123-..."}}
+      #=> {:claude, {:assistant, %{...}}}
+      #=> {:claude, {:result, %ClaudeWrapper.Result{}}}
 
       ClaudeWrapper.DuplexSession.stop(pid)
+
+  ## Subscriber events
+
+  Subscribers receive plain messages of the form `{:claude, event}`:
+
+    * `{:system_init, session_id}` -- the CLI's init event
+    * `{:assistant, msg}` -- a full assistant turn (`SDKAssistantMessage`)
+    * `{:stream_event, msg}` -- a partial assistant token
+      (`SDKPartialAssistantMessage`)
+    * `{:user, msg}` -- a user message (e.g. tool results, replays)
+    * `{:result, %ClaudeWrapper.Result{}}` -- the parsed turn boundary
+
+  Subscribers are monitored; if a subscriber crashes or exits, it is
+  automatically removed.
   """
 
   use GenServer
@@ -54,7 +73,8 @@ defmodule ClaudeWrapper.DuplexSession do
           config: Config.t(),
           session_id: String.t() | nil,
           buffer: binary(),
-          pending_turn: {GenServer.from(), [map()]} | nil
+          pending_turn: {GenServer.from(), [map()]} | nil,
+          subscribers: %{pid() => reference()}
         }
 
   defstruct [
@@ -62,7 +82,8 @@ defmodule ClaudeWrapper.DuplexSession do
     :config,
     :session_id,
     buffer: <<>>,
-    pending_turn: nil
+    pending_turn: nil,
+    subscribers: %{}
   ]
 
   # --- Public API ------------------------------------------------------
@@ -108,6 +129,24 @@ defmodule ClaudeWrapper.DuplexSession do
   def session_id(server), do: GenServer.call(server, :session_id)
 
   @doc """
+  Subscribe the calling process to streaming events.
+
+  Subscribers receive plain `{:claude, event}` messages -- see the
+  module doc for the event vocabulary. The subscriber is monitored;
+  if it exits, it is automatically removed.
+
+  Subscribing the same process twice is a no-op.
+  """
+  @spec subscribe(GenServer.server()) :: :ok
+  def subscribe(server), do: GenServer.call(server, {:subscribe, self()})
+
+  @doc """
+  Stop sending events to the calling process. Idempotent.
+  """
+  @spec unsubscribe(GenServer.server()) :: :ok
+  def unsubscribe(server), do: GenServer.call(server, {:unsubscribe, self()})
+
+  @doc """
   Stop the session. Closes the port, waits for the child to exit, and
   shuts down the GenServer.
   """
@@ -124,7 +163,10 @@ defmodule ClaudeWrapper.DuplexSession do
     config = Keyword.fetch!(opts, :config)
     extra_args = Keyword.get(opts, :extra_args, [])
 
-    args = build_args(extra_args)
+    # Tests substitute a fake binary (e.g. `cat`) that does not understand
+    # the duplex flag set; they pass `:args_override` to bypass defaults.
+    # Not part of the public surface.
+    args = Keyword.get(opts, :args_override, build_args(extra_args))
 
     port_opts =
       [:binary, :exit_status, :use_stdio, {:args, args}] ++
@@ -158,6 +200,22 @@ defmodule ClaudeWrapper.DuplexSession do
 
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
 
+  def handle_call({:subscribe, pid}, _from, state) do
+    state =
+      if Map.has_key?(state.subscribers, pid) do
+        state
+      else
+        ref = Process.monitor(pid)
+        %{state | subscribers: Map.put(state.subscribers, pid, ref)}
+      end
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:unsubscribe, pid}, _from, state) do
+    {:reply, :ok, drop_subscriber(state, pid)}
+  end
+
   @impl true
   def handle_info({port, {:data, chunk}}, %{port: port} = state) do
     {complete, rest} = split_lines(state.buffer <> chunk)
@@ -173,6 +231,13 @@ defmodule ClaudeWrapper.DuplexSession do
   def handle_info({:EXIT, port, reason}, %{port: port} = state) do
     state = fail_pending(state, {:port_exit, reason})
     {:stop, :normal, %{state | port: nil}}
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+    case Map.get(state.subscribers, pid) do
+      ^ref -> {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+      _ -> {:noreply, state}
+    end
   end
 
   def handle_info(_other, state), do: {:noreply, state}
@@ -227,24 +292,67 @@ defmodule ClaudeWrapper.DuplexSession do
 
   # system/init carries the session_id we'll need for resume in later PRs.
   defp dispatch(%{"type" => "system", "subtype" => "init", "session_id" => sid}, state) do
+    broadcast(state, {:system_init, sid})
     %{state | session_id: sid}
   end
 
   # Turn boundary: reply to the waiting caller with a parsed Result.
   defp dispatch(%{"type" => "result"} = msg, %{pending_turn: {from, _events}} = state) do
-    GenServer.reply(from, {:ok, Result.from_json(msg)})
+    result = Result.from_json(msg)
+    broadcast(state, {:result, result})
+    GenServer.reply(from, {:ok, result})
     %{state | pending_turn: nil}
   end
 
-  defp dispatch(%{"type" => "result"}, state), do: state
+  defp dispatch(%{"type" => "result"} = msg, state) do
+    broadcast(state, {:result, Result.from_json(msg)})
+    state
+  end
 
-  # Within an active turn, accumulate every other event for later use
-  # (subscribers in PR 2 will read these). Outside a turn, drop.
-  defp dispatch(msg, %{pending_turn: {from, events}} = state) do
+  defp dispatch(%{"type" => "assistant"} = msg, state) do
+    broadcast(state, {:assistant, msg})
+    accumulate(state, msg)
+  end
+
+  defp dispatch(%{"type" => "stream_event"} = msg, state) do
+    broadcast(state, {:stream_event, msg})
+    accumulate(state, msg)
+  end
+
+  defp dispatch(%{"type" => "user"} = msg, state) do
+    broadcast(state, {:user, msg})
+    accumulate(state, msg)
+  end
+
+  # Other system subtypes (e.g. compact_boundary), unknown types: still
+  # accumulate inside an active turn so callers that later inspect the
+  # turn record can see them, but do not broadcast as a typed event.
+  defp dispatch(msg, state), do: accumulate(state, msg)
+
+  defp accumulate(%{pending_turn: {from, events}} = state, msg) do
     %{state | pending_turn: {from, [msg | events]}}
   end
 
-  defp dispatch(_msg, state), do: state
+  defp accumulate(state, _msg), do: state
+
+  defp broadcast(%{subscribers: subs}, _event) when map_size(subs) == 0, do: :ok
+
+  defp broadcast(%{subscribers: subs}, event) do
+    Enum.each(subs, fn {pid, _ref} ->
+      Process.send(pid, {:claude, event}, [])
+    end)
+  end
+
+  defp drop_subscriber(state, pid) do
+    case Map.pop(state.subscribers, pid) do
+      {nil, _} ->
+        state
+
+      {ref, rest} ->
+        Process.demonitor(ref, [:flush])
+        %{state | subscribers: rest}
+    end
+  end
 
   defp fail_pending(%{pending_turn: nil} = state, _reason), do: state
 

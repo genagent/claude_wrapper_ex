@@ -153,6 +153,41 @@ defmodule ClaudeWrapper.IntegrationTest do
       end
     end
 
+    test "subscriber sees system_init, assistant, and result in order", %{config: config} do
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          extra_args: [
+            "--permission-mode",
+            "plan",
+            "--max-turns",
+            "1",
+            "--no-session-persistence"
+          ]
+        )
+
+      try do
+        :ok = DuplexSession.subscribe(pid)
+
+        send_task =
+          Task.async(fn ->
+            DuplexSession.send(pid, "Respond with exactly: hello world")
+          end)
+
+        # The CLI emits system/init first, then at least one assistant turn,
+        # then a result. We assert the boundary events arrive in that order.
+        assert_receive {:claude, {:system_init, sid}}, 60_000
+        assert is_binary(sid)
+
+        assert_receive {:claude, {:assistant, %{"type" => "assistant"}}}, 120_000
+        assert_receive {:claude, {:result, %ClaudeWrapper.Result{}}}, 120_000
+
+        assert {:ok, %ClaudeWrapper.Result{}} = Task.await(send_task, 120_000)
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
     test "rejects overlapping sends with :turn_in_flight", %{config: config} do
       {:ok, pid} =
         DuplexSession.start_link(
