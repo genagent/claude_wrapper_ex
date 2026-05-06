@@ -1,0 +1,225 @@
+defmodule ClaudeWrapper.DuplexIExTest do
+  # async: false because the helpers stash state in the process
+  # dictionary; running concurrently with other tests in the same
+  # process is fine, but we don't want to share that state across
+  # parallel cases.
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
+
+  alias ClaudeWrapper.{Config, DuplexIEx, DuplexSession}
+
+  setup do
+    on_exit(fn -> safely_stop() end)
+    :ok
+  end
+
+  defp safely_stop do
+    DuplexIEx.stop()
+  catch
+    _, _ -> :ok
+  end
+
+  defp start_with_fake_claude(opts \\ []) do
+    config_opts = [binary: System.find_executable("cat")]
+    # args_override bypasses build_args entirely so cat doesn't see
+    # any real --flags. We can't go through DuplexIEx.start/1 with a
+    # broken binary because it would crash; bypass with start_link.
+    duplex_opts =
+      [args_override: []]
+      |> Keyword.merge(opts)
+
+    config = Config.new(config_opts)
+
+    {:ok, pid} = DuplexSession.start_link([config: config] ++ duplex_opts)
+    pid
+  end
+
+  # The tricky bit for these tests: DuplexIEx.start/1 spawns the real
+  # claude binary by default. To exercise the pure-function helpers
+  # without hitting the network, we install a fake session manually
+  # via the stash hook below.
+  defp install_fake_session do
+    pid = start_with_fake_claude()
+    Process.put(:claude_wrapper_duplex_iex_session, pid)
+    pid
+  end
+
+  describe "say/2" do
+    test "prints error when no session is active" do
+      output = capture_io(fn -> assert {:error, :no_session} = DuplexIEx.say("hi") end)
+      assert output =~ "No active session"
+    end
+  end
+
+  describe "interrupt/1" do
+    test "returns :no_session when no session is active" do
+      capture_io(fn -> assert {:error, :no_session} = DuplexIEx.interrupt() end)
+    end
+  end
+
+  describe "stop/0" do
+    test "is a no-op when no session is running" do
+      output = capture_io(fn -> assert :ok = DuplexIEx.stop() end)
+      assert output =~ "Session stopped"
+    end
+
+    test "shuts down a running session and clears state" do
+      pid = install_fake_session()
+      assert Process.alive?(pid)
+
+      capture_io(fn -> assert :ok = DuplexIEx.stop() end)
+
+      refute Process.get(:claude_wrapper_duplex_iex_session)
+      refute Process.alive?(pid)
+    end
+  end
+
+  describe "session_id/0 and pid/0" do
+    test "return nil when no session" do
+      assert is_nil(DuplexIEx.session_id())
+      assert is_nil(DuplexIEx.pid())
+    end
+
+    test "session_id returns whatever the session reports" do
+      _pid = install_fake_session()
+      # Fake claude has no system/init, so session_id is nil.
+      assert is_nil(DuplexIEx.session_id())
+    end
+
+    test "pid/0 returns the underlying DuplexSession pid" do
+      pid = install_fake_session()
+      assert DuplexIEx.pid() == pid
+    end
+  end
+
+  describe "status/0" do
+    test "prints :no_session when no session" do
+      output = capture_io(fn -> assert :no_session = DuplexIEx.status() end)
+      assert output =~ "No active session"
+    end
+
+    test "prints session id and pid when active" do
+      _pid = install_fake_session()
+      output = capture_io(fn -> assert :ok = DuplexIEx.status() end)
+      assert output =~ "Session"
+    end
+  end
+
+  describe "handle_event/1 (stream printing)" do
+    test "prints text deltas to stdout" do
+      output =
+        capture_io(fn ->
+          DuplexIEx.handle_event(
+            {:stream_event, %{"event" => %{"delta" => %{"text" => "hello"}}}}
+          )
+        end)
+
+      assert output == "hello"
+    end
+
+    test "concatenates multiple deltas without newlines" do
+      output =
+        capture_io(fn ->
+          DuplexIEx.handle_event({:stream_event, %{"event" => %{"delta" => %{"text" => "hel"}}}})
+          DuplexIEx.handle_event({:stream_event, %{"event" => %{"delta" => %{"text" => "lo"}}}})
+        end)
+
+      assert output == "hello"
+    end
+
+    test "ignores non-text deltas" do
+      output =
+        capture_io(fn ->
+          DuplexIEx.handle_event(
+            {:stream_event, %{"event" => %{"delta" => %{"partial_json" => "{\"x\":"}}}}
+          )
+        end)
+
+      assert output == ""
+    end
+
+    test "prints a session marker on system_init" do
+      output =
+        capture_io(fn ->
+          DuplexIEx.handle_event({:system_init, "abc-123"})
+        end)
+
+      assert output =~ "abc-123"
+    end
+
+    test "prints a tool result excerpt for user/tool_result events" do
+      event =
+        {:user,
+         %{
+           "message" => %{
+             "content" => [
+               %{
+                 "type" => "tool_result",
+                 "content" => [%{"type" => "text", "text" => "hello world"}]
+               }
+             ]
+           }
+         }}
+
+      output = capture_io(fn -> DuplexIEx.handle_event(event) end)
+      assert output =~ "hello world"
+    end
+
+    test "truncates long tool results" do
+      long_text = String.duplicate("x", 500)
+
+      event =
+        {:user,
+         %{
+           "message" => %{
+             "content" => [
+               %{
+                 "type" => "tool_result",
+                 "content" => [%{"type" => "text", "text" => long_text}]
+               }
+             ]
+           }
+         }}
+
+      output = capture_io(fn -> DuplexIEx.handle_event(event) end)
+      # Truncated to 200 chars + ellipsis, ANSI dim codes around it.
+      refute output =~ String.duplicate("x", 250)
+      assert output =~ "…"
+    end
+
+    test "ignores unknown events" do
+      assert capture_io(fn ->
+               DuplexIEx.handle_event({:other, %{}})
+               DuplexIEx.handle_event(:weird)
+             end) == ""
+    end
+  end
+
+  describe "spawn_printer/1" do
+    test "subscribes to the session and prints arriving events" do
+      pid = start_with_fake_claude()
+
+      output =
+        capture_io(fn ->
+          _printer = DuplexIEx.spawn_printer(pid)
+
+          # Inject a stream_event via the same trick the unit suite
+          # uses for DuplexSession: write JSON to cat's stdin.
+          state = :sys.get_state(pid)
+
+          Port.command(state.port, [
+            Jason.encode!(%{type: "stream_event", event: %{delta: %{text: "hi"}}}),
+            ?\n
+          ])
+
+          # Wait briefly for the printer to receive and write.
+          Process.sleep(100)
+        end)
+
+      assert output =~ "hi"
+
+      DuplexSession.stop(pid)
+    end
+  end
+end
