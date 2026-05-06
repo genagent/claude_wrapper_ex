@@ -86,6 +86,14 @@ defmodule ClaudeWrapper.DuplexSessionTest do
       assert Enum.at(args, input_idx + 1) == "stream-json"
       assert Enum.at(args, output_idx + 1) == "stream-json"
     end
+
+    test "wires --permission-prompt-tool stdio so we receive can_use_tool requests" do
+      args = DuplexSession.build_args([])
+      idx = Enum.find_index(args, &(&1 == "--permission-prompt-tool"))
+
+      assert idx != nil
+      assert Enum.at(args, idx + 1) == "stdio"
+    end
   end
 
   describe "subscribe / unsubscribe (with fake claude)" do
@@ -195,6 +203,149 @@ defmodule ClaudeWrapper.DuplexSessionTest do
       after
         DuplexSession.stop(pid)
       end
+    end
+  end
+
+  describe "permissions (with fake claude)" do
+    # cat echoes whatever the session writes back to stdout. We use that
+    # property to capture the control_response payload: the session
+    # writes a JSON line, cat echoes it, and the session re-dispatches
+    # the echoed line as if it were inbound. control_response with no
+    # matching pending request just gets dropped, so it's harmless --
+    # but we can intercept the bytes by giving the session a custom
+    # collector subscriber that records everything it sees.
+    #
+    # Easier path: peek directly at the captured request_id via the
+    # callback itself, then verify a write happened by calling
+    # :sys.get_state to see that the buffer/state didn't change in a
+    # way that would imply a defer was in effect.
+    #
+    # In practice the cleanest verification is to (a) run the callback
+    # with the right inputs (which we can capture by sending to a
+    # known pid in the closure) and (b) verify defer truly defers by
+    # asserting the callback returns `:defer` and confirming a later
+    # respond_to_permission/3 call is accepted without raising.
+
+    test "allow callback receives tool_name and input" do
+      pid = start_with_fake_claude()
+      parent = self()
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | on_permission: fn tool, input ->
+              Kernel.send(parent, {:asked, tool, input})
+              :allow
+            end
+        }
+      end)
+
+      try do
+        inject(pid, %{
+          type: "control_request",
+          request_id: "r1",
+          request: %{
+            subtype: "can_use_tool",
+            tool_name: "Bash",
+            input: %{"command" => "ls"}
+          }
+        })
+
+        assert_receive {:asked, "Bash", %{"command" => "ls"}}, 1_000
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "deny callback receives tool_name and input" do
+      pid = start_with_fake_claude()
+      parent = self()
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | on_permission: fn tool, _input ->
+              Kernel.send(parent, {:denied, tool})
+              {:deny, "nope"}
+            end
+        }
+      end)
+
+      try do
+        inject(pid, %{
+          type: "control_request",
+          request_id: "r2",
+          request: %{
+            subtype: "can_use_tool",
+            tool_name: "Edit",
+            input: %{"file" => "/tmp/x"}
+          }
+        })
+
+        assert_receive {:denied, "Edit"}, 1_000
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "defer callback does not crash; respond_to_permission/3 finishes the cycle" do
+      pid = start_with_fake_claude()
+
+      :sys.replace_state(pid, fn state ->
+        %{state | on_permission: fn _tool, _input -> :defer end}
+      end)
+
+      try do
+        inject(pid, %{
+          type: "control_request",
+          request_id: "deferred-1",
+          request: %{
+            subtype: "can_use_tool",
+            tool_name: "Bash",
+            input: %{}
+          }
+        })
+
+        # If defer crashed the GenServer, this call would error.
+        assert :ok = DuplexSession.respond_to_permission(pid, "deferred-1", :allow)
+
+        # Calling respond_to_permission with :defer is rejected.
+        assert {:error, :cannot_defer_again} =
+                 DuplexSession.respond_to_permission(pid, "deferred-1", :defer)
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "raising callback defaults to deny without crashing the session" do
+      pid = start_with_fake_claude()
+
+      :sys.replace_state(pid, fn state ->
+        %{state | on_permission: fn _tool, _input -> raise "boom" end}
+      end)
+
+      try do
+        ref = Process.monitor(pid)
+
+        inject(pid, %{
+          type: "control_request",
+          request_id: "raise-1",
+          request: %{subtype: "can_use_tool", tool_name: "Bash", input: %{}}
+        })
+
+        # GenServer should still be alive after the callback raised.
+        refute_receive {:DOWN, ^ref, :process, ^pid, _}, 200
+        assert Process.alive?(pid)
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+  end
+
+  describe "default deny_all/2" do
+    test "denies any tool" do
+      assert {:deny, _msg} = DuplexSession.deny_all("Bash", %{})
+      assert {:deny, _msg} = DuplexSession.deny_all("Edit", %{"file" => "x"})
     end
   end
 

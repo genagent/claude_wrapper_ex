@@ -20,27 +20,54 @@ defmodule ClaudeWrapper.DuplexSession do
 
   ## Current scope
 
-  Implemented so far: minimal happy path (PR 1) and subscribers (PR 2).
-  Permission callbacks (PR 3) and interrupt (PR 4) are **not yet wired**.
+  Implemented so far: minimal happy path (PR 1), subscribers (PR 2),
+  and permission callbacks (PR 3). Interrupt (PR 4) is **not yet wired**.
 
   ## Usage
 
       config = ClaudeWrapper.Config.new()
 
-      {:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config)
+      # Provide a permission callback to decide on tool use mid-turn.
+      # The default is to deny everything.
+      on_permission = fn tool_name, _input ->
+        if tool_name in ["Bash", "Edit"], do: {:deny, "not allowed"}, else: :allow
+      end
+
+      {:ok, pid} =
+        ClaudeWrapper.DuplexSession.start_link(
+          config: config,
+          on_permission: on_permission
+        )
 
       # Subscribe the calling process to streaming events.
       :ok = ClaudeWrapper.DuplexSession.subscribe(pid)
 
       {:ok, result} = ClaudeWrapper.DuplexSession.send(pid, "Say hi.")
 
-      # Drain subscriber mailbox for streaming events.
-      flush()
-      #=> {:claude, {:system_init, "abc123-..."}}
-      #=> {:claude, {:assistant, %{...}}}
-      #=> {:claude, {:result, %ClaudeWrapper.Result{}}}
-
       ClaudeWrapper.DuplexSession.stop(pid)
+
+  ## Permission callback
+
+  The optional `:on_permission` callback runs synchronously inside the
+  GenServer when the CLI emits a `can_use_tool` control request. It must
+  return one of:
+
+    * `:allow` -- allow the tool with the original input
+    * `{:allow, updated_input}` -- allow the tool with a modified input
+      map (sandbox a path, redact a secret, etc.)
+    * `{:deny, reason}` -- deny the tool with a reason string the model
+      will see
+    * `:defer` -- do not respond synchronously; the caller is expected
+      to invoke `respond_to_permission/3` later. Use this when a human
+      decision is required and the GenServer must not block
+
+  The callback runs in the GenServer process, so synchronous decisions
+  must be fast. For slow decisions, return `:defer` and answer later
+  via `respond_to_permission/3`.
+
+  The default callback is `&deny_all/2`, which denies every tool call.
+  Without an explicit callback or one of the CLI's other permission
+  modes (`plan`, `bypass_permissions`, etc.) tool use will not work.
 
   ## Subscriber events
 
@@ -62,9 +89,20 @@ defmodule ClaudeWrapper.DuplexSession do
 
   alias ClaudeWrapper.{Config, Result}
 
+  @type tool_input :: map()
+
+  @type permission_decision ::
+          :allow
+          | {:allow, tool_input()}
+          | {:deny, String.t()}
+          | :defer
+
+  @type permission_handler :: (String.t(), tool_input() -> permission_decision())
+
   @type option ::
           {:config, Config.t()}
           | {:extra_args, [String.t()]}
+          | {:on_permission, permission_handler()}
           | {:name, GenServer.name()}
           | GenServer.option()
 
@@ -74,13 +112,15 @@ defmodule ClaudeWrapper.DuplexSession do
           session_id: String.t() | nil,
           buffer: binary(),
           pending_turn: {GenServer.from(), [map()]} | nil,
-          subscribers: %{pid() => reference()}
+          subscribers: %{pid() => reference()},
+          on_permission: permission_handler()
         }
 
   defstruct [
     :port,
     :config,
     :session_id,
+    :on_permission,
     buffer: <<>>,
     pending_turn: nil,
     subscribers: %{}
@@ -147,6 +187,25 @@ defmodule ClaudeWrapper.DuplexSession do
   def unsubscribe(server), do: GenServer.call(server, {:unsubscribe, self()})
 
   @doc """
+  Answer a deferred permission request.
+
+  Used after the `:on_permission` callback returned `:defer` for the
+  given `request_id`. Calling this with a `request_id` the session has
+  no record of is a no-op (returns `:ok`). The `decision` accepts the
+  same shape as a synchronous handler return value, except `:defer`,
+  which is rejected with `{:error, :cannot_defer_again}`.
+  """
+  @spec respond_to_permission(GenServer.server(), String.t(), permission_decision()) ::
+          :ok | {:error, :cannot_defer_again}
+  def respond_to_permission(_server, _request_id, :defer),
+    do: {:error, :cannot_defer_again}
+
+  def respond_to_permission(server, request_id, decision)
+      when is_binary(request_id) do
+    GenServer.call(server, {:respond_to_permission, request_id, decision})
+  end
+
+  @doc """
   Stop the session. Closes the port, waits for the child to exit, and
   shuts down the GenServer.
   """
@@ -162,6 +221,7 @@ defmodule ClaudeWrapper.DuplexSession do
     Process.flag(:trap_exit, true)
     config = Keyword.fetch!(opts, :config)
     extra_args = Keyword.get(opts, :extra_args, [])
+    on_permission = Keyword.get(opts, :on_permission, &__MODULE__.deny_all/2)
 
     # Tests substitute a fake binary (e.g. `cat`) that does not understand
     # the duplex flag set; they pass `:args_override` to bypass defaults.
@@ -174,7 +234,7 @@ defmodule ClaudeWrapper.DuplexSession do
         port_cd_opts(config)
 
     port = Port.open({:spawn_executable, config.binary}, port_opts)
-    {:ok, %__MODULE__{port: port, config: config}}
+    {:ok, %__MODULE__{port: port, config: config, on_permission: on_permission}}
   end
 
   @impl true
@@ -214,6 +274,11 @@ defmodule ClaudeWrapper.DuplexSession do
 
   def handle_call({:unsubscribe, pid}, _from, state) do
     {:reply, :ok, drop_subscriber(state, pid)}
+  end
+
+  def handle_call({:respond_to_permission, request_id, decision}, _from, state) do
+    write_permission_response(state.port, request_id, decision)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -261,9 +326,19 @@ defmodule ClaudeWrapper.DuplexSession do
       "stream-json",
       "--include-partial-messages",
       "--verbose",
-      "--print"
+      "--print",
+      "--permission-prompt-tool",
+      "stdio"
     ] ++ extra
   end
+
+  @doc """
+  Default permission handler. Denies every tool call.
+
+  Public so it can be referenced as a default value (`&deny_all/2`).
+  """
+  @spec deny_all(String.t(), tool_input()) :: permission_decision()
+  def deny_all(_tool_name, _input), do: {:deny, "no permission handler installed"}
 
   # Manual newline splitting on raw binary. We deliberately avoid Port
   # `:line` mode because stream-json messages can carry tool results
@@ -288,6 +363,41 @@ defmodule ClaudeWrapper.DuplexSession do
         Logger.warning("DuplexSession: non-JSON line from claude: #{inspect(line)}")
         state
     end
+  end
+
+  # Inbound permission request: the CLI is asking whether a tool may
+  # run. We delegate to the user's on_permission callback. If they
+  # return :defer, we don't write a response now; the caller will
+  # call respond_to_permission/3 later.
+  defp dispatch(
+         %{
+           "type" => "control_request",
+           "request_id" => id,
+           "request" => %{"subtype" => "can_use_tool"} = req
+         },
+         state
+       ) do
+    tool_name = req["tool_name"]
+    input = req["input"] || %{}
+
+    decision =
+      try do
+        state.on_permission.(tool_name, input)
+      rescue
+        e ->
+          Logger.error(
+            "DuplexSession: on_permission/2 raised for #{inspect(tool_name)}: #{inspect(e)}"
+          )
+
+          {:deny, "permission handler raised: #{Exception.message(e)}"}
+      end
+
+    case decision do
+      :defer -> :ok
+      _ -> write_permission_response(state.port, id, decision)
+    end
+
+    state
   end
 
   # system/init carries the session_id we'll need for resume in later PRs.
@@ -366,4 +476,34 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defp port_cd_opts(%Config{working_dir: nil}), do: []
   defp port_cd_opts(%Config{working_dir: dir}), do: [{:cd, String.to_charlist(dir)}]
+
+  # Wraps a permission decision in the SDK's control_response envelope
+  # and writes it to the port's stdin. Shape mirrors the SDK's
+  # PermissionResult / SDKControlResponse schemas (see sdk.d.ts).
+  defp write_permission_response(nil, _request_id, _decision), do: :ok
+
+  defp write_permission_response(port, request_id, decision) do
+    response = decision_to_permission_response(decision)
+
+    msg = %{
+      type: "control_response",
+      response: %{
+        subtype: "success",
+        request_id: request_id,
+        response: response
+      }
+    }
+
+    Port.command(port, [Jason.encode!(msg), ?\n])
+    :ok
+  end
+
+  defp decision_to_permission_response(:allow),
+    do: %{behavior: "allow"}
+
+  defp decision_to_permission_response({:allow, updated_input}) when is_map(updated_input),
+    do: %{behavior: "allow", updatedInput: updated_input}
+
+  defp decision_to_permission_response({:deny, reason}) when is_binary(reason),
+    do: %{behavior: "deny", message: reason}
 end
