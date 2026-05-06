@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.5.1...v0.6.0) (2026-05-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove Workshop and MCP code (migrated to agent_workshop) ([#63](https://github.com/genagent/claude_wrapper_ex/issues/63))
+
+### Features
+
+* add :telemetry events for exec/stream/session lifecycle ([#50](https://github.com/genagent/claude_wrapper_ex/issues/50)) ([191020a](https://github.com/genagent/claude_wrapper_ex/commit/191020a20a5787dcacc774fc17cd4667496573f0)), closes [#49](https://github.com/genagent/claude_wrapper_ex/issues/49)
+* add ClaudeWrapper.DuplexIEx for interactive sessions ([#60](https://github.com/genagent/claude_wrapper_ex/issues/60)) ([7c7fb7f](https://github.com/genagent/claude_wrapper_ex/commit/7c7fb7fea840eb34075a77e9b17553a722bfa10c)), closes [#55](https://github.com/genagent/claude_wrapper_ex/issues/55)
+* add ClaudeWrapper.DuplexSession (PR 1: minimal happy path) ([#56](https://github.com/genagent/claude_wrapper_ex/issues/56)) ([c1a8c82](https://github.com/genagent/claude_wrapper_ex/commit/c1a8c82f85573dd76a0f366898db057688e7bd31)), closes [#55](https://github.com/genagent/claude_wrapper_ex/issues/55)
+* add interrupt and close to DuplexSession (PR 4) ([#59](https://github.com/genagent/claude_wrapper_ex/issues/59)) ([2a00aef](https://github.com/genagent/claude_wrapper_ex/commit/2a00aef044c04aed71b240d88286205cf7bdd966)), closes [#55](https://github.com/genagent/claude_wrapper_ex/issues/55)
+* add permission callback to DuplexSession (PR 3) ([#58](https://github.com/genagent/claude_wrapper_ex/issues/58)) ([8dc0252](https://github.com/genagent/claude_wrapper_ex/commit/8dc02524ae04cde4fa989157f0a994623bc58263)), closes [#55](https://github.com/genagent/claude_wrapper_ex/issues/55)
+* add subscribers to DuplexSession (PR 2) ([#57](https://github.com/genagent/claude_wrapper_ex/issues/57)) ([2d02e11](https://github.com/genagent/claude_wrapper_ex/commit/2d02e11198fb55cbc56ca137e1ba506df6c6ef11)), closes [#55](https://github.com/genagent/claude_wrapper_ex/issues/55)
+* extract Query.apply_opts/2 and reach all Query setters via opts ([#62](https://github.com/genagent/claude_wrapper_ex/issues/62)) ([0bf337b](https://github.com/genagent/claude_wrapper_ex/commit/0bf337b627843661ede0a5e32b5da6d69fab6886))
+
+
+### Miscellaneous Chores
+
+* remove Workshop and MCP code (migrated to agent_workshop) ([#63](https://github.com/genagent/claude_wrapper_ex/issues/63)) ([e2f7630](https://github.com/genagent/claude_wrapper_ex/commit/e2f76308ef4bcff6e11df686419922bb8a916914)), closes [#55](https://github.com/genagent/claude_wrapper_ex/issues/55)
+
 ## [0.5.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.5.0...v0.5.1) (2026-04-11)
 
 
