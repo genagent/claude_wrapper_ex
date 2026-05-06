@@ -317,6 +317,41 @@ defmodule ClaudeWrapper.DuplexSessionTest do
       end
     end
 
+    test "3-arity callback receives request_id" do
+      pid = start_with_fake_claude()
+      parent = self()
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | on_permission: fn tool, input, request_id ->
+              Kernel.send(parent, {:asked3, tool, input, request_id})
+              :defer
+            end
+        }
+      end)
+
+      try do
+        inject(pid, %{
+          type: "control_request",
+          request_id: "abc-3-arity",
+          request: %{
+            subtype: "can_use_tool",
+            tool_name: "Bash",
+            input: %{"command" => "echo hi"}
+          }
+        })
+
+        assert_receive {:asked3, "Bash", %{"command" => "echo hi"}, "abc-3-arity"}, 1_000
+
+        # The handler returned :defer, so respond_to_permission/3 with
+        # the captured id closes the cycle.
+        assert :ok = DuplexSession.respond_to_permission(pid, "abc-3-arity", :allow)
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
     test "raising callback defaults to deny without crashing the session" do
       pid = start_with_fake_claude()
 
