@@ -267,4 +267,34 @@ defmodule ClaudeWrapper.IntegrationTest do
       end
     end
   end
+
+  describe "DuplexIEx" do
+    alias ClaudeWrapper.DuplexIEx
+
+    setup do
+      on_exit(fn ->
+        try do
+          DuplexIEx.stop()
+        catch
+          _, _ -> :ok
+        end
+      end)
+
+      :ok
+    end
+
+    test "start, say, stop full round-trip" do
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :ok = DuplexIEx.start(working_dir: File.cwd!())
+          assert :ok = DuplexIEx.say("Respond with exactly: hello duplex iex.", timeout: 60_000)
+          assert is_binary(DuplexIEx.session_id())
+          assert :ok = DuplexIEx.stop()
+        end)
+
+      assert output =~ "Claude session started"
+      assert output =~ "hello"
+      assert output =~ "Session stopped"
+    end
+  end
 end
