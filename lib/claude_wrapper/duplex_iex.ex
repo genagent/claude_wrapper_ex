@@ -49,7 +49,7 @@ defmodule ClaudeWrapper.DuplexIEx do
     not safe** for prompts you do not control. For trustworthy use,
     pass `permission_mode: "default"` and an `on_permission` callback
   - All `ClaudeWrapper.Config` options (`:binary`, `:env`, `:timeout`,
-    etc.) are accepted and forwarded to `Config.new/1`
+    etc.) are accepted and forwarded to `ClaudeWrapper.Config.new/1`
   - All `ClaudeWrapper.DuplexSession` options (`:on_permission`,
     `:extra_args`) are forwarded as well
   """

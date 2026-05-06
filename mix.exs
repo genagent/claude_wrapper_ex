@@ -37,8 +37,40 @@ defmodule ClaudeWrapper.MixProject do
 
   defp docs do
     [
-      main: "ClaudeWrapper",
-      source_url: @source_url
+      main: "readme",
+      source_url: @source_url,
+      extras: ["README.md", "CHANGELOG.md"],
+      groups_for_modules: [
+        "Long-lived sessions": [
+          ClaudeWrapper.DuplexSession,
+          ClaudeWrapper.DuplexIEx
+        ],
+        "One-shot / per-call": [
+          ClaudeWrapper,
+          ClaudeWrapper.Query,
+          ClaudeWrapper.Session,
+          ClaudeWrapper.SessionServer,
+          ClaudeWrapper.IEx
+        ],
+        "Shared infrastructure": [
+          ClaudeWrapper.Config,
+          ClaudeWrapper.Result,
+          ClaudeWrapper.StreamEvent,
+          ClaudeWrapper.McpConfig,
+          ClaudeWrapper.Retry,
+          ClaudeWrapper.Telemetry
+        ],
+        "CLI subcommand wrappers": [
+          ClaudeWrapper.Command,
+          ClaudeWrapper.Commands.Auth,
+          ClaudeWrapper.Commands.Agents,
+          ClaudeWrapper.Commands.Doctor,
+          ClaudeWrapper.Commands.Mcp,
+          ClaudeWrapper.Commands.Plugin,
+          ClaudeWrapper.Commands.Marketplace,
+          ClaudeWrapper.Commands.Version
+        ]
+      ]
     ]
   end
 
@@ -46,7 +78,7 @@ defmodule ClaudeWrapper.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md LICENSE .formatter.exs),
+      files: ~w(lib mix.exs README.md CHANGELOG.md LICENSE .formatter.exs),
       maintainers: ["Josh Rotenberg"]
     ]
   end
