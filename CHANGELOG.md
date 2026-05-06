@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.6.1...v0.7.0) (2026-05-06)
+
+
+### Features
+
+* DuplexSession on_permission supports 3-arity callback (request_id) ([#69](https://github.com/genagent/claude_wrapper_ex/issues/69)) ([e7a3076](https://github.com/genagent/claude_wrapper_ex/commit/e7a30765dd69693959eefcfacce55bc04479a199))
+
 ## [0.6.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.6.0...v0.6.1) (2026-05-06)
 
 
