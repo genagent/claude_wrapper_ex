@@ -178,29 +178,8 @@ defmodule ClaudeWrapper do
   end
 
   defp build_query(prompt, opts) do
-    query = Query.new(prompt)
-
-    Enum.reduce(opts, query, fn
-      {:model, v}, q -> Query.model(q, v)
-      {:system_prompt, v}, q -> Query.system_prompt(q, v)
-      {:append_system_prompt, v}, q -> Query.append_system_prompt(q, v)
-      {:max_turns, v}, q -> Query.max_turns(q, v)
-      {:max_budget_usd, v}, q -> Query.max_budget_usd(q, v)
-      {:permission_mode, v}, q -> Query.permission_mode(q, v)
-      {:dangerously_skip_permissions, true}, q -> Query.dangerously_skip_permissions(q)
-      {:dangerously_skip_permissions, false}, q -> q
-      {:session_id, v}, q -> Query.session_id(q, v)
-      {:continue_session, true}, q -> Query.continue_session(q)
-      {:continue_session, false}, q -> q
-      {:resume, v}, q -> Query.resume(q, v)
-      {:effort, v}, q -> Query.effort(q, v)
-      {:json_schema, v}, q -> Query.json_schema(q, v)
-      {:agent, v}, q -> Query.agent(q, v)
-      {:brief, true}, q -> Query.brief(q)
-      {:brief, false}, q -> q
-      {:no_session_persistence, true}, q -> Query.no_session_persistence(q)
-      {:no_session_persistence, false}, q -> q
-      _other, q -> q
-    end)
+    prompt
+    |> Query.new()
+    |> Query.apply_opts(opts)
   end
 end

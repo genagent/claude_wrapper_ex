@@ -268,6 +268,108 @@ defmodule ClaudeWrapper.Query do
   @spec tmux(t()) :: t()
   def tmux(%__MODULE__{} = q), do: %{q | tmux: true}
 
+  # --- Bulk option application ---
+
+  @doc """
+  Apply a keyword list of options to a query, calling the equivalent
+  `Query` setter for each known key. Unknown keys are silently ignored.
+
+  This is the shared mapping used by `ClaudeWrapper.query/2`,
+  `ClaudeWrapper.stream/2`, and `ClaudeWrapper.Session.send/3`. It
+  exists so the opt-to-setter mapping lives in one place rather than
+  being duplicated across each surface.
+
+  Boolean opts (e.g. `:worktree`, `:dangerously_skip_permissions`)
+  are applied when the value is `true` and ignored when `false`. List
+  opts (e.g. `:allowed_tools`, `:add_dir`) reduce over their list,
+  applying the per-item setter for each entry.
+
+  ## Examples
+
+      iex> q = ClaudeWrapper.Query.new("hi")
+      iex> q = ClaudeWrapper.Query.apply_opts(q, model: "sonnet", max_turns: 3, worktree: true)
+      iex> q.model
+      "sonnet"
+      iex> q.max_turns
+      3
+      iex> q.worktree
+      true
+  """
+  @spec apply_opts(t(), keyword()) :: t()
+  def apply_opts(%__MODULE__{} = query, opts) when is_list(opts) do
+    Enum.reduce(opts, query, &apply_opt/2)
+  end
+
+  defp apply_opt({:model, v}, q), do: model(q, v)
+  defp apply_opt({:system_prompt, v}, q), do: system_prompt(q, v)
+  defp apply_opt({:append_system_prompt, v}, q), do: append_system_prompt(q, v)
+  defp apply_opt({:max_turns, v}, q), do: max_turns(q, v)
+  defp apply_opt({:max_budget_usd, v}, q), do: max_budget_usd(q, v)
+  defp apply_opt({:permission_mode, v}, q), do: permission_mode(q, v)
+  defp apply_opt({:effort, v}, q), do: effort(q, v)
+  defp apply_opt({:json_schema, v}, q), do: json_schema(q, v)
+  defp apply_opt({:agent, v}, q), do: agent(q, v)
+  defp apply_opt({:agents_json, v}, q), do: agents_json(q, v)
+  defp apply_opt({:session_id, v}, q), do: session_id(q, v)
+  defp apply_opt({:resume, v}, q), do: resume(q, v)
+  defp apply_opt({:fallback_model, v}, q), do: fallback_model(q, v)
+  defp apply_opt({:output_format, v}, q), do: output_format(q, v)
+  defp apply_opt({:input_format, v}, q), do: input_format(q, v)
+  defp apply_opt({:settings, v}, q), do: settings(q, v)
+  defp apply_opt({:debug_filter, v}, q), do: debug_filter(q, v)
+  defp apply_opt({:debug_file, v}, q), do: debug_file(q, v)
+  defp apply_opt({:betas, v}, q), do: betas(q, v)
+  defp apply_opt({:setting_sources, v}, q), do: setting_sources(q, v)
+
+  # Boolean flags: only apply on true.
+  defp apply_opt({:dangerously_skip_permissions, true}, q), do: dangerously_skip_permissions(q)
+  defp apply_opt({:dangerously_skip_permissions, _}, q), do: q
+  defp apply_opt({:continue_session, true}, q), do: continue_session(q)
+  defp apply_opt({:continue_session, _}, q), do: q
+  defp apply_opt({:no_session_persistence, true}, q), do: no_session_persistence(q)
+  defp apply_opt({:no_session_persistence, _}, q), do: q
+  defp apply_opt({:worktree, true}, q), do: worktree(q)
+  defp apply_opt({:worktree, _}, q), do: q
+  defp apply_opt({:brief, true}, q), do: brief(q)
+  defp apply_opt({:brief, _}, q), do: q
+  defp apply_opt({:fork_session, true}, q), do: fork_session(q)
+  defp apply_opt({:fork_session, _}, q), do: q
+  defp apply_opt({:strict_mcp_config, true}, q), do: strict_mcp_config(q)
+  defp apply_opt({:strict_mcp_config, _}, q), do: q
+  defp apply_opt({:include_partial_messages, true}, q), do: include_partial_messages(q)
+  defp apply_opt({:include_partial_messages, _}, q), do: q
+  defp apply_opt({:tmux, true}, q), do: tmux(q)
+  defp apply_opt({:tmux, _}, q), do: q
+
+  # List opts (or single value, where it makes sense).
+  defp apply_opt({:allowed_tools, tools}, q) when is_list(tools),
+    do: Enum.reduce(tools, q, &allowed_tool(&2, &1))
+
+  defp apply_opt({:disallowed_tools, tools}, q) when is_list(tools),
+    do: Enum.reduce(tools, q, &disallowed_tool(&2, &1))
+
+  defp apply_opt({:tools, tools}, q) when is_list(tools),
+    do: Enum.reduce(tools, q, &tool(&2, &1))
+
+  defp apply_opt({:add_dir, dirs}, q) when is_list(dirs),
+    do: Enum.reduce(dirs, q, &add_dir(&2, &1))
+
+  defp apply_opt({:add_dir, dir}, q) when is_binary(dir), do: add_dir(q, dir)
+
+  defp apply_opt({:files, files}, q) when is_list(files),
+    do: Enum.reduce(files, q, &file(&2, &1))
+
+  defp apply_opt({:plugin_dirs, dirs}, q) when is_list(dirs),
+    do: Enum.reduce(dirs, q, &plugin_dir(&2, &1))
+
+  defp apply_opt({:mcp_config, paths}, q) when is_list(paths),
+    do: Enum.reduce(paths, q, &mcp_config(&2, &1))
+
+  defp apply_opt({:mcp_config, path}, q) when is_binary(path), do: mcp_config(q, path)
+
+  # Unknown option: ignore. Documented above.
+  defp apply_opt(_other, q), do: q
+
   # --- Execution ---
 
   @doc """
