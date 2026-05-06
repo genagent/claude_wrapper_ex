@@ -86,105 +86,39 @@ iex> reset()
 # start fresh
 ```
 
-## Workshop: multi-agent coordination
+## Multi-agent coordination
 
-Workshop lets you run multiple Claude agents side by side from IEx.
-Give each agent a name and a role, then coordinate them with a few
-simple commands. You don't need to know Elixir to use it -- the
-syntax is just function calls with atoms and strings.
-
-### Setup
-
-```
-$ iex -S mix
-```
-
-The Workshop banner prints automatically with a command reference.
-
-### Configure and create agents
+Multi-agent coordination has moved to a separate package,
+[**agent_workshop**](https://hex.pm/packages/agent_workshop). It is
+backend-agnostic and can drive Claude, Codex, or any agent that
+implements its `Backend` behaviour. Use it alongside `claude_wrapper`:
 
 ```elixir
-# Set shared config (do this first)
-configure(
-  working_dir: "~/projects/myapp",
-  model: "sonnet",
-  context: """
-  Elixir project using Phoenix 1.7.
-  Run mix test before considering any task complete.
-  """
-)
-
-# Create agents with different roles
-agent(:impl, "You write clean, well-tested code.", max_turns: 15)
-agent(:reviewer, "You review code. Do not modify files.",
-  model: "opus", allowed_tools: ["Read", "Bash"])
-agent(:tests, "You focus exclusively on test coverage.",
-  permission_mode: :bypass_permissions)
+# in mix.exs
+{:claude_wrapper, "~> 0.6"},
+{:agent_workshop, "~> 0.1"}
 ```
 
-### Talk to agents
+## Long-lived sessions (DuplexSession)
+
+For chat-UI-style usage where you want partial tokens streaming in
+and the ability to interrupt mid-turn, use `DuplexSession`. It holds
+one `claude` subprocess open across many turns:
 
 ```elixir
-# Synchronous -- blocks until done, prints the result
-ask(:impl, "Implement caching for the user lookup")
-ask(:impl, "What files did you change?")    # continues the conversation
+config = ClaudeWrapper.Config.new(working_dir: ".")
+{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config)
 
-# Asynchronous -- returns immediately
-cast(:impl, "Implement the retry logic from issue #34")
-cast(:tests, "Add property-based tests for lib/myapp/encoder.ex")
+ClaudeWrapper.DuplexSession.subscribe(pid)
+{:ok, result} = ClaudeWrapper.DuplexSession.send(pid, "Explain this codebase.")
 
-# Check on progress
-status()
-#  agent     | status  | task                                 | cost  | turns
-# -----------+---------+--------------------------------------+-------+------
-#  :impl     | working | Implement the retry logic from is... | $0.08 | 3
-#  :reviewer | idle    |                                      | $0.00 | 0
-#  :tests    | working | Add property-based tests for lib/... | $0.04 | 2
+# Receives {:claude, {:assistant, msg}}, {:claude, {:stream_event, ...}},
+# {:claude, {:result, %Result{}}} as the turn unfolds.
 
-# Wait for results
-await(:impl)       # wait for one
-await_all()         # wait for everyone
+ClaudeWrapper.DuplexSession.close(pid)
 ```
 
-### Coordinate agents
-
-```elixir
-# Pipe: send one agent's output to another
-ask(:impl, "Implement the caching layer")
-pipe(:impl, :reviewer, "Review for cache invalidation edge cases")
-
-# Chain with |> (ask and pipe return the agent name)
-ask(:impl, "Implement retry logic")
-|> pipe(:reviewer, "Review for edge cases")
-|> pipe(:tests, "Write tests for this")
-
-# Fan: same question to multiple agents
-fan("What issues do you see in lib/myapp/retry.ex?", [:impl, :reviewer])
-await_all()
-result(:impl)       # impl's take
-result(:reviewer)   # reviewer's take
-```
-
-### Inspect and debug
-
-```elixir
-info(:impl)                    # detailed map (model, session_id, cost, ...)
-result(:impl)                  # last response text
-result(:impl, :full)           # full %Result{} struct
-history(:impl)                 # print conversation
-history(:impl, last: 3)        # last 3 turns only
-inspect_agent(:impl, "prompt") # show the exact CLI command
-cost()                         # itemized by agent
-total_cost()                   # one number
-```
-
-### Lifecycle
-
-```elixir
-reset(:impl)     # clear conversation, keep role and config
-dismiss(:impl)   # remove agent entirely
-reset_all()      # stop everything, start over
-```
+`DuplexIEx` wraps it for REPL use (live streaming text, `start/say/close`).
 
 ## Query builder
 
@@ -341,8 +275,9 @@ ClaudeWrapper.raw(["config", "list"])
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |
 | `ClaudeWrapper.Telemetry` | `:telemetry` spans for exec/stream/session |
-| `ClaudeWrapper.IEx` | Interactive REPL helpers |
-| `ClaudeWrapper.Workshop` | Multi-agent IEx coordination |
+| `ClaudeWrapper.IEx` | Interactive REPL helpers (per-call) |
+| `ClaudeWrapper.DuplexSession` | Long-lived stream-json session |
+| `ClaudeWrapper.DuplexIEx` | REPL helpers for `DuplexSession` |
 | `ClaudeWrapper.Commands.Auth` | Auth management |
 | `ClaudeWrapper.Commands.Mcp` | MCP server CRUD |
 | `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update |

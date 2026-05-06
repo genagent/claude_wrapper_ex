@@ -134,8 +134,10 @@ defmodule ClaudeWrapper.SessionServer do
   @doc """
   Replace the underlying `%Session{}` struct.
 
-  Used by `ClaudeWrapper.Workshop.stream/2` to push back the session
-  after consuming a stream outside the GenServer process.
+  Useful when you have streamed a session turn outside the GenServer
+  process (e.g. by calling `Session.stream/3` directly) and need to
+  push the post-turn session state back into the supervised server so
+  the next `send/3` resumes correctly.
   """
   @spec put_session(server(), Session.t()) :: :ok
   def put_session(server, %Session{} = session) do
