@@ -188,6 +188,48 @@ defmodule ClaudeWrapper.IntegrationTest do
       end
     end
 
+    test "permission callback fires and denies a dangerous tool call", %{config: config} do
+      parent = self()
+
+      on_permission = fn tool_name, input ->
+        Kernel.send(parent, {:asked, tool_name, input})
+        {:deny, "test denial"}
+      end
+
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          on_permission: on_permission,
+          extra_args: [
+            "--permission-mode",
+            "default",
+            "--max-turns",
+            "3",
+            "--no-session-persistence"
+          ]
+        )
+
+      try do
+        # The CLI auto-allows benign tool calls under --permission-mode
+        # default; only commands that trip the safety classifier come
+        # back through stdio. `rm -rf` on a /tmp path reliably triggers
+        # the prompt in current builds.
+        prompt =
+          "Use the Bash tool to run exactly this command: " <>
+            "`rm -rf /tmp/cwex-permission-test-x9z2/`. " <>
+            "Do not modify the command. Just call the Bash tool once."
+
+        assert {:ok, %ClaudeWrapper.Result{} = result} =
+                 DuplexSession.send(pid, prompt, 180_000)
+
+        assert_received {:asked, "Bash", input}
+        assert is_map(input)
+        assert is_binary(result.result)
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
     test "rejects overlapping sends with :turn_in_flight", %{config: config} do
       {:ok, pid} =
         DuplexSession.start_link(
