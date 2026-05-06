@@ -155,54 +155,16 @@ defmodule ClaudeWrapper.Session do
 
   defp build_query(session, prompt, per_call_opts) do
     merged_opts = Keyword.merge(session.query_opts, per_call_opts)
-    query = Query.new(prompt)
 
     query =
-      Enum.reduce(merged_opts, query, fn
-        {:model, v}, q ->
-          Query.model(q, v)
+      prompt
+      |> Query.new()
+      |> Query.apply_opts(merged_opts)
 
-        {:system_prompt, v}, q ->
-          Query.system_prompt(q, v)
-
-        {:max_turns, v}, q ->
-          Query.max_turns(q, v)
-
-        {:permission_mode, v}, q ->
-          Query.permission_mode(q, v)
-
-        {:max_budget_usd, v}, q ->
-          Query.max_budget_usd(q, v)
-
-        {:effort, v}, q ->
-          Query.effort(q, v)
-
-        {:allowed_tools, tools}, q when is_list(tools) ->
-          Enum.reduce(tools, q, fn tool, acc -> Query.allowed_tool(acc, tool) end)
-
-        {:disallowed_tools, tools}, q when is_list(tools) ->
-          Enum.reduce(tools, q, fn tool, acc -> Query.disallowed_tool(acc, tool) end)
-
-        {:mcp_config, paths}, q when is_list(paths) ->
-          Enum.reduce(paths, q, fn path, acc -> Query.mcp_config(acc, path) end)
-
-        {:mcp_config, path}, q when is_binary(path) ->
-          Query.mcp_config(q, path)
-
-        {:dangerously_skip_permissions, true}, q ->
-          Query.dangerously_skip_permissions(q)
-
-        {:worktree, true}, q ->
-          Query.worktree(q)
-
-        {:no_session_persistence, true}, q ->
-          Query.no_session_persistence(q)
-
-        _other, q ->
-          q
-      end)
-
-    # Thread session continuity
+    # Thread session continuity. We do this AFTER apply_opts so that
+    # an explicit `:resume` in opts does not override an established
+    # session_id from a prior turn -- the established id wins, which
+    # matches the multi-turn intent of `Session`.
     case session.session_id do
       nil -> query
       sid when is_binary(sid) -> Query.resume(query, sid)
