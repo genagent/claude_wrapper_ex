@@ -26,7 +26,7 @@ defmodule ClaudeWrapper.DuplexIEx do
       iex> interrupt()
       :ok
 
-      iex> stop()
+      iex> close()
       :ok
 
   ## When to use this vs `ClaudeWrapper.IEx`
@@ -66,11 +66,11 @@ defmodule ClaudeWrapper.DuplexIEx do
 
   Stores the session pid and printer pid in the process dictionary
   for the rest of the helpers to find. If a session is already
-  running for this process, it is stopped first.
+  running for this process, it is closed first.
   """
   @spec start(keyword()) :: :ok | {:error, term()}
   def start(opts \\ []) do
-    if Process.get(@session_key), do: stop()
+    if Process.get(@session_key), do: close()
 
     {config_opts, duplex_opts} = split_opts(opts)
 
@@ -152,10 +152,14 @@ defmodule ClaudeWrapper.DuplexIEx do
   end
 
   @doc """
-  Stop the current session, kill the printer, and clear stored state.
+  Close the current session, kill the printer, and clear stored state.
+
+  Named `close/0` (rather than the more obvious `stop/0`) to avoid
+  colliding with `ClaudeWrapper.Workshop.stop/0` when both modules are
+  imported. Mirrors the underlying `ClaudeWrapper.DuplexSession.close/1`.
   """
-  @spec stop() :: :ok
-  def stop do
+  @spec close() :: :ok
+  def close do
     if printer = Process.delete(@printer_key) do
       Process.exit(printer, :shutdown)
     end
@@ -168,7 +172,7 @@ defmodule ClaudeWrapper.DuplexIEx do
       end
     end
 
-    IO.puts("\e[33mSession stopped.\e[0m")
+    IO.puts("\e[33mSession closed.\e[0m")
     :ok
   end
 

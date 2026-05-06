@@ -15,7 +15,7 @@ defmodule ClaudeWrapper.DuplexIExTest do
   end
 
   defp safely_stop do
-    DuplexIEx.stop()
+    DuplexIEx.close()
   catch
     _, _ -> :ok
   end
@@ -58,17 +58,17 @@ defmodule ClaudeWrapper.DuplexIExTest do
     end
   end
 
-  describe "stop/0" do
+  describe "close/0" do
     test "is a no-op when no session is running" do
-      output = capture_io(fn -> assert :ok = DuplexIEx.stop() end)
-      assert output =~ "Session stopped"
+      output = capture_io(fn -> assert :ok = DuplexIEx.close() end)
+      assert output =~ "Session closed"
     end
 
     test "shuts down a running session and clears state" do
       pid = install_fake_session()
       assert Process.alive?(pid)
 
-      capture_io(fn -> assert :ok = DuplexIEx.stop() end)
+      capture_io(fn -> assert :ok = DuplexIEx.close() end)
 
       refute Process.get(:claude_wrapper_duplex_iex_session)
       refute Process.alive?(pid)

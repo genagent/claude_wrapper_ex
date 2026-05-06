@@ -274,7 +274,7 @@ defmodule ClaudeWrapper.IntegrationTest do
     setup do
       on_exit(fn ->
         try do
-          DuplexIEx.stop()
+          DuplexIEx.close()
         catch
           _, _ -> :ok
         end
@@ -283,18 +283,18 @@ defmodule ClaudeWrapper.IntegrationTest do
       :ok
     end
 
-    test "start, say, stop full round-trip" do
+    test "start, say, close full round-trip" do
       output =
         ExUnit.CaptureIO.capture_io(fn ->
           assert :ok = DuplexIEx.start(working_dir: File.cwd!())
           assert :ok = DuplexIEx.say("Respond with exactly: hello duplex iex.", timeout: 60_000)
           assert is_binary(DuplexIEx.session_id())
-          assert :ok = DuplexIEx.stop()
+          assert :ok = DuplexIEx.close()
         end)
 
       assert output =~ "Claude session started"
       assert output =~ "hello"
-      assert output =~ "Session stopped"
+      assert output =~ "Session closed"
     end
   end
 end
