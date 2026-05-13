@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.7.0...v0.7.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* DuplexSession :allow defaults updatedInput to original input ([#76](https://github.com/genagent/claude_wrapper_ex/issues/76)) ([c91c780](https://github.com/genagent/claude_wrapper_ex/commit/c91c7807585dc6ace49b01540aea078835364e81))
+
 ## [0.7.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.6.1...v0.7.0) (2026-05-06)
 
 
