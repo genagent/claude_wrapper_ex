@@ -96,6 +96,24 @@ defmodule ClaudeWrapper.DuplexSessionTest do
     end
   end
 
+  describe "default_allow_input/2" do
+    test "plain :allow is rewritten to {:allow, input} so updatedInput round-trips" do
+      input = %{"command" => "ls"}
+      assert DuplexSession.default_allow_input(:allow, input) == {:allow, input}
+    end
+
+    test "{:allow, custom} is left alone (caller already supplied updatedInput)" do
+      custom = %{"command" => "ls -la"}
+      original = %{"command" => "ls"}
+      assert DuplexSession.default_allow_input({:allow, custom}, original) == {:allow, custom}
+    end
+
+    test "{:deny, reason} is left alone" do
+      assert DuplexSession.default_allow_input({:deny, "nope"}, %{"command" => "ls"}) ==
+               {:deny, "nope"}
+    end
+  end
+
   describe "subscribe / unsubscribe (with fake claude)" do
     test "broadcasts assistant events to subscribers" do
       pid = start_with_fake_claude()

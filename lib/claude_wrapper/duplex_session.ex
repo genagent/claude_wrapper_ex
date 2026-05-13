@@ -466,7 +466,7 @@ defmodule ClaudeWrapper.DuplexSession do
 
     case decision do
       :defer -> :ok
-      _ -> write_permission_response(state.port, id, decision)
+      _ -> write_permission_response(state.port, id, default_allow_input(decision, input))
     end
 
     state
@@ -630,6 +630,15 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defp decision_to_permission_response({:deny, reason}) when is_binary(reason),
     do: %{behavior: "deny", message: reason}
+
+  # Plain `:allow` is ambiguous over the wire: Claude's permission
+  # protocol validates the response with Zod and requires
+  # `updatedInput` even when the input is unmodified. We default it to
+  # the original `input` so callers don't have to thread it back
+  # through their state just to say "yes, run the tool as-is".
+  @doc false
+  def default_allow_input(:allow, input) when is_map(input), do: {:allow, input}
+  def default_allow_input(decision, _input), do: decision
 
   # 16 random bytes -> 32-char lowercase hex. Plenty of entropy to
   # avoid collisions in our pending_control map and matches the SDK's
