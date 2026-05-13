@@ -83,6 +83,35 @@ defmodule ClaudeWrapperTest do
       refute "--dangerously-skip-permissions" in args
     end
 
+    test "build_args emits --fork-session when fork_session is set" do
+      with_fork =
+        Query.new("p")
+        |> Query.resume("abc-123")
+        |> Query.fork_session()
+        |> Query.build_args()
+
+      assert "--fork-session" in with_fork
+      assert "--resume" in with_fork
+      assert "abc-123" in with_fork
+
+      without_fork =
+        Query.new("p")
+        |> Query.resume("abc-123")
+        |> Query.build_args()
+
+      refute "--fork-session" in without_fork
+    end
+
+    test "build_args emits --fork-session when set via apply_opts" do
+      args =
+        Query.new("p")
+        |> Query.apply_opts(continue_session: true, fork_session: true)
+        |> Query.build_args()
+
+      assert "--fork-session" in args
+      assert "--continue" in args
+    end
+
     test "to_command_string" do
       config = Config.new()
 
