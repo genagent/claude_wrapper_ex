@@ -220,6 +220,17 @@ defmodule ClaudeWrapper.DuplexSession do
   no record of is a no-op (returns `:ok`). The `decision` accepts the
   same shape as a synchronous handler return value, except `:defer`,
   which is rejected with `{:error, :cannot_defer_again}`.
+
+  > #### `:allow` and `updatedInput` {: .info}
+  >
+  > A synchronous handler returning plain `:allow` has its `updatedInput`
+  > defaulted to the original tool input automatically, since the
+  > dispatch site has the input in scope. The deferred path does not --
+  > the session does not retain per-request input across the defer
+  > boundary. If you need `updatedInput` populated (Claude's permission
+  > protocol requires it for `behavior: "allow"`), capture the input
+  > when the handler defers and pass `{:allow, input}` here rather than
+  > plain `:allow`.
   """
   @spec respond_to_permission(GenServer.server(), String.t(), permission_decision()) ::
           :ok | {:error, :cannot_defer_again}
