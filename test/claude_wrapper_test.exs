@@ -271,6 +271,24 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "named worktree (#84)" do
+    test "worktree/1 emits the bare flag" do
+      assert Query.new("p") |> Query.worktree() |> Query.build_args() ==
+               ["--print", "p", "--worktree"]
+    end
+
+    test "worktree/2 emits --worktree <name>" do
+      assert Query.new("p") |> Query.worktree("feature-x") |> Query.build_args() ==
+               ["--print", "p", "--worktree", "feature-x"]
+    end
+
+    test "apply_opts accepts a name, true, or false" do
+      assert Query.apply_opts(Query.new("p"), worktree: "wt").worktree == "wt"
+      assert Query.apply_opts(Query.new("p"), worktree: true).worktree == true
+      assert Query.apply_opts(Query.new("p"), worktree: false).worktree == false
+    end
+  end
+
   describe "from_pr (#85)" do
     test "emits --from-pr with the PR value" do
       args =
