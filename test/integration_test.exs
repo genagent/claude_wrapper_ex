@@ -277,7 +277,7 @@ defmodule ClaudeWrapper.IntegrationTest do
         # Give the first call a moment to register pending_turn.
         Process.sleep(50)
 
-        assert {:error, :turn_in_flight} =
+        assert {:error, %ClaudeWrapper.Error{kind: :turn_in_flight}} =
                  DuplexSession.send(pid, "second", 1_000)
 
         assert_receive {:first_done, {:ok, %ClaudeWrapper.Result{}}}, 120_000
@@ -368,6 +368,91 @@ defmodule ClaudeWrapper.IntegrationTest do
       after
         DuplexSession.stop(pid)
       end
+    end
+  end
+
+  describe "read modules (live ~/.claude)" do
+    test "History reads real project transcripts" do
+      {:ok, root} = ClaudeWrapper.History.home()
+      assert {:ok, projects} = ClaudeWrapper.History.list_projects(root)
+      assert is_list(projects)
+
+      for p <- Enum.take(projects, 1) do
+        assert %ClaudeWrapper.History.ProjectSummary{slug: slug} = p
+        assert is_binary(slug)
+        assert {:ok, sessions} = ClaudeWrapper.History.list_sessions(root, slug: slug, limit: 1)
+
+        for s <- Enum.take(sessions, 1) do
+          assert {:ok, %ClaudeWrapper.History.SessionLog{entries: entries}} =
+                   ClaudeWrapper.History.read_session(root, s.session_id)
+
+          assert is_list(entries)
+        end
+      end
+    end
+
+    test "Settings loads real layers" do
+      assert {:ok, %ClaudeWrapper.Settings{paths: paths}} =
+               ClaudeWrapper.Settings.load(project_root: File.cwd!())
+
+      assert is_binary(paths.user)
+    end
+
+    test "Agents lists and reads real definition files" do
+      {:ok, root} = ClaudeWrapper.Agents.home()
+      assert {:ok, agents} = ClaudeWrapper.Agents.list(root)
+      assert is_list(agents)
+
+      for a <- Enum.take(agents, 1) do
+        assert %ClaudeWrapper.Agents.Summary{file_stem: stem} = a
+        assert {:ok, %ClaudeWrapper.Agents.Definition{}} = ClaudeWrapper.Agents.get(root, stem)
+      end
+    end
+
+    test "Skills lists real skill dirs" do
+      {:ok, root} = ClaudeWrapper.Skills.home()
+      assert {:ok, skills} = ClaudeWrapper.Skills.list(root)
+      assert is_list(skills)
+    end
+
+    test "Jobs lists real job state" do
+      {:ok, root} = ClaudeWrapper.Jobs.home()
+      assert {:ok, jobs} = ClaudeWrapper.Jobs.list(root)
+      assert is_list(jobs)
+    end
+
+    test "Worktrees lists this repo's worktrees" do
+      assert {:ok, wt} = ClaudeWrapper.Worktrees.for_repo(File.cwd!())
+      assert {:ok, list} = ClaudeWrapper.Worktrees.list(wt)
+      assert Enum.any?(list, & &1.is_main?)
+    end
+
+    test "CliVersion parses the real --version" do
+      assert {:ok, %{version: raw}} = ClaudeWrapper.version()
+      assert {:ok, %ClaudeWrapper.CliVersion{} = v} = ClaudeWrapper.CliVersion.parse(raw)
+
+      assert ClaudeWrapper.CliVersion.satisfies_minimum?(
+               v,
+               ClaudeWrapper.CliVersion.new(2, 0, 0)
+             )
+    end
+  end
+
+  describe "command smokes (live, non-mutating)" do
+    alias ClaudeWrapper.Commands.{Mcp, Plugin}
+
+    test "mcp list", %{config: config} do
+      assert {:ok, output} = Mcp.list(config)
+      assert is_binary(output)
+    end
+
+    test "plugin list", %{config: config} do
+      assert {:ok, _plugins} = Plugin.list(config)
+    end
+
+    test "auth status" do
+      assert {:ok, status} = ClaudeWrapper.auth_status()
+      assert is_map(status)
     end
   end
 end

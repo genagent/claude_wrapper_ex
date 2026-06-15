@@ -8,9 +8,9 @@ defmodule ClaudeWrapper.Commands.Mcp do
 
       config = ClaudeWrapper.Config.new()
 
-      # List / inspect configured servers (JSON-decoded)
-      {:ok, servers} = ClaudeWrapper.Commands.Mcp.list(config)
-      {:ok, server} = ClaudeWrapper.Commands.Mcp.get(config, "sentry")
+      # List / inspect configured servers (raw text; the CLI has no JSON mode)
+      {:ok, servers_text} = ClaudeWrapper.Commands.Mcp.list(config)
+      {:ok, server_text} = ClaudeWrapper.Commands.Mcp.get(config, "sentry")
 
       # Add an HTTP server with an auth header
       {:ok, _} =
@@ -49,50 +49,40 @@ defmodule ClaudeWrapper.Commands.Mcp do
   @doc """
   List configured MCP servers.
 
+  `claude mcp list` emits human-readable text (it has no JSON mode), so
+  this returns the raw, trimmed output rather than structured data.
+
   ## Options
 
     * `:scope` - Configuration scope (`:local`, `:user`, or `:project`).
   """
-  @spec list(Config.t(), keyword()) :: {:ok, list(map())} | {:error, term()}
+  @spec list(Config.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def list(%Config{} = config, opts \\ []) do
-    args = Config.base_args(config) ++ ["mcp", "list"]
-    args = args ++ scope_args(opts[:scope])
-    args = args ++ ["--output-format", "json"]
+    args = Config.base_args(config) ++ ["mcp", "list"] ++ scope_args(opts[:scope])
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
-      {output, 0} ->
-        case Jason.decode(output) do
-          {:ok, data} -> {:ok, data}
-          {:error, reason} -> {:error, Error.json(reason)}
-        end
-
-      {output, code} ->
-        {:error, Error.command_failed(code, output)}
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 
   @doc """
   Get details for a specific MCP server.
 
+  `claude mcp get` emits human-readable text (it has no JSON mode), so
+  this returns the raw, trimmed output rather than structured data.
+
   ## Options
 
     * `:scope` - Configuration scope (`:local`, `:user`, or `:project`).
   """
-  @spec get(Config.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec get(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def get(%Config{} = config, name, opts \\ []) do
-    args = Config.base_args(config) ++ ["mcp", "get", name]
-    args = args ++ scope_args(opts[:scope])
-    args = args ++ ["--output-format", "json"]
+    args = Config.base_args(config) ++ ["mcp", "get", name] ++ scope_args(opts[:scope])
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
-      {output, 0} ->
-        case Jason.decode(output) do
-          {:ok, data} -> {:ok, data}
-          {:error, reason} -> {:error, Error.json(reason)}
-        end
-
-      {output, code} ->
-        {:error, Error.command_failed(code, output)}
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 
