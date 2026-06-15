@@ -811,6 +811,217 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "Commands.Mcp" do
+    alias ClaudeWrapper.Commands.Mcp
+
+    test "module is loaded and has expected functions" do
+      Code.ensure_loaded!(Mcp)
+      funcs = Mcp.__info__(:functions)
+
+      assert {:list, 2} in funcs
+      assert {:get, 3} in funcs
+      assert {:add, 5} in funcs
+      assert {:add_json, 4} in funcs
+      assert {:add_from_desktop, 3} in funcs
+      assert {:remove, 3} in funcs
+      assert {:serve, 2} in funcs
+      assert {:reset_project_choices, 1} in funcs
+
+      # @doc false builders are public for arg-composition testing.
+      assert {:add_args, 4} in funcs
+      assert {:add_json_args, 3} in funcs
+      assert {:add_from_desktop_args, 2} in funcs
+      assert {:serve_args, 1} in funcs
+    end
+
+    test "add_args defaults to subcommand plus positionals" do
+      assert Mcp.add_args("srv", "npx", [], []) == ["mcp", "add", "srv", "npx"]
+    end
+
+    test "add_args passes inline command_args through as positionals" do
+      assert Mcp.add_args("srv", "my-command", ["--some-flag", "arg1"], []) ==
+               ["mcp", "add", "srv", "my-command", "--some-flag", "arg1"]
+    end
+
+    test "add_args emits --transport before the positionals" do
+      assert Mcp.add_args("sentry", "https://mcp.sentry.dev/mcp", [], transport: :http) ==
+               ["mcp", "add", "--transport", "http", "sentry", "https://mcp.sentry.dev/mcp"]
+
+      assert Mcp.add_args("s", "u", [], transport: :sse) ==
+               ["mcp", "add", "--transport", "sse", "s", "u"]
+
+      assert Mcp.add_args("s", "u", [], transport: :stdio) ==
+               ["mcp", "add", "--transport", "stdio", "s", "u"]
+    end
+
+    test "add_args emits env as repeated -e KEY=value (map and keyword)" do
+      assert Mcp.add_args("s", "npx", [], env: %{"API_KEY" => "xxx"}) ==
+               ["mcp", "add", "-e", "API_KEY=xxx", "s", "npx"]
+
+      assert Mcp.add_args("s", "npx", [], env: [API_KEY: "xxx"]) ==
+               ["mcp", "add", "-e", "API_KEY=xxx", "s", "npx"]
+    end
+
+    test "add_args emits one --header per header (list)" do
+      args =
+        Mcp.add_args("c", "https://app.corridor.dev/api/mcp", [],
+          transport: :http,
+          header: ["Authorization: Bearer abc", "X-Custom: value"]
+        )
+
+      assert args == [
+               "mcp",
+               "add",
+               "--transport",
+               "http",
+               "--header",
+               "Authorization: Bearer abc",
+               "--header",
+               "X-Custom: value",
+               "c",
+               "https://app.corridor.dev/api/mcp"
+             ]
+
+      assert Enum.count(args, &(&1 == "--header")) == 2
+    end
+
+    test "add_args accepts headers as a map rendered Key: Value" do
+      assert Mcp.add_args("s", "u", [], header: %{"X-Api-Key" => "abc123"}) ==
+               ["mcp", "add", "--header", "X-Api-Key: abc123", "s", "u"]
+    end
+
+    test "add_args emits server_args after a -- separator" do
+      assert Mcp.add_args("my-server", "npx", [], server_args: ["my-mcp-server"]) ==
+               ["mcp", "add", "my-server", "npx", "--", "my-mcp-server"]
+
+      assert Mcp.add_args("s", "npx", [], server_args: ["a", "b"]) ==
+               ["mcp", "add", "s", "npx", "--", "a", "b"]
+    end
+
+    test "add_args omits the -- separator when server_args is empty" do
+      assert Mcp.add_args("s", "npx", [], server_args: []) == ["mcp", "add", "s", "npx"]
+    end
+
+    test "add_args emits --callback-port with a stringified value" do
+      assert Mcp.add_args("s", "https://example.com/mcp", [], callback_port: 8080) ==
+               ["mcp", "add", "--callback-port", "8080", "s", "https://example.com/mcp"]
+    end
+
+    test "add_args emits --client-id and --client-secret together" do
+      assert Mcp.add_args("s", "https://example.com/mcp", [],
+               client_id: "my-app-id",
+               client_secret: true
+             ) ==
+               [
+                 "mcp",
+                 "add",
+                 "--client-id",
+                 "my-app-id",
+                 "--client-secret",
+                 "s",
+                 "https://example.com/mcp"
+               ]
+    end
+
+    test "add_args omits --client-secret when falsy" do
+      refute "--client-secret" in Mcp.add_args("s", "u", [], client_id: "id")
+      refute "--client-secret" in Mcp.add_args("s", "u", [], client_secret: false)
+    end
+
+    test "add_args composes transport, scope, env, port, client_id, secret in order" do
+      args =
+        Mcp.add_args("srv", "https://example.com/mcp", [],
+          transport: :http,
+          scope: :user,
+          env: %{"TOKEN" => "t"},
+          callback_port: 9000,
+          client_id: "cid",
+          client_secret: true
+        )
+
+      assert args == [
+               "mcp",
+               "add",
+               "--transport",
+               "http",
+               "--scope",
+               "user",
+               "-e",
+               "TOKEN=t",
+               "--callback-port",
+               "9000",
+               "--client-id",
+               "cid",
+               "--client-secret",
+               "srv",
+               "https://example.com/mcp"
+             ]
+    end
+
+    test "add_args puts server_args after inline command_args, both after the URL" do
+      assert Mcp.add_args("s", "npx", ["inline"], server_args: ["trailing"]) ==
+               ["mcp", "add", "s", "npx", "inline", "--", "trailing"]
+    end
+
+    test "add_json_args defaults to subcommand plus positionals" do
+      assert Mcp.add_json_args("srv", ~s({"command":"npx"}), []) ==
+               ["mcp", "add-json", "srv", ~s({"command":"npx"})]
+    end
+
+    test "add_json_args emits --scope" do
+      assert Mcp.add_json_args("srv", "{}", scope: :user) ==
+               ["mcp", "add-json", "--scope", "user", "srv", "{}"]
+    end
+
+    test "add_json_args emits --client-secret" do
+      assert Mcp.add_json_args("srv", "{}", client_secret: true) ==
+               ["mcp", "add-json", "--client-secret", "srv", "{}"]
+    end
+
+    test "add_json_args omits --client-secret by default" do
+      refute "--client-secret" in Mcp.add_json_args("srv", "{}", [])
+    end
+
+    test "add_json_args composes scope and client_secret" do
+      assert Mcp.add_json_args("srv", "{}", scope: :project, client_secret: true) ==
+               ["mcp", "add-json", "--scope", "project", "--client-secret", "srv", "{}"]
+    end
+
+    test "add_from_desktop_args defaults to just the subcommand" do
+      assert Mcp.add_from_desktop_args(nil, []) == ["mcp", "add-from-claude-desktop"]
+    end
+
+    test "add_from_desktop_args emits --scope" do
+      assert Mcp.add_from_desktop_args(nil, scope: :user) ==
+               ["mcp", "add-from-claude-desktop", "--scope", "user"]
+    end
+
+    test "add_from_desktop_args appends a name positional when given" do
+      assert Mcp.add_from_desktop_args("srv", []) ==
+               ["mcp", "add-from-claude-desktop", "srv"]
+
+      assert Mcp.add_from_desktop_args("srv", scope: :project) ==
+               ["mcp", "add-from-claude-desktop", "--scope", "project", "srv"]
+    end
+
+    test "serve_args defaults to just the subcommand" do
+      assert Mcp.serve_args([]) == ["mcp", "serve"]
+    end
+
+    test "serve_args emits --debug and --verbose" do
+      assert Mcp.serve_args(debug: true) == ["mcp", "serve", "--debug"]
+      assert Mcp.serve_args(verbose: true) == ["mcp", "serve", "--verbose"]
+
+      assert Mcp.serve_args(debug: true, verbose: true) ==
+               ["mcp", "serve", "--debug", "--verbose"]
+    end
+
+    test "serve_args omits unset flags" do
+      refute "--debug" in Mcp.serve_args(verbose: true)
+      refute "--verbose" in Mcp.serve_args(debug: true)
+    end
+  end
+
   describe "Commands.Agents" do
     alias ClaudeWrapper.Commands.Agents
 
