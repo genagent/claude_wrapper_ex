@@ -23,6 +23,3 @@ erl_crash.dump
 claude_wrapper_ex-*.tar
 claude_wrapper-*.tar
 
-# Local context
-CLAUDE.md
-
