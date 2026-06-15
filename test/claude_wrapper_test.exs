@@ -1022,6 +1022,79 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "Commands.Auth" do
+    alias ClaudeWrapper.Commands.Auth
+
+    test "module is loaded and has expected functions" do
+      Code.ensure_loaded!(Auth)
+      funcs = Auth.__info__(:functions)
+
+      assert {:status, 1} in funcs
+      assert {:login, 1} in funcs
+      assert {:login, 2} in funcs
+      assert {:logout, 1} in funcs
+      assert {:setup_token, 2} in funcs
+
+      # @doc false builder is public for arg-composition testing.
+      assert {:login_args, 1} in funcs
+    end
+
+    test "login_args defaults to just the subcommand" do
+      assert Auth.login_args([]) == ["auth", "login"]
+    end
+
+    test "login_args emits --email with the value" do
+      assert Auth.login_args(email: "user@example.com") ==
+               ["auth", "login", "--email", "user@example.com"]
+    end
+
+    test "login_args emits --claudeai for mode :claudeai" do
+      assert Auth.login_args(mode: :claudeai) == ["auth", "login", "--claudeai"]
+    end
+
+    test "login_args emits --console for mode :console" do
+      assert Auth.login_args(mode: :console) == ["auth", "login", "--console"]
+    end
+
+    test "login_args emits --sso when force_sso is true" do
+      assert Auth.login_args(force_sso: true) == ["auth", "login", "--sso"]
+    end
+
+    test "login_args omits --sso when force_sso is falsy" do
+      refute "--sso" in Auth.login_args(force_sso: false)
+      refute "--sso" in Auth.login_args([])
+    end
+
+    test "login_args composes mode, email, and force_sso in order" do
+      args =
+        Auth.login_args(
+          mode: :console,
+          email: "ops@example.com",
+          force_sso: true
+        )
+
+      assert args == [
+               "auth",
+               "login",
+               "--console",
+               "--email",
+               "ops@example.com",
+               "--sso"
+             ]
+    end
+
+    test "login_args puts mode before email (claudeai + email)" do
+      assert Auth.login_args(mode: :claudeai, email: "me@example.com") ==
+               ["auth", "login", "--claudeai", "--email", "me@example.com"]
+    end
+
+    test "login_args omits unset flags" do
+      refute "--email" in Auth.login_args(mode: :console)
+      refute "--claudeai" in Auth.login_args(email: "x@y.z")
+      refute "--console" in Auth.login_args(email: "x@y.z")
+    end
+  end
+
   describe "Commands.Agents" do
     alias ClaudeWrapper.Commands.Agents
 
