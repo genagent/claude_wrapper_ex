@@ -132,22 +132,32 @@ defmodule ClaudeWrapper.DuplexIExTest do
   end
 
   describe "handle_event/1 (stream printing)" do
-    test "prints text deltas to stdout" do
-      output =
-        capture_io(fn ->
-          DuplexIEx.handle_event(
-            {:stream_event, %{"event" => %{"delta" => %{"text" => "hello"}}}}
-          )
-        end)
+    # The CLI wraps each streaming event as
+    # %{"type" => "stream_event", "event" => %{...}}; build the realistic
+    # content_block_delta envelope the printer now decodes via
+    # StreamEvent.partial_message/1.
+    defp text_delta(text, index \\ 0) do
+      {:stream_event,
+       %{
+         "type" => "stream_event",
+         "event" => %{
+           "type" => "content_block_delta",
+           "index" => index,
+           "delta" => %{"type" => "text_delta", "text" => text}
+         }
+       }}
+    end
 
+    test "prints text deltas to stdout" do
+      output = capture_io(fn -> DuplexIEx.handle_event(text_delta("hello")) end)
       assert output == "hello"
     end
 
     test "concatenates multiple deltas without newlines" do
       output =
         capture_io(fn ->
-          DuplexIEx.handle_event({:stream_event, %{"event" => %{"delta" => %{"text" => "hel"}}}})
-          DuplexIEx.handle_event({:stream_event, %{"event" => %{"delta" => %{"text" => "lo"}}}})
+          DuplexIEx.handle_event(text_delta("hel"))
+          DuplexIEx.handle_event(text_delta("lo"))
         end)
 
       assert output == "hello"
@@ -157,7 +167,15 @@ defmodule ClaudeWrapper.DuplexIExTest do
       output =
         capture_io(fn ->
           DuplexIEx.handle_event(
-            {:stream_event, %{"event" => %{"delta" => %{"partial_json" => "{\"x\":"}}}}
+            {:stream_event,
+             %{
+               "type" => "stream_event",
+               "event" => %{
+                 "type" => "content_block_delta",
+                 "index" => 0,
+                 "delta" => %{"type" => "input_json_delta", "partial_json" => "{\"x\":"}
+               }
+             }}
           )
         end)
 
@@ -234,7 +252,14 @@ defmodule ClaudeWrapper.DuplexIExTest do
           state = :sys.get_state(pid)
 
           Port.command(state.port, [
-            Jason.encode!(%{type: "stream_event", event: %{delta: %{text: "hi"}}}),
+            Jason.encode!(%{
+              type: "stream_event",
+              event: %{
+                type: "content_block_delta",
+                index: 0,
+                delta: %{type: "text_delta", text: "hi"}
+              }
+            }),
             ?\n
           ])
 

@@ -54,7 +54,7 @@ defmodule ClaudeWrapper.DuplexIEx do
     `:extra_args`) are forwarded as well
   """
 
-  alias ClaudeWrapper.{Config, DuplexSession, Result}
+  alias ClaudeWrapper.{Config, DuplexSession, Result, StreamEvent}
 
   @session_key :claude_wrapper_duplex_iex_session
   @printer_key :claude_wrapper_duplex_iex_printer
@@ -253,12 +253,9 @@ defmodule ClaudeWrapper.DuplexIEx do
   end
 
   @doc false
-  def handle_event({:stream_event, %{"event" => %{"delta" => %{"text" => text}}}})
-      when is_binary(text) do
-    IO.write(text)
+  def handle_event({:stream_event, msg}) when is_map(msg) do
+    print_partial_text(StreamEvent.partial_message(%StreamEvent{type: msg["type"], data: msg}))
   end
-
-  def handle_event({:stream_event, _other}), do: :ok
 
   def handle_event({:assistant, _msg}), do: :ok
 
@@ -293,6 +290,16 @@ defmodule ClaudeWrapper.DuplexIEx do
   def handle_event(_other), do: :ok
 
   # --- Private --------------------------------------------------------
+
+  # Write incremental assistant text as it streams in. Only text deltas
+  # are surfaced (the prior raw-map version keyed on delta["text"], which
+  # thinking/tool-input deltas don't carry); other partial-message shapes
+  # are ignored here.
+  defp print_partial_text({:block_delta, _index, {:text, text}}) when is_binary(text) do
+    IO.write(text)
+  end
+
+  defp print_partial_text(_other), do: :ok
 
   defp print_meta(%Result{} = result) do
     cost_str = format_cost(result.cost_usd)
