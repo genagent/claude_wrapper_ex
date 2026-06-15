@@ -51,6 +51,7 @@ defmodule ClaudeWrapper.Query do
           resume: String.t() | nil,
           session_id: String.t() | nil,
           fallback_model: String.t() | nil,
+          from_pr: String.t() | nil,
           no_session_persistence: boolean(),
           dangerously_skip_permissions: boolean(),
           agent: String.t() | nil,
@@ -92,6 +93,7 @@ defmodule ClaudeWrapper.Query do
     :resume,
     :session_id,
     :fallback_model,
+    :from_pr,
     :agent,
     :agents_json,
     :input_format,
@@ -202,6 +204,15 @@ defmodule ClaudeWrapper.Query do
   @doc "Set a fallback model."
   @spec fallback_model(t(), String.t()) :: t()
   def fallback_model(%__MODULE__{} = q, model), do: %{q | fallback_model: model}
+
+  @doc """
+  Resume a session linked to a PR (`--from-pr <number|url>`).
+
+  Analogous to `resume/2` but keyed on a pull request rather than a
+  session id. The value is a PR number or URL.
+  """
+  @spec from_pr(t(), String.t()) :: t()
+  def from_pr(%__MODULE__{} = q, pr), do: %{q | from_pr: pr}
 
   @doc "Disable session persistence."
   @spec no_session_persistence(t()) :: t()
@@ -350,6 +361,7 @@ defmodule ClaudeWrapper.Query do
   defp apply_opt({:session_id, v}, q), do: session_id(q, v)
   defp apply_opt({:resume, v}, q), do: resume(q, v)
   defp apply_opt({:fallback_model, v}, q), do: fallback_model(q, v)
+  defp apply_opt({:from_pr, v}, q), do: from_pr(q, v)
   defp apply_opt({:output_format, v}, q), do: output_format(q, v)
   defp apply_opt({:input_format, v}, q), do: input_format(q, v)
   defp apply_opt({:settings, v}, q), do: settings(q, v)
@@ -554,6 +566,7 @@ defmodule ClaudeWrapper.Query do
     |> add_opt("--resume", q.resume)
     |> add_opt("--session-id", q.session_id)
     |> add_opt("--fallback-model", q.fallback_model)
+    |> add_opt("--from-pr", q.from_pr)
     |> add_bool("--no-session-persistence", q.no_session_persistence)
     |> add_bool("--dangerously-skip-permissions", q.dangerously_skip_permissions)
     |> add_opt("--agent", q.agent)

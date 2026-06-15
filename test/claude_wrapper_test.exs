@@ -271,6 +271,26 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "from_pr (#85)" do
+    test "emits --from-pr with the PR value" do
+      args =
+        Query.new("review this")
+        |> Query.from_pr("123")
+        |> Query.build_args()
+
+      assert "--from-pr" in args
+      idx = Enum.find_index(args, &(&1 == "--from-pr"))
+      assert Enum.at(args, idx + 1) == "123"
+    end
+
+    test "settable via apply_opts; absent by default" do
+      q = Query.new("p") |> Query.apply_opts(from_pr: "https://github.com/o/r/pull/7")
+      assert q.from_pr == "https://github.com/o/r/pull/7"
+
+      refute "--from-pr" in (Query.new("p") |> Query.build_args())
+    end
+  end
+
   describe "Result" do
     test "from_json parses standard fields" do
       data = %{
