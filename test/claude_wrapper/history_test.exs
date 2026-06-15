@@ -1,6 +1,8 @@
 defmodule ClaudeWrapper.HistoryTest do
   use ExUnit.Case, async: true
 
+  doctest ClaudeWrapper.History, import: true
+
   alias ClaudeWrapper.History
   alias ClaudeWrapper.History.{ProjectSummary, SessionLog, SessionSummary}
 
@@ -233,16 +235,25 @@ defmodule ClaudeWrapper.HistoryTest do
   end
 
   describe "project_slug/1 and sessions_for_path/3" do
-    test "encodes both '/' and '.' as '-'" do
+    test "encodes '/', '.', and '_' as '-' (matching the CLI)" do
       tmp = Path.join(System.tmp_dir!(), "cwx_slug_#{System.unique_integer([:positive])}")
-      cwd = Path.join(tmp, "my.proj")
+      # Mix all three separators the CLI collapses to '-': a dotted dir and
+      # an underscored dir. Regression for the slug missing '_' (which made
+      # sessions_for_path silently miss any underscored project dir).
+      cwd = Path.join([tmp, "my.proj", "claude_wrapper_ex"])
       File.mkdir_p!(cwd)
       on_exit(fn -> File.rm_rf!(tmp) end)
 
       slug = History.project_slug(cwd)
       assert slug =~ "my-proj"
+      assert slug =~ "claude-wrapper-ex"
       refute slug =~ "."
       refute slug =~ "/"
+      refute slug =~ "_"
+    end
+
+    test "encodes every non-alphanumeric character as '-'" do
+      assert History.project_slug("/Users/josh/Code/foo_bar") == "-Users-josh-Code-foo-bar"
     end
 
     test "sessions_for_path derives the slug and finds sessions", %{root: root} do

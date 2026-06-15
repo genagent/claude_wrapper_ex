@@ -97,11 +97,17 @@ defmodule ClaudeWrapper.History do
   ## Slug encoding
 
   Project directory names are filesystem-safe encodings of an absolute
-  path: every `/` and `.` becomes `-` (so `/Users/josh/Code/foo` becomes
-  `-Users-josh-Code-foo`). `project_slug/1` is the forward derivation
-  (canonicalize + encode); `ProjectSummary.decoded_path` is a best-effort
-  inverse that anchors on the real filesystem to disambiguate literal
-  hyphens in directory names.
+  path: every character that is not a letter or digit becomes `-` (so
+  `/Users/josh/Code/foo_bar` becomes `-Users-josh-Code-foo-bar`).
+  `project_slug/1` is the forward derivation (canonicalize + encode);
+  `ProjectSummary.decoded_path` is a best-effort inverse that anchors on
+  the real filesystem to disambiguate literal hyphens in directory names.
+
+  The encoding is lossy -- a `-` in a slug may have been a `/`, `.`, `_`,
+  space, or a literal hyphen -- so the inverse cannot always be exact.
+  When `decode_slug_anchored` cannot confirm a decoded path against the
+  filesystem it sets `ProjectSummary.decode_verified?` to `false`. The
+  forward direction has no such ambiguity and always matches the CLI.
 
   ## Example
 
@@ -298,11 +304,15 @@ defmodule ClaudeWrapper.History do
   @doc """
   Derive Claude Code's project-directory slug for a filesystem path,
   matching the CLI: the path is canonicalized (best-effort symlink
-  resolution) and then every `/` and `.` is encoded as `-`.
+  resolution) and then every character that is not a letter or digit
+  (`/`, `.`, `_`, space, ...) is encoded as `-`.
 
   This is the reliable way to locate the project directory for a working
   directory -- see `sessions_for_path/3`. Falls back to the expanded path
   when it cannot be canonicalized.
+
+      iex> ClaudeWrapper.History.project_slug("/Users/josh/Code/foo_bar")
+      "-Users-josh-Code-foo-bar"
   """
   @spec project_slug(String.t()) :: String.t()
   def project_slug(path) when is_binary(path) do
@@ -536,7 +546,13 @@ defmodule ClaudeWrapper.History do
 
   # -- slug encode / decode ------------------------------------------
 
-  defp encode_path_slug(path), do: String.replace(path, ["/", "."], "-")
+  # Claude Code sanitizes the absolute path into a directory name by
+  # replacing every character that is not a letter or digit with `-` --
+  # not just `/` and `.` but `_`, spaces, and any other separator too.
+  # Match that exactly, or the derived slug won't find sessions for paths
+  # that contain underscores (e.g. `claude_wrapper_ex` -> the real dir is
+  # `...-claude-wrapper-ex`, not `...-claude_wrapper_ex`).
+  defp encode_path_slug(path), do: String.replace(path, ~r/[^A-Za-z0-9]/, "-")
 
   # Decode a slug back to a path, anchoring on the real filesystem to
   # disambiguate literal hyphens in directory names. Returns
