@@ -27,7 +27,7 @@ defmodule ClaudeWrapper.Commands.Project do
       {:ok, _} = ClaudeWrapper.Commands.Project.purge(config, all: true, yes: true)
   """
 
-  alias ClaudeWrapper.Config
+  alias ClaudeWrapper.{Config, Error}
 
   @doc """
   Delete all Claude Code state for a project.
@@ -56,7 +56,7 @@ defmodule ClaudeWrapper.Commands.Project do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 

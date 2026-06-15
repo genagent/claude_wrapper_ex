@@ -123,7 +123,7 @@ defmodule ClaudeWrapper.DuplexSession do
   use GenServer
   require Logger
 
-  alias ClaudeWrapper.{Config, Result}
+  alias ClaudeWrapper.{Config, Error, Result}
 
   @type tool_input :: map()
 
@@ -224,8 +224,9 @@ defmodule ClaudeWrapper.DuplexSession do
   @doc """
   Send a user prompt. Blocks until the turn's `result` event arrives.
 
-  Returns `{:ok, %Result{}}` on success, `{:error, :turn_in_flight}` if
-  another turn is already running, or `{:error, reason}` on failure.
+  Returns `{:ok, %Result{}}` on success, `{:error,
+  %ClaudeWrapper.Error{kind: :turn_in_flight}}` if another turn is
+  already running, or `{:error, %ClaudeWrapper.Error{}}` on failure.
 
   The default `timeout` is 120 seconds because the entire turn duration
   must complete within it (cold start + model latency + tool calls).
@@ -268,7 +269,8 @@ defmodule ClaudeWrapper.DuplexSession do
   given `request_id`. Calling this with a `request_id` the session has
   no record of is a no-op (returns `:ok`). The `decision` accepts the
   same shape as a synchronous handler return value, except `:defer`,
-  which is rejected with `{:error, :cannot_defer_again}`.
+  which is rejected with `{:error, %ClaudeWrapper.Error{kind:
+  :cannot_defer_again}}`.
 
   > #### `:allow` and `updatedInput` {: .info}
   >
@@ -282,9 +284,9 @@ defmodule ClaudeWrapper.DuplexSession do
   > plain `:allow`.
   """
   @spec respond_to_permission(GenServer.server(), String.t(), permission_decision()) ::
-          :ok | {:error, :cannot_defer_again}
+          :ok | {:error, Error.t()}
   def respond_to_permission(_server, _request_id, :defer),
-    do: {:error, :cannot_defer_again}
+    do: {:error, Error.new(:cannot_defer_again)}
 
   def respond_to_permission(server, request_id, decision)
       when is_binary(request_id) do
@@ -477,11 +479,11 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   def handle_call({:send, _prompt}, _from, %{pending_turn: nil, port: nil} = state) do
-    {:reply, {:error, :port_closed}, state}
+    {:reply, {:error, Error.new(:duplex_closed)}, state}
   end
 
   def handle_call({:send, _prompt}, _from, state) do
-    {:reply, {:error, :turn_in_flight}, state}
+    {:reply, {:error, Error.new(:turn_in_flight)}, state}
   end
 
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
@@ -514,7 +516,7 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   def handle_call(:interrupt, _from, %{port: nil} = state) do
-    {:reply, {:error, :port_closed}, state}
+    {:reply, {:error, Error.new(:duplex_closed)}, state}
   end
 
   def handle_call(:interrupt, from, state) do
@@ -667,8 +669,8 @@ defmodule ClaudeWrapper.DuplexSession do
         reply =
           case resp do
             %{"subtype" => "success"} -> :ok
-            %{"subtype" => "error", "error" => err} -> {:error, err}
-            other -> {:error, other}
+            %{"subtype" => "error", "error" => err} -> {:error, control_failed(err)}
+            other -> {:error, control_failed(other)}
           end
 
         GenServer.reply(from, reply)
@@ -759,7 +761,7 @@ defmodule ClaudeWrapper.DuplexSession do
   defp fail_pending_turn(%{pending_turn: nil} = state, _reason), do: state
 
   defp fail_pending_turn(%{pending_turn: {from, _}} = state, reason) do
-    GenServer.reply(from, {:error, reason})
+    GenServer.reply(from, {:error, fail_reason_to_error(reason)})
     %{state | pending_turn: nil}
   end
 
@@ -768,12 +770,26 @@ defmodule ClaudeWrapper.DuplexSession do
        do: state
 
   defp fail_pending_control(%{pending_control: pending} = state, reason) do
+    error = fail_reason_to_error(reason)
+
     Enum.each(pending, fn {_id, from} ->
-      GenServer.reply(from, {:error, reason})
+      GenServer.reply(from, {:error, error})
     end)
 
     %{state | pending_control: %{}}
   end
+
+  # Map the internal fail-pending reasons to the canonical Error. A clean
+  # `:terminated` (terminate/2) stays bare; a `{:port_exit, x}` from a
+  # subprocess exit is carried in :reason so callers can recover the code.
+  defp fail_reason_to_error(:terminated), do: Error.new(:terminated)
+
+  defp fail_reason_to_error({:port_exit, _} = reason),
+    do: Error.new(:terminated, reason: reason)
+
+  # Wrap an interrupt/permission control_request failure reported by the
+  # CLI via a `subtype: "error"` control_response.
+  defp control_failed(reason), do: Error.new(:duplex_control_failed, reason: reason)
 
   defp port_env_opts(%Config{env: []}), do: []
   defp port_env_opts(%Config{env: env}), do: [{:env, env}]

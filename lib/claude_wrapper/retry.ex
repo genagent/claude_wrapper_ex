@@ -16,16 +16,15 @@ defmodule ClaudeWrapper.Retry do
 
       # With custom retry predicate
       {:ok, result} = ClaudeWrapper.Retry.execute(query, config,
-        max_retries: 5,
         retry_on: fn
-          {:error, {:exit, 1, _}} -> true
-          {:error, {:timeout, _}} -> true
+          {:error, %ClaudeWrapper.Error{kind: :command_failed, exit_code: 1}} -> true
+          {:error, %ClaudeWrapper.Error{kind: :timeout}} -> true
           _ -> false
         end
       )
   """
 
-  alias ClaudeWrapper.{Config, Query, Result}
+  alias ClaudeWrapper.{Config, Error, Query, Result}
 
   @type opts :: [
           max_retries: non_neg_integer(),
@@ -117,7 +116,11 @@ defmodule ClaudeWrapper.Retry do
     end
   end
 
-  defp default_retry_on({:error, {:timeout, _}}), do: true
-  defp default_retry_on({:error, {:exit, code, _}}) when code != 0, do: true
+  defp default_retry_on({:error, %Error{kind: :timeout}}), do: true
+
+  defp default_retry_on({:error, %Error{kind: :command_failed, exit_code: code}})
+       when code != 0,
+       do: true
+
   defp default_retry_on(_), do: false
 end

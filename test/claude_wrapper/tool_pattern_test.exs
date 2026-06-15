@@ -60,30 +60,54 @@ defmodule ClaudeWrapper.ToolPatternTest do
 
   describe "parse/1 errors" do
     test "rejects empty input" do
-      assert ToolPattern.parse("") == {:error, :empty}
-      assert ToolPattern.parse("   ") == {:error, :empty}
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_tool_pattern, reason: :empty}} =
+               ToolPattern.parse("")
+
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_tool_pattern, reason: :empty}} =
+               ToolPattern.parse("   ")
     end
 
     test "rejects unbalanced parens" do
-      assert {:error, {:unbalanced_parens, "Bash(git log"}} = ToolPattern.parse("Bash(git log")
-      assert {:error, {:unbalanced_parens, "Bashgit log)"}} = ToolPattern.parse("Bashgit log)")
+      assert {:error,
+              %ClaudeWrapper.Error{
+                kind: :invalid_tool_pattern,
+                reason: {:unbalanced_parens, "Bash(git log"}
+              }} = ToolPattern.parse("Bash(git log")
 
-      assert {:error, {:unbalanced_parens, "Bash((nested))"}} =
-               ToolPattern.parse("Bash((nested))")
+      assert {:error,
+              %ClaudeWrapper.Error{
+                kind: :invalid_tool_pattern,
+                reason: {:unbalanced_parens, "Bashgit log)"}
+              }} = ToolPattern.parse("Bashgit log)")
+
+      assert {:error,
+              %ClaudeWrapper.Error{
+                kind: :invalid_tool_pattern,
+                reason: {:unbalanced_parens, "Bash((nested))"}
+              }} = ToolPattern.parse("Bash((nested))")
     end
 
     test "rejects a missing name before the args" do
-      assert ToolPattern.parse("(args)") == {:error, :missing_name}
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_tool_pattern, reason: :missing_name}} =
+               ToolPattern.parse("(args)")
     end
 
     test "rejects a comma" do
-      assert {:error, {:illegal_char, "Bash,Read"}} = ToolPattern.parse("Bash,Read")
+      assert {:error,
+              %ClaudeWrapper.Error{
+                kind: :invalid_tool_pattern,
+                reason: {:illegal_char, "Bash,Read"}
+              }} = ToolPattern.parse("Bash,Read")
     end
 
     test "rejects a mid-string control char" do
       # Leading/trailing whitespace is trimmed, so the control char must
       # be in the interior to trip the check.
-      assert {:error, {:illegal_char, "Ba\nsh"}} = ToolPattern.parse("Ba\nsh")
+      assert {:error,
+              %ClaudeWrapper.Error{
+                kind: :invalid_tool_pattern,
+                reason: {:illegal_char, "Ba\nsh"}
+              }} = ToolPattern.parse("Ba\nsh")
     end
   end
 

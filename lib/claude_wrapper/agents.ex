@@ -125,6 +125,7 @@ defmodule ClaudeWrapper.Agents do
   """
 
   alias ClaudeWrapper.Agents.{Definition, Summary}
+  alias ClaudeWrapper.Error
 
   @enforce_keys [:root]
   defstruct [:root]
@@ -149,12 +150,13 @@ defmodule ClaudeWrapper.Agents do
   @doc """
   Resolve the default agents root, `~/.claude/agents`.
 
-  Returns `{:error, :no_home}` when the user home cannot be determined.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :no_home}}` when the user
+  home cannot be determined.
   """
-  @spec home() :: {:ok, t()} | {:error, :no_home}
+  @spec home() :: {:ok, t()} | {:error, Error.t()}
   def home do
     case System.user_home() do
-      nil -> {:error, :no_home}
+      nil -> {:error, Error.new(:no_home)}
       home -> {:ok, %__MODULE__{root: Path.join([home, ".claude", "agents"])}}
     end
   end
@@ -177,7 +179,7 @@ defmodule ClaudeWrapper.Agents do
   install with no user agents). Files that fail to parse are skipped
   rather than failing the whole listing.
   """
-  @spec list(t()) :: {:ok, [Summary.t()]} | {:error, term()}
+  @spec list(t()) :: {:ok, [Summary.t()]} | {:error, Error.t()}
   def list(%__MODULE__{} = a) do
     case File.ls(a.root) do
       {:ok, names} ->
@@ -194,7 +196,7 @@ defmodule ClaudeWrapper.Agents do
         {:ok, []}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, Error.io(reason)}
     end
   end
 
@@ -202,16 +204,17 @@ defmodule ClaudeWrapper.Agents do
   Read one agent by file stem (the basename of `<stem>.md` under the
   root) into a full `Definition`.
 
-  Returns `{:error, :not_found}` when no such file exists.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :not_found}}` when no such
+  file exists.
   """
-  @spec get(t(), String.t()) :: {:ok, Definition.t()} | {:error, :not_found | term()}
+  @spec get(t(), String.t()) :: {:ok, Definition.t()} | {:error, Error.t()}
   def get(%__MODULE__{} = a, file_stem) when is_binary(file_stem) do
     path = agent_path(a, file_stem)
 
     case File.read(path) do
       {:ok, raw} -> {:ok, parse_agent(raw, file_stem, path)}
-      {:error, :enoent} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
+      {:error, :enoent} -> {:error, Error.new(:not_found, reason: file_stem)}
+      {:error, reason} -> {:error, Error.io(reason)}
     end
   end
 
@@ -222,19 +225,21 @@ defmodule ClaudeWrapper.Agents do
   for the accepted attributes. To fail when the agent already exists
   instead of overwriting, use `write_new/3`.
 
-  Returns `{:error, {:invalid_stem, stem}}` for empty, `.`, `..`, or
-  stems containing slashes or NUL bytes.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :invalid_stem}}` (with the
+  stem in `:reason`) for empty, `.`, `..`, or stems containing slashes
+  or NUL bytes.
   """
-  @spec write(t(), String.t(), attrs()) :: :ok | {:error, term()}
+  @spec write(t(), String.t(), attrs()) :: :ok | {:error, Error.t()}
   def write(%__MODULE__{} = a, file_stem, attrs) when is_binary(file_stem) do
     write_inner(a, file_stem, attrs, true)
   end
 
   @doc """
-  Like `write/3` but returns `{:error, :exists}` when the agent already
-  exists. Useful for create-only flows where overwriting would be a bug.
+  Like `write/3` but returns `{:error, %ClaudeWrapper.Error{kind:
+  :already_exists}}` when the agent already exists. Useful for
+  create-only flows where overwriting would be a bug.
   """
-  @spec write_new(t(), String.t(), attrs()) :: :ok | {:error, :exists | term()}
+  @spec write_new(t(), String.t(), attrs()) :: :ok | {:error, Error.t()}
   def write_new(%__MODULE__{} = a, file_stem, attrs) when is_binary(file_stem) do
     write_inner(a, file_stem, attrs, false)
   end
@@ -242,15 +247,16 @@ defmodule ClaudeWrapper.Agents do
   @doc """
   Remove the `<file_stem>.md` agent.
 
-  Returns `{:error, :not_found}` when no such file exists.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :not_found}}` when no such
+  file exists.
   """
-  @spec delete(t(), String.t()) :: :ok | {:error, :not_found | term()}
+  @spec delete(t(), String.t()) :: :ok | {:error, Error.t()}
   def delete(%__MODULE__{} = a, file_stem) when is_binary(file_stem) do
     with :ok <- validate_stem(file_stem) do
       case File.rm(agent_path(a, file_stem)) do
         :ok -> :ok
-        {:error, :enoent} -> {:error, :not_found}
-        {:error, reason} -> {:error, reason}
+        {:error, :enoent} -> {:error, Error.new(:not_found, reason: file_stem)}
+        {:error, reason} -> {:error, Error.io(reason)}
       end
     end
   end
@@ -262,16 +268,30 @@ defmodule ClaudeWrapper.Agents do
 
     with :ok <- validate_stem(file_stem),
          path = agent_path(a, file_stem),
-         :ok <- guard_overwrite(path, allow_overwrite),
-         :ok <- File.mkdir_p(a.root) do
-      File.write(path, render_markdown(file_stem, fields))
+         :ok <- guard_overwrite(path, file_stem, allow_overwrite),
+         :ok <- mkdir_p(a.root) do
+      write_file(path, render_markdown(file_stem, fields))
     end
   end
 
-  defp guard_overwrite(_path, true), do: :ok
+  defp guard_overwrite(_path, _stem, true), do: :ok
 
-  defp guard_overwrite(path, false) do
-    if File.exists?(path), do: {:error, :exists}, else: :ok
+  defp guard_overwrite(path, stem, false) do
+    if File.exists?(path), do: {:error, Error.new(:already_exists, reason: stem)}, else: :ok
+  end
+
+  defp mkdir_p(root) do
+    case File.mkdir_p(root) do
+      :ok -> :ok
+      {:error, reason} -> {:error, Error.io(reason)}
+    end
+  end
+
+  defp write_file(path, contents) do
+    case File.write(path, contents) do
+      :ok -> :ok
+      {:error, reason} -> {:error, Error.io(reason)}
+    end
   end
 
   defp normalize_attrs(attrs) do
@@ -434,11 +454,12 @@ defmodule ClaudeWrapper.Agents do
     Path.join(root, file_stem <> ".md")
   end
 
-  defp validate_stem(stem) when stem in ["", ".", ".."], do: {:error, {:invalid_stem, stem}}
+  defp validate_stem(stem) when stem in ["", ".", ".."],
+    do: {:error, Error.new(:invalid_stem, reason: stem)}
 
   defp validate_stem(stem) do
     if String.contains?(stem, ["/", "\\", "\0"]) do
-      {:error, {:invalid_stem, stem}}
+      {:error, Error.new(:invalid_stem, reason: stem)}
     else
       :ok
     end

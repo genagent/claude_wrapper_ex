@@ -65,7 +65,7 @@ defmodule ClaudeWrapper.StreamEvent do
   @doc """
   Parse a single NDJSON line into a stream event.
   """
-  @spec parse(String.t()) :: {:ok, t()} | {:error, term()}
+  @spec parse(String.t()) :: {:ok, t()} | {:error, ClaudeWrapper.Error.t()}
   def parse(line) when is_binary(line) do
     case Jason.decode(line) do
       {:ok, data} when is_map(data) ->
@@ -77,10 +77,10 @@ defmodule ClaudeWrapper.StreamEvent do
          }}
 
       {:ok, _other} ->
-        {:error, :not_an_object}
+        {:error, ClaudeWrapper.Error.json(:not_an_object)}
 
       {:error, reason} ->
-        {:error, {:json_decode, reason}}
+        {:error, ClaudeWrapper.Error.json(reason)}
     end
   end
 

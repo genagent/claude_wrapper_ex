@@ -132,6 +132,7 @@ defmodule ClaudeWrapper.Skills do
       IO.puts(skill.body)
   """
 
+  alias ClaudeWrapper.Error
   alias ClaudeWrapper.Skills.{Skill, Summary}
 
   @skill_file "SKILL.md"
@@ -144,12 +145,13 @@ defmodule ClaudeWrapper.Skills do
   @doc """
   Resolve the default skills root, `~/.claude/skills`.
 
-  Returns `{:error, :no_home}` when the user home cannot be determined.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :no_home}}` when the user
+  home cannot be determined.
   """
-  @spec home() :: {:ok, t()} | {:error, :no_home}
+  @spec home() :: {:ok, t()} | {:error, Error.t()}
   def home do
     case System.user_home() do
-      nil -> {:error, :no_home}
+      nil -> {:error, Error.new(:no_home)}
       home -> {:ok, %__MODULE__{root: Path.join([home, ".claude", "skills"])}}
     end
   end
@@ -175,7 +177,7 @@ defmodule ClaudeWrapper.Skills do
   `SKILL.md` fails to read are skipped rather than failing the whole
   listing.
   """
-  @spec list(t()) :: {:ok, [Summary.t()]} | {:error, term()}
+  @spec list(t()) :: {:ok, [Summary.t()]} | {:error, Error.t()}
   def list(%__MODULE__{} = s) do
     case File.ls(s.root) do
       {:ok, names} ->
@@ -191,7 +193,7 @@ defmodule ClaudeWrapper.Skills do
         {:ok, []}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, Error.io(reason)}
     end
   end
 
@@ -199,18 +201,18 @@ defmodule ClaudeWrapper.Skills do
   Read one skill by directory stem (the basename of the `<dir_stem>/`
   directory under the root) into a full `Skill`.
 
-  Returns `{:error, :not_found}` when no such directory exists or it has
-  no `SKILL.md`.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :not_found}}` when no such
+  directory exists or it has no `SKILL.md`.
   """
-  @spec get(t(), String.t()) :: {:ok, Skill.t()} | {:error, :not_found | term()}
+  @spec get(t(), String.t()) :: {:ok, Skill.t()} | {:error, Error.t()}
   def get(%__MODULE__{} = s, dir_stem) when is_binary(dir_stem) do
     dir = Path.join(s.root, dir_stem)
     path = Path.join(dir, @skill_file)
 
     case File.read(path) do
       {:ok, raw} -> {:ok, parse_skill(raw, dir_stem, dir, path)}
-      {:error, :enoent} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
+      {:error, :enoent} -> {:error, Error.new(:not_found, reason: dir_stem)}
+      {:error, reason} -> {:error, Error.io(reason)}
     end
   end
 

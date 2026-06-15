@@ -75,16 +75,17 @@ defmodule ClaudeWrapper.CliVersion do
   whitespace-delimited token is considered, and it must be exactly three
   dot-separated non-negative integers.
 
-  Returns `{:error, {:invalid_version, original}}` for anything else,
-  carrying the original (untrimmed) string.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :invalid_version}}` for
+  anything else, with the original (untrimmed) string carried in
+  `:reason`.
 
       iex> ClaudeWrapper.CliVersion.parse("  2.1.71 (Claude Code)\\n")
       {:ok, %ClaudeWrapper.CliVersion{major: 2, minor: 1, patch: 71}}
 
       iex> ClaudeWrapper.CliVersion.parse("2.1")
-      {:error, {:invalid_version, "2.1"}}
+      {:error, %ClaudeWrapper.Error{kind: :invalid_version, reason: "2.1"}}
   """
-  @spec parse(String.t()) :: {:ok, t()} | {:error, {:invalid_version, String.t()}}
+  @spec parse(String.t()) :: {:ok, t()} | {:error, ClaudeWrapper.Error.t()}
   def parse(output) when is_binary(output) do
     token =
       output
@@ -102,7 +103,7 @@ defmodule ClaudeWrapper.CliVersion do
   defp parse_token(token, original) do
     case String.split(token, ".") do
       [major, minor, patch] -> build_from_parts(major, minor, patch, original)
-      _ -> {:error, {:invalid_version, original}}
+      _ -> {:error, ClaudeWrapper.Error.new(:invalid_version, reason: original)}
     end
   end
 
@@ -112,7 +113,7 @@ defmodule ClaudeWrapper.CliVersion do
          {:ok, patch} <- parse_component(patch) do
       {:ok, new(major, minor, patch)}
     else
-      :error -> {:error, {:invalid_version, original}}
+      :error -> {:error, ClaudeWrapper.Error.new(:invalid_version, reason: original)}
     end
   end
 
@@ -199,20 +200,22 @@ defmodule ClaudeWrapper.CliVersion do
   Enforce a minimum version as a tagged-tuple result.
 
   Returns `:ok` when `found` satisfies `minimum`, otherwise
-  `{:error, {:version_mismatch, found, minimum}}`.
+  `{:error, %ClaudeWrapper.Error{kind: :version_mismatch}}` whose
+  `:reason` is `%{found: found, minimum: minimum}`.
 
       iex> v = ClaudeWrapper.CliVersion.new(2, 1, 71)
       iex> ClaudeWrapper.CliVersion.check_version(v, ClaudeWrapper.CliVersion.new(2, 1, 0))
       :ok
       iex> ClaudeWrapper.CliVersion.check_version(v, ClaudeWrapper.CliVersion.new(2, 2, 0))
-      {:error, {:version_mismatch, %ClaudeWrapper.CliVersion{major: 2, minor: 1, patch: 71}, %ClaudeWrapper.CliVersion{major: 2, minor: 2, patch: 0}}}
+      {:error, %ClaudeWrapper.Error{kind: :version_mismatch, reason: %{found: %ClaudeWrapper.CliVersion{major: 2, minor: 1, patch: 71}, minimum: %ClaudeWrapper.CliVersion{major: 2, minor: 2, patch: 0}}}}
   """
-  @spec check_version(t(), t()) :: :ok | {:error, {:version_mismatch, t(), t()}}
+  @spec check_version(t(), t()) :: :ok | {:error, ClaudeWrapper.Error.t()}
   def check_version(%__MODULE__{} = found, %__MODULE__{} = minimum) do
     if satisfies_minimum?(found, minimum) do
       :ok
     else
-      {:error, {:version_mismatch, found, minimum}}
+      {:error,
+       ClaudeWrapper.Error.new(:version_mismatch, reason: %{found: found, minimum: minimum})}
     end
   end
 

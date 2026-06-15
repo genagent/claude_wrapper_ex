@@ -373,7 +373,7 @@ defmodule ClaudeWrapperTest do
     end
 
     test "parse invalid JSON" do
-      assert {:error, {:json_decode, _}} = StreamEvent.parse("not json")
+      assert {:error, %ClaudeWrapper.Error{kind: :json}} = StreamEvent.parse("not json")
     end
 
     test "result? checks type" do

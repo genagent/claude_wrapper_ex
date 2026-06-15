@@ -71,11 +71,11 @@ defmodule ClaudeWrapper.TelemetryTest do
       assert start_meta.session_id == "sess-prev"
     end
 
-    test "stop metadata on {:error, {:exit, code, stdout}} carries exit_code" do
+    test "stop metadata on a :command_failed error carries exit_code" do
       query = Query.new("hi")
+      error = ClaudeWrapper.Error.command_failed(2, "boom")
 
-      assert {:error, {:exit, 2, "boom"}} =
-               Telemetry.span_exec(query, fn -> {:error, {:exit, 2, "boom"}} end)
+      assert {:error, ^error} = Telemetry.span_exec(query, fn -> {:error, error} end)
 
       assert_receive {:telemetry, [:claude_wrapper, :exec, :stop], _, meta}
       assert meta.exit_code == 2
@@ -134,10 +134,11 @@ defmodule ClaudeWrapper.TelemetryTest do
     test "error tuple sets exit_code" do
       query = Query.new("x")
       session = %{session_id: nil}
+      error = ClaudeWrapper.Error.command_failed(1, "stderr")
 
-      assert {:error, {:exit, 1, "stderr"}} =
+      assert {:error, ^error} =
                Telemetry.span_session_turn(session, query, fn ->
-                 {:error, {:exit, 1, "stderr"}}
+                 {:error, error}
                end)
 
       assert_receive {:telemetry, [:claude_wrapper, :session, :turn, :stop], _, meta}

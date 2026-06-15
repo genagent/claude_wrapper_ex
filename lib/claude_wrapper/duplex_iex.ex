@@ -54,7 +54,7 @@ defmodule ClaudeWrapper.DuplexIEx do
     `:extra_args`) are forwarded as well
   """
 
-  alias ClaudeWrapper.{Config, DuplexSession, Result, StreamEvent}
+  alias ClaudeWrapper.{Config, DuplexSession, Error, Result, StreamEvent}
 
   @session_key :claude_wrapper_duplex_iex_session
   @printer_key :claude_wrapper_duplex_iex_printer
@@ -118,7 +118,7 @@ defmodule ClaudeWrapper.DuplexIEx do
     case Process.get(@session_key) do
       nil ->
         IO.puts("\e[31mNo active session. Start one with start/1.\e[0m")
-        {:error, :no_session}
+        {:error, Error.new(:no_session)}
 
       pid ->
         timeout = Keyword.get(opts, :timeout, 120_000)
@@ -144,7 +144,7 @@ defmodule ClaudeWrapper.DuplexIEx do
     case Process.get(@session_key) do
       nil ->
         IO.puts("\e[31mNo active session.\e[0m")
-        {:error, :no_session}
+        {:error, Error.new(:no_session)}
 
       pid ->
         DuplexSession.interrupt(pid, timeout)

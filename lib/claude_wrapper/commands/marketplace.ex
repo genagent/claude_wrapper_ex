@@ -26,7 +26,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
       {:ok, _} = ClaudeWrapper.Commands.Marketplace.update(config)
   """
 
-  alias ClaudeWrapper.Config
+  alias ClaudeWrapper.{Config, Error}
 
   @type scope :: :user | :project | :local
 
@@ -41,11 +41,11 @@ defmodule ClaudeWrapper.Commands.Marketplace do
       {output, 0} ->
         case Jason.decode(output) do
           {:ok, data} -> {:ok, data}
-          {:error, reason} -> {:error, {:json_decode, reason}}
+          {:error, reason} -> {:error, Error.json(reason)}
         end
 
       {output, code} ->
-        {:error, {:exit, code, output}}
+        {:error, Error.command_failed(code, output)}
     end
   end
 
@@ -70,7 +70,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 
@@ -83,7 +83,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 
@@ -99,7 +99,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 

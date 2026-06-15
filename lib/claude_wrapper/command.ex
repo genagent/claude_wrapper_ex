@@ -7,6 +7,8 @@ defmodule ClaudeWrapper.Command do
   `ClaudeCommand` trait.
   """
 
+  alias ClaudeWrapper.Error
+
   @type args :: [String.t()]
 
   @callback args() :: args()
@@ -40,7 +42,7 @@ defmodule ClaudeWrapper.Command do
       {stdout, code} -> mod.parse_output(stdout, code)
     end
   rescue
-    e in ErlangError -> {:error, {:system_cmd, e}}
+    e in ErlangError -> {:error, Error.io(e)}
   end
 
   defp execute_cmd(mod, binary, args, opts, timeout) do
@@ -48,7 +50,7 @@ defmodule ClaudeWrapper.Command do
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
       {:ok, {stdout, code}} -> mod.parse_output(stdout, code)
-      nil -> {:error, {:timeout, timeout}}
+      nil -> {:error, Error.timeout(timeout)}
     end
   end
 

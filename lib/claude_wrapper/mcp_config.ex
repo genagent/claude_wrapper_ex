@@ -126,12 +126,30 @@ defmodule ClaudeWrapper.McpConfig do
 
   @doc """
   Read and parse an existing `.mcp.json` file.
+
+  Returns `{:error, %ClaudeWrapper.Error{kind: :io}}` when the file
+  cannot be read and `{:error, %ClaudeWrapper.Error{kind: :json}}` when
+  its contents are not valid JSON.
   """
-  @spec read(String.t()) :: {:ok, t()} | {:error, term()}
+  @spec read(String.t()) :: {:ok, t()} | {:error, ClaudeWrapper.Error.t()}
   def read(path) do
-    with {:ok, content} <- File.read(path),
-         {:ok, data} <- Jason.decode(content) do
+    with {:ok, content} <- read_file(path),
+         {:ok, data} <- decode_json(content) do
       {:ok, from_map(data)}
+    end
+  end
+
+  defp read_file(path) do
+    case File.read(path) do
+      {:ok, content} -> {:ok, content}
+      {:error, reason} -> {:error, ClaudeWrapper.Error.io(reason)}
+    end
+  end
+
+  defp decode_json(content) do
+    case Jason.decode(content) do
+      {:ok, data} -> {:ok, data}
+      {:error, reason} -> {:error, ClaudeWrapper.Error.json(reason)}
     end
   end
 

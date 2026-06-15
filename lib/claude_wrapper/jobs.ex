@@ -140,6 +140,7 @@ defmodule ClaudeWrapper.Jobs do
       end
   """
 
+  alias ClaudeWrapper.Error
   alias ClaudeWrapper.Jobs.{Event, Job, Summary}
 
   @enforce_keys [:root]
@@ -150,12 +151,13 @@ defmodule ClaudeWrapper.Jobs do
   @doc """
   Resolve the default jobs root, `~/.claude/jobs`.
 
-  Returns `{:error, :no_home}` when the user home cannot be determined.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :no_home}}` when the user
+  home cannot be determined.
   """
-  @spec home() :: {:ok, t()} | {:error, :no_home}
+  @spec home() :: {:ok, t()} | {:error, Error.t()}
   def home do
     case System.user_home() do
-      nil -> {:error, :no_home}
+      nil -> {:error, Error.new(:no_home)}
       home -> {:ok, %__MODULE__{root: Path.join([home, ".claude", "jobs"])}}
     end
   end
@@ -179,7 +181,7 @@ defmodule ClaudeWrapper.Jobs do
   entries that are not directories, that carry no `state.json`, or
   whose `state.json` fails to parse.
   """
-  @spec list(t()) :: {:ok, [Summary.t()]} | {:error, term()}
+  @spec list(t()) :: {:ok, [Summary.t()]} | {:error, Error.t()}
   def list(%__MODULE__{} = jobs) do
     case File.ls(jobs.root) do
       {:ok, names} ->
@@ -195,7 +197,7 @@ defmodule ClaudeWrapper.Jobs do
         {:ok, []}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, Error.io(reason)}
     end
   end
 
@@ -204,18 +206,18 @@ defmodule ClaudeWrapper.Jobs do
   name) into a full `ClaudeWrapper.Jobs.Job`, including the parsed
   `timeline.jsonl` and the raw `state.json` map.
 
-  Returns `{:error, :not_found}` when no such directory exists or its
-  `state.json` is missing.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :not_found}}` when no such
+  directory exists or its `state.json` is missing.
   """
-  @spec get(t(), String.t()) :: {:ok, Job.t()} | {:error, :not_found | term()}
+  @spec get(t(), String.t()) :: {:ok, Job.t()} | {:error, Error.t()}
   def get(%__MODULE__{} = jobs, short_id) when is_binary(short_id) do
     dir = Path.join(jobs.root, short_id)
     state_path = Path.join(dir, "state.json")
 
     case File.read(state_path) do
       {:ok, raw} -> read_job(state_path, raw, dir, short_id)
-      {:error, :enoent} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
+      {:error, :enoent} -> {:error, Error.new(:not_found, reason: short_id)}
+      {:error, reason} -> {:error, Error.io(reason)}
     end
   end
 
@@ -232,7 +234,7 @@ defmodule ClaudeWrapper.Jobs do
          }}
 
       :error ->
-        {:error, :not_found}
+        {:error, Error.new(:not_found, reason: short_id)}
     end
   end
 

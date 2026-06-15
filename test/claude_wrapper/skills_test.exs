@@ -150,9 +150,11 @@ defmodule ClaudeWrapper.SkillsTest do
       assert skill.extra == %{}
     end
 
-    test "unknown stem returns {:error, :not_found}", %{root: root} do
+    test "unknown stem returns a :not_found error", %{root: root} do
       fixture(root)
-      assert Skills.get(Skills.at(root), "nope") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "nope"}} =
+               Skills.get(Skills.at(root), "nope")
     end
 
     test "extra frontmatter keys round-trip as raw strings", %{root: root} do

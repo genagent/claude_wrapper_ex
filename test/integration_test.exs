@@ -45,6 +45,25 @@ defmodule ClaudeWrapper.IntegrationTest do
     end
   end
 
+  describe "max-turns" do
+    test "surfaces a typed :max_turns_exceeded error", %{config: config} do
+      # Force a tool turn so a single --max-turns is exceeded: the model
+      # must actually run the command to know its output, which costs one
+      # turn, leaving none to report back.
+      result =
+        Query.new(
+          "Using the Bash tool, run `echo $((6 * 7))` and then tell me the exact number it printed."
+        )
+        |> Query.max_turns(1)
+        |> Query.dangerously_skip_permissions()
+        |> Query.no_session_persistence()
+        |> Query.execute(config)
+
+      assert {:error, %ClaudeWrapper.Error{kind: :max_turns_exceeded, exit_code: code}} = result
+      assert is_integer(code)
+    end
+  end
+
   describe "stream" do
     test "streams events from a prompt", %{config: config} do
       events =

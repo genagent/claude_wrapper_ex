@@ -67,7 +67,13 @@ defmodule ClaudeWrapper.BudgetTest do
 
       # total 0.10 -> at the threshold (>=) crosses it
       Budget.record(b, 0.05)
-      assert {:error, {:budget_exceeded, total, max}} = Budget.check(b)
+
+      assert {:error,
+              %ClaudeWrapper.Error{
+                kind: :budget_exceeded,
+                reason: %{total_usd: total, max_usd: max}
+              }} = Budget.check(b)
+
       assert_in_delta total, 0.10, 1.0e-9
       assert_in_delta max, 0.10, 1.0e-9
     end
@@ -151,7 +157,7 @@ defmodule ClaudeWrapper.BudgetTest do
       Budget.record(b, 0.25)
       assert_receive :warned
       assert_receive :exceeded
-      assert {:error, {:budget_exceeded, _, _}} = Budget.check(b)
+      assert {:error, %ClaudeWrapper.Error{kind: :budget_exceeded}} = Budget.check(b)
 
       assert :ok = Budget.reset(b)
       assert Budget.total(b) == 0.0
@@ -170,7 +176,7 @@ defmodule ClaudeWrapper.BudgetTest do
       {:ok, _pid} = Budget.start_link(name: name, max_usd: 0.10)
 
       assert :ok = Budget.record(name, 0.20)
-      assert {:error, {:budget_exceeded, _, _}} = Budget.check(name)
+      assert {:error, %ClaudeWrapper.Error{kind: :budget_exceeded}} = Budget.check(name)
     end
   end
 end

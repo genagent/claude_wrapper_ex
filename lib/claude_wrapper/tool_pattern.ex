@@ -42,7 +42,9 @@ defmodule ClaudeWrapper.ToolPattern do
   @type t :: %__MODULE__{value: String.t()}
 
   @typedoc """
-  Errors from `parse/1`.
+  The specific validation problem behind a `parse/1` failure, carried in
+  the `:reason` field of the returned `t:ClaudeWrapper.Error.t/0` (kind
+  `:invalid_tool_pattern`).
 
     * `:empty` -- input was empty or all whitespace.
     * `:missing_name` -- the tool-name part was empty (e.g. `(args)`
@@ -53,7 +55,7 @@ defmodule ClaudeWrapper.ToolPattern do
       or a control char (can break the shell). Carries the trimmed
       input.
   """
-  @type pattern_error ::
+  @type problem ::
           :empty
           | :missing_name
           | {:unbalanced_parens, String.t()}
@@ -121,18 +123,20 @@ defmodule ClaudeWrapper.ToolPattern do
   whitespace is trimmed before validation, so leading/trailing control
   characters do not trip `{:illegal_char, _}`.
 
-  Returns `{:ok, t}` or `{:error, t:pattern_error/0}`.
+  Returns `{:ok, t}` or `{:error, %ClaudeWrapper.Error{kind:
+  :invalid_tool_pattern}}` whose `:reason` is the specific
+  `t:problem/0`.
 
       iex> ClaudeWrapper.ToolPattern.parse("Bash(git log:*)")
       {:ok, %ClaudeWrapper.ToolPattern{value: "Bash(git log:*)"}}
 
       iex> ClaudeWrapper.ToolPattern.parse("")
-      {:error, :empty}
+      {:error, %ClaudeWrapper.Error{kind: :invalid_tool_pattern, reason: :empty}}
 
       iex> ClaudeWrapper.ToolPattern.parse("(args)")
-      {:error, :missing_name}
+      {:error, %ClaudeWrapper.Error{kind: :invalid_tool_pattern, reason: :missing_name}}
   """
-  @spec parse(String.t()) :: {:ok, t()} | {:error, pattern_error()}
+  @spec parse(String.t()) :: {:ok, t()} | {:error, ClaudeWrapper.Error.t()}
   def parse(input) when is_binary(input) do
     trimmed = String.trim(input)
 
@@ -140,6 +144,9 @@ defmodule ClaudeWrapper.ToolPattern do
          :ok <- check_legal_chars(trimmed),
          :ok <- check_parens(trimmed) do
       {:ok, %__MODULE__{value: trimmed}}
+    else
+      {:error, problem} ->
+        {:error, ClaudeWrapper.Error.new(:invalid_tool_pattern, reason: problem)}
     end
   end
 

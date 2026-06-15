@@ -68,7 +68,7 @@ defmodule ClaudeWrapper.SettingsTest do
     test "malformed JSON returns an error", %{user_root: user_root} do
       File.write!(Path.join(user_root, "settings.json"), "{not json")
 
-      assert {:error, {:invalid_settings_json, path, _reason}} =
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_settings_json, reason: %{path: path}}} =
                Settings.load(user_root: user_root)
 
       assert path == Path.join(user_root, "settings.json")

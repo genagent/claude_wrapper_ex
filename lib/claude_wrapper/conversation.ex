@@ -93,7 +93,8 @@ defmodule ClaudeWrapper.Conversation do
   Returns `{:ok, conversation, result}` with the history-updated
   conversation on success, matching `ClaudeWrapper.Session.send/3`'s
   return convention. Errors from `DuplexSession.send/3` (e.g.
-  `{:error, :turn_in_flight}`, `{:error, :port_closed}`) propagate
+  `{:error, %ClaudeWrapper.Error{kind: :turn_in_flight}}`,
+  `{:error, %ClaudeWrapper.Error{kind: :duplex_closed}}`) propagate
   unchanged and do not update the history.
 
   The `timeout` defaults to the same 120 seconds as
