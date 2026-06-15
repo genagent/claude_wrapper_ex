@@ -29,7 +29,7 @@ host can use `claude` the same way an IDE backend would.
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.7"}
+    {:claude_wrapper, "~> 0.8"}
   ]
 end
 ```
@@ -226,7 +226,7 @@ implements its `Backend` behaviour. Use it alongside
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.7"},
+    {:claude_wrapper, "~> 0.8"},
     {:agent_workshop, "~> 0.1"}
   ]
 end
@@ -328,6 +328,41 @@ For subcommands not yet wrapped:
 ClaudeWrapper.raw(["config", "list"])
 ```
 
+## Reading Claude Code state
+
+Beyond driving `claude`, the read-side modules introspect Claude Code's
+on-disk state under `~/.claude` -- useful for dashboards, session
+pickers, and agent tooling:
+
+```elixir
+# Session transcripts (~/.claude/projects/<slug>/*.jsonl)
+{:ok, history} = ClaudeWrapper.History.home()
+{:ok, sessions} = ClaudeWrapper.History.sessions_for_path(history, File.cwd!())
+{:ok, log} = ClaudeWrapper.History.read_session(history, hd(sessions).session_id)
+
+# Settings layers and agent definition files
+{:ok, settings} = ClaudeWrapper.Settings.load(project_root: File.cwd!())
+{:ok, agents_root} = ClaudeWrapper.Agents.home()
+{:ok, agents} = ClaudeWrapper.Agents.list(agents_root)
+```
+
+`History`, `Settings`, `Agents`, `Skills`, `Jobs`, and `Worktrees` parse
+liberally and return typed structs.
+
+## Error handling
+
+Every operational failure is `{:error, %ClaudeWrapper.Error{}}` -- a
+raisable exception. Match on `:kind`; details live in `:reason` and the
+`:exit_code` / `:stdout` / `:stderr` fields:
+
+```elixir
+case ClaudeWrapper.query("...", max_turns: 1) do
+  {:ok, result} -> result
+  {:error, %ClaudeWrapper.Error{kind: :max_turns_exceeded}} -> :hit_limit
+  {:error, %ClaudeWrapper.Error{kind: kind}} -> {:failed, kind}
+end
+```
+
 ## Modules
 
 **Long-lived sessions (the headline feature)**
@@ -336,6 +371,7 @@ ClaudeWrapper.raw(["config", "list"])
 |---|---|
 | `ClaudeWrapper.DuplexSession` | Long-lived stream-json session over a single `claude` subprocess |
 | `ClaudeWrapper.DuplexIEx` | REPL helpers for `DuplexSession` |
+| `ClaudeWrapper.Conversation` | Turn-history/cost bookkeeping over a `DuplexSession` |
 
 **One-shot / per-call**
 
@@ -353,19 +389,40 @@ ClaudeWrapper.raw(["config", "list"])
 |---|---|
 | `ClaudeWrapper.Config` | Shared client config (binary, working_dir, env, timeout) |
 | `ClaudeWrapper.Result` | Parsed result struct |
-| `ClaudeWrapper.StreamEvent` | NDJSON streaming event |
+| `ClaudeWrapper.Error` | Canonical error exception (match on `:kind`) |
+| `ClaudeWrapper.StreamEvent` | NDJSON streaming event (`partial_message/1`) |
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |
 | `ClaudeWrapper.Telemetry` | `:telemetry` spans for exec/stream/session |
+| `ClaudeWrapper.Budget` | Client-side USD budget tracker |
+| `ClaudeWrapper.ToolPattern` | Typed, validated tool-spec builder |
+| `ClaudeWrapper.CliVersion` | Parse/compare the CLI version |
+| `ClaudeWrapper.DangerousClient` | Env-gated `--dangerously-skip-permissions` |
+| `ClaudeWrapper.Auth` | Env auth detection + failure classification |
+
+**Reading `~/.claude` state**
+
+| Module | Description |
+|---|---|
+| `ClaudeWrapper.History` | Session JSONL transcripts (projects/sessions/entries) |
+| `ClaudeWrapper.Settings` | The four `settings.json` layers |
+| `ClaudeWrapper.Agents` | Read/write agent definition files |
+| `ClaudeWrapper.Skills` | Read `~/.claude/skills` |
+| `ClaudeWrapper.Jobs` | Read background-job state |
+| `ClaudeWrapper.Worktrees` | git worktree introspection |
 
 **CLI subcommand wrappers**
 
 | Module | Description |
 |---|---|
-| `ClaudeWrapper.Commands.Auth` | Auth management |
-| `ClaudeWrapper.Commands.Mcp` | MCP server CRUD |
-| `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update |
+| `ClaudeWrapper.Commands.Auth` | Auth management (login modes, status, setup-token) |
+| `ClaudeWrapper.Commands.Mcp` | MCP server management |
+| `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update/tag/details/prune |
 | `ClaudeWrapper.Commands.Marketplace` | Marketplace add/remove/list/update |
+| `ClaudeWrapper.Commands.AutoMode` | auto-mode config/defaults/critique |
+| `ClaudeWrapper.Commands.Install` | `claude install` |
+| `ClaudeWrapper.Commands.Update` | `claude update` |
+| `ClaudeWrapper.Commands.Project` | `claude project purge` |
 | `ClaudeWrapper.Commands.Doctor` | CLI health check |
 | `ClaudeWrapper.Commands.Version` | CLI version |
 
