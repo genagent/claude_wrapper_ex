@@ -149,7 +149,7 @@ defmodule ClaudeWrapper.IntegrationTest do
     end
 
     test "chat and say multi-turn" do
-      assert :ok =
+      assert %ClaudeWrapper.Result{} =
                CIEx.chat("Respond with exactly: hello",
                  max_turns: 1,
                  dangerously_skip_permissions: true,
@@ -159,12 +159,58 @@ defmodule ClaudeWrapper.IntegrationTest do
       assert CIEx.session_id() != nil
       assert CIEx.last().result =~ "hello"
 
-      assert :ok = CIEx.say("Respond with exactly: goodbye")
+      assert %ClaudeWrapper.Result{} = CIEx.say("Respond with exactly: goodbye")
       assert CIEx.last().result =~ "goodbye"
 
       total = CIEx.cost()
       assert is_float(total)
       assert total > 0.0
+    end
+
+    test "high-level flow: chat with attach, say, fork, sessions" do
+      tmp = Path.join(System.tmp_dir!(), "cwx_iex_flow_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "note.txt"), "The secret token is BANANA.")
+      on_exit(fn -> File.rm_rf!(tmp) end)
+
+      # chat with an attached file. Persisted (no :no_session_persistence)
+      # so the session can show up in sessions/0 below. working_dir is the
+      # temp dir so history is keyed to this project slug.
+      result =
+        CIEx.chat("Read the attached file and reply with exactly the secret token.",
+          working_dir: tmp,
+          attach: Path.join(tmp, "note.txt"),
+          max_turns: 1,
+          dangerously_skip_permissions: true
+        )
+
+      assert %ClaudeWrapper.Result{} = result
+      first_id = CIEx.session_id()
+      assert is_binary(first_id)
+
+      # say continues the same session.
+      assert %ClaudeWrapper.Result{} = CIEx.say("Respond with exactly: continued")
+      assert CIEx.last().result =~ "continued"
+
+      # fork branches into a new session; current/0 switches to the branch.
+      assert %ClaudeWrapper.Result{} = CIEx.fork("Respond with exactly: forked")
+      branch_id = CIEx.session_id()
+      assert is_binary(branch_id)
+      assert branch_id != first_id
+
+      # sessions/0 reads on-disk history for the ambient working_dir and
+      # projects each row to the documented summary shape.
+      summaries = CIEx.sessions()
+      assert is_list(summaries)
+
+      for s <- summaries do
+        assert Map.has_key?(s, :id)
+        assert Map.has_key?(s, :first_prompt)
+        assert Map.has_key?(s, :turns)
+        assert Map.has_key?(s, :last_used)
+        assert Map.has_key?(s, :tokens)
+        assert Map.has_key?(s, :cost_usd)
+      end
     end
   end
 

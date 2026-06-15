@@ -10,7 +10,7 @@ defmodule ClaudeWrapper.IEx do
       iex> import ClaudeWrapper.IEx
 
       iex> chat("explain this codebase", working_dir: ".")
-      # => prints response, shows cost
+      # => prints response, shows cost, returns the %Result{}
 
       iex> say("now add tests for the retry module")
       # => continues the conversation
@@ -29,43 +29,114 @@ defmodule ClaudeWrapper.IEx do
 
   ## Configuration
 
-  Pass options to `chat/2` to configure the session. These persist for
-  subsequent `say/2` calls:
+  `configure/1` sets ambient options that persist across calls; `chat/2`
+  and `say/2` merge per-call options on top (last wins). Ambient + call
+  options cover config (`:working_dir`, `:binary`, `:env`, `:timeout`,
+  `:verbose`, `:debug`), query options (`:model`, `:max_turns`,
+  `:permission_mode`, ...), and prompt-composition keys (see below).
 
-      chat("hello", model: "sonnet", working_dir: "/my/project", max_turns: 5)
+      configure(model: "sonnet", working_dir: "/my/project")
+      chat("hello")                 # uses the ambient config
+      say("do something big", max_turns: 20)
 
-  Override per-turn with `say/2`:
+  ## Prompt composition
 
-      say("do something expensive", max_turns: 20)
+  `chat/2` and `say/2` accept composition keys that build a
+  `t:ClaudeWrapper.Prompt.t/0` around the prompt argument before sending:
+
+    * `:attach` -- a path/glob (or list of them) to attach as fenced,
+      path-headed code blocks
+    * `:git_diff` -- a ref to diff against, or `true`/`nil` for the
+      working tree
+    * `:prepend` -- text (or list) to place before the prompt
+    * `:append` -- text (or list) to place after the context
+
+  When any composition key is present the helper prints a one-line
+  `(attached N files, ~K bytes)` notice before the response.
+
+  ## Return values
+
+  `chat/2` and `say/2` return the `t:ClaudeWrapper.Result.t/0` on success
+  (after printing it). A CLI failure prints the error and **raises**
+  `ClaudeWrapper.Error`. The one non-raising case is calling `say/2` with
+  no active session, which prints a hint and returns `:no_session`.
   """
 
-  alias ClaudeWrapper.{Config, Result, Session}
+  alias ClaudeWrapper.{Config, Error, History, Prompt, Result, Session}
 
   @session_key :claude_wrapper_iex_session
   @config_key :claude_wrapper_iex_config
+  @history_key :claude_wrapper_iex_history
+
+  @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
+  @composition_keys [:attach, :git_diff, :prepend, :append]
+
+  @typedoc "A session row as returned by `sessions/0`."
+  @type session_summary :: %{
+          id: String.t(),
+          first_prompt: String.t() | nil,
+          turns: non_neg_integer(),
+          last_used: String.t() | nil,
+          tokens: non_neg_integer() | nil,
+          cost_usd: float() | nil
+        }
 
   @doc """
-  Start a new conversation. Prints the response.
+  Merge options into the ambient configuration (last wins).
 
-  Accepts all options from `ClaudeWrapper.query/2` -- config options
-  (`:working_dir`, `:binary`, `:env`, `:timeout`, `:verbose`, `:debug`)
-  and query options (`:model`, `:max_turns`, `:permission_mode`, etc.).
+  Ambient options are applied to every subsequent `chat/2` and `say/2`
+  call, with per-call options overriding them. Accepts config, query, and
+  composition keys.
+
+      configure(model: "sonnet", working_dir: ".")
+      #=> :ok
   """
-  def chat(prompt, opts \\ []) do
-    {config_opts, query_opts} = split_opts(opts)
-    config = Config.new(config_opts)
-    session = Session.new(config, query_opts)
-
-    Process.put(@config_key, config)
-
-    do_send(session, prompt, [])
+  @spec configure(keyword()) :: :ok
+  def configure(opts) when is_list(opts) do
+    Process.put(@config_key, Keyword.merge(ambient_config(), opts))
+    :ok
   end
 
   @doc """
-  Continue the current conversation. Prints the response.
-
-  Accepts per-turn query option overrides.
+  Return the current ambient configuration keyword list.
   """
+  @spec config() :: keyword()
+  def config, do: ambient_config()
+
+  @doc """
+  Start a new conversation. Prints the response and returns the
+  `t:ClaudeWrapper.Result.t/0`.
+
+  Effective options are the ambient config (see `configure/1`) merged
+  with `opts` (per-call wins). Config keys build the session config;
+  composition keys build a prompt around `prompt`; everything else is
+  forwarded as turn options.
+
+  Raises `ClaudeWrapper.Error` on a CLI/render failure.
+  """
+  @spec chat(String.t(), keyword()) :: Result.t()
+  def chat(prompt, opts \\ []) do
+    effective = Keyword.merge(ambient_config(), opts)
+    Process.put(@config_key, effective)
+
+    {config_opts, rest} = Keyword.split(effective, @config_keys)
+    {composition_opts, query_opts} = Keyword.split(rest, @composition_keys)
+
+    config = Config.new(config_opts)
+    session = Session.new(config, query_opts)
+
+    run_turn(session, prompt, composition_opts, [])
+  end
+
+  @doc """
+  Continue the current conversation. Prints the response and returns the
+  `t:ClaudeWrapper.Result.t/0`.
+
+  Per-call `opts` are merged over the ambient query/composition options
+  (per-call wins). Returns `:no_session` (with a hint) when no session is
+  active; raises `ClaudeWrapper.Error` on a CLI/render failure.
+  """
+  @spec say(String.t(), keyword()) :: Result.t() | :no_session
   def say(prompt, opts \\ []) do
     case Process.get(@session_key) do
       nil ->
@@ -73,13 +144,109 @@ defmodule ClaudeWrapper.IEx do
         :no_session
 
       session ->
-        do_send(session, prompt, opts)
+        # Ambient query + composition opts apply to follow-ups too; the
+        # ambient config keys are already baked into the live session.
+        {_config_opts, rest} = Keyword.split(ambient_config(), @config_keys)
+        effective = Keyword.merge(rest, opts)
+        {composition_opts, query_opts} = Keyword.split(effective, @composition_keys)
+
+        run_turn(session, prompt, composition_opts, query_opts)
+    end
+  end
+
+  @doc """
+  Branch the current conversation into a new session and switch to it.
+
+  Forks the active session (see `ClaudeWrapper.Session.fork/3`), makes the
+  branch the current session, prints the response, and returns the
+  `t:ClaudeWrapper.Result.t/0`. Raises `ClaudeWrapper.Error` on failure
+  (including `:no_session` when there is no active session to fork).
+  """
+  @spec fork(String.t(), keyword()) :: Result.t()
+  def fork(prompt, opts \\ []) do
+    case Process.get(@session_key) do
+      nil -> raise Error.new(:no_session)
+      session -> fork_session(session, prompt, opts)
+    end
+  end
+
+  @doc """
+  Resume `session_id` and immediately branch it into a new session.
+
+  Resumes the given id with the ambient config, forks it, switches to the
+  branch, prints the response, and returns the
+  `t:ClaudeWrapper.Result.t/0`. Raises `ClaudeWrapper.Error` on failure.
+  """
+  @spec fork_from(String.t(), String.t(), keyword()) :: Result.t()
+  def fork_from(session_id, prompt, opts \\ []) when is_binary(session_id) do
+    {config_opts, _rest} = Keyword.split(ambient_config(), @config_keys)
+    config = Config.new(config_opts)
+    session = Session.resume(config, session_id)
+    fork_session(session, prompt, opts)
+  end
+
+  @doc """
+  List prior sessions for the ambient working directory (most recent
+  first).
+
+  Reads Claude Code's on-disk history for the configured `:working_dir`
+  (or the current directory when unset). Each row is a map with `:id`,
+  `:first_prompt`, `:turns`, `:last_used`, `:tokens`, and `:cost_usd`.
+  Returns `[]` when history cannot be read.
+  """
+  @spec sessions() :: [session_summary()]
+  def sessions do
+    with {:ok, history} <- history_root(),
+         {:ok, summaries} <-
+           History.sessions_for_path(history, working_dir(), sort: :recency_desc) do
+      Enum.map(summaries, &project_summary/1)
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
+  Print a numbered list of prior sessions and resume the chosen one.
+
+  Shows each session's turn count, age, and cost (or `—` when unknown),
+  reads a selection via `IO.gets/1`, resumes it, and returns the chosen
+  id. Empty input returns `:cancelled`.
+  """
+  @spec pick() :: String.t() | :cancelled
+  def pick do
+    case sessions() do
+      [] ->
+        IO.puts("\e[33mNo prior sessions for this directory.\e[0m")
+        :cancelled
+
+      summaries ->
+        print_pick_list(summaries)
+        read_pick_choice(summaries)
+    end
+  end
+
+  @doc """
+  Snapshot of the current session: `%{id, turns, cost_usd}` or `nil`.
+  """
+  @spec current() :: %{id: String.t() | nil, turns: non_neg_integer(), cost_usd: float()} | nil
+  def current do
+    case Process.get(@session_key) do
+      nil ->
+        nil
+
+      session ->
+        %{
+          id: Session.session_id(session),
+          turns: Session.turn_count(session),
+          cost_usd: Session.total_cost(session)
+        }
     end
   end
 
   @doc """
   Show total cost and turn count for the current session.
   """
+  @spec cost() :: float() | :no_session
   def cost do
     case Process.get(@session_key) do
       nil ->
@@ -97,6 +264,7 @@ defmodule ClaudeWrapper.IEx do
   @doc """
   Print the conversation history.
   """
+  @spec history() :: :ok | :no_session
   def history do
     case Process.get(@session_key) do
       nil ->
@@ -110,8 +278,9 @@ defmodule ClaudeWrapper.IEx do
   end
 
   @doc """
-  Reset the session (start fresh on next `chat/2`).
+  Reset the session and ambient config (start fresh on next `chat/2`).
   """
+  @spec reset() :: :ok
   def reset do
     Process.delete(@session_key)
     Process.delete(@config_key)
@@ -122,6 +291,7 @@ defmodule ClaudeWrapper.IEx do
   @doc """
   Get the session ID (for resuming later).
   """
+  @spec session_id() :: String.t() | nil
   def session_id do
     case Process.get(@session_key) do
       nil -> nil
@@ -132,21 +302,21 @@ defmodule ClaudeWrapper.IEx do
   @doc """
   Resume a previous session by ID.
 
-  Uses the same config as the last `chat/2` call, or pass new options.
+  Uses the ambient config (or pass new config/query options).
   """
+  @spec resume(String.t(), keyword()) :: :ok
   def resume(sid, opts \\ []) do
     {config_opts, query_opts} = split_opts(opts)
 
     config =
       if config_opts == [] do
-        Process.get(@config_key) || Config.new()
+        Config.new(elem(Keyword.split(ambient_config(), @config_keys), 0))
       else
         Config.new(config_opts)
       end
 
     session = Session.resume(config, sid, query_opts)
     Process.put(@session_key, session)
-    Process.put(@config_key, config)
     IO.puts("\e[33mResumed session #{sid}\e[0m")
     :ok
   end
@@ -154,6 +324,7 @@ defmodule ClaudeWrapper.IEx do
   @doc """
   Get the last result struct (for programmatic access).
   """
+  @spec last() :: Result.t() | nil
   def last do
     case Process.get(@session_key) do
       nil -> nil
@@ -161,7 +332,193 @@ defmodule ClaudeWrapper.IEx do
     end
   end
 
-  # --- Private ---
+  # --- turn execution -----------------------------------------------
+
+  # Build the prompt (plain or composed), send it, and on success store
+  # the session, print the result, and return the %Result{}. A failure
+  # prints and raises.
+  defp run_turn(session, prompt, composition_opts, query_opts) do
+    IO.puts("\e[33m...\e[0m")
+
+    {to_send, notice} = build_prompt(prompt, composition_opts)
+
+    case Session.send(session, to_send, query_opts) do
+      {:ok, new_session, result} ->
+        Process.put(@session_key, new_session)
+        if notice, do: IO.puts("\e[33m#{notice}\e[0m")
+        print_result(result, new_session)
+        result
+
+      {:error, %Error{} = error} ->
+        IO.puts("\e[31mError: #{Exception.message(error)}\e[0m")
+        raise error
+    end
+  end
+
+  # No composition keys -> send the raw string, no notice. Otherwise build
+  # a %Prompt{}, render it now to both produce the notice and hand a plain
+  # string to Session.send (single render). A render error short-circuits
+  # to a raised ClaudeWrapper.Error via the caller.
+  defp build_prompt(prompt, []), do: {prompt, nil}
+
+  defp build_prompt(prompt, composition_opts) do
+    built = compose(Prompt.new(prompt), composition_opts)
+
+    case Prompt.render(built) do
+      {:ok, rendered} -> {rendered, attach_notice(built, rendered)}
+      {:error, %Error{} = error} -> raise error
+    end
+  end
+
+  defp compose(prompt, opts) do
+    Enum.reduce(opts, prompt, &apply_composition/2)
+  end
+
+  defp apply_composition({:prepend, values}, prompt),
+    do: reduce_strings(prompt, values, &Prompt.prepend/2)
+
+  defp apply_composition({:append, values}, prompt),
+    do: reduce_strings(prompt, values, &Prompt.append/2)
+
+  defp apply_composition({:attach, values}, prompt),
+    do: reduce_strings(prompt, values, &Prompt.attach/2)
+
+  defp apply_composition({:git_diff, true}, prompt), do: Prompt.git_diff(prompt, nil)
+  defp apply_composition({:git_diff, ref}, prompt), do: Prompt.git_diff(prompt, ref)
+
+  # A composition value may be a single string or a list of them.
+  defp reduce_strings(prompt, values, fun) when is_list(values) do
+    Enum.reduce(values, prompt, fn v, acc -> fun.(acc, v) end)
+  end
+
+  defp reduce_strings(prompt, value, fun), do: fun.(prompt, value)
+
+  # Count the attached file blocks (each starts with a "# <path>" header
+  # line) and the rendered byte size for the one-line notice.
+  defp attach_notice(%Prompt{context: context}, rendered) do
+    attaches = Enum.count(context, &match?({:attach, _}, &1))
+
+    if attaches == 0 do
+      nil
+    else
+      files = rendered |> String.split("\n") |> Enum.count(&String.starts_with?(&1, "# "))
+      "(attached #{files} file#{plural(files)}, ~#{kb(byte_size(rendered))})"
+    end
+  end
+
+  defp kb(bytes), do: "#{Float.round(bytes / 1024, 1)}KB"
+
+  # --- fork helpers -------------------------------------------------
+
+  defp fork_session(session, prompt, opts) do
+    IO.puts("\e[33m... (forking)\e[0m")
+
+    case Session.fork(session, prompt, opts) do
+      {:ok, branch, result} ->
+        Process.put(@session_key, branch)
+        print_result(result, branch)
+        result
+
+      {:error, %Error{} = error} ->
+        IO.puts("\e[31mError: #{Exception.message(error)}\e[0m")
+        raise error
+    end
+  end
+
+  # --- history / pick helpers ---------------------------------------
+
+  defp history_root do
+    case Process.get(@history_key) do
+      %History{} = h ->
+        {:ok, h}
+
+      _ ->
+        case History.home() do
+          {:ok, h} ->
+            Process.put(@history_key, h)
+            {:ok, h}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  defp project_summary(summary) do
+    %{
+      id: summary.session_id,
+      first_prompt: summary.first_user_preview,
+      turns: summary.message_count,
+      last_used: summary.last_timestamp,
+      tokens: summary.total_tokens,
+      cost_usd: summary.total_cost_usd
+    }
+  end
+
+  defp print_pick_list(summaries) do
+    summaries
+    |> Enum.with_index(1)
+    |> Enum.each(fn {s, i} ->
+      IO.puts(
+        "\e[36m#{i})\e[0m #{s.turns} turn#{plural(s.turns)}  #{age(s.last_used)}  #{pick_cost(s.cost_usd)}  #{pick_preview(s.first_prompt)}"
+      )
+    end)
+  end
+
+  defp read_pick_choice(summaries) do
+    case IO.gets("Pick a session (number, blank to cancel): ") do
+      :eof -> :cancelled
+      input -> resolve_pick(String.trim(to_string(input)), summaries)
+    end
+  end
+
+  defp resolve_pick("", _summaries), do: :cancelled
+
+  defp resolve_pick(input, summaries) do
+    case Integer.parse(input) do
+      {n, ""} when n >= 1 -> pick_index(summaries, n)
+      _ -> invalid_pick()
+    end
+  end
+
+  defp pick_index(summaries, n) do
+    case Enum.at(summaries, n - 1) do
+      nil ->
+        invalid_pick()
+
+      %{id: id} ->
+        resume(id)
+        id
+    end
+  end
+
+  defp invalid_pick do
+    IO.puts("\e[31mInvalid selection.\e[0m")
+    :cancelled
+  end
+
+  defp pick_cost(nil), do: "—"
+  defp pick_cost(cost), do: format_cost(cost)
+
+  defp pick_preview(nil), do: ""
+  defp pick_preview(preview), do: preview
+
+  # Best-effort relative age from an ISO-8601 timestamp string.
+  defp age(nil), do: "(unknown)"
+
+  defp age(timestamp) when is_binary(timestamp) do
+    case DateTime.from_iso8601(timestamp) do
+      {:ok, dt, _offset} -> relative_age(DateTime.diff(DateTime.utc_now(), dt, :second))
+      _ -> "(unknown)"
+    end
+  end
+
+  defp relative_age(seconds) when seconds < 60, do: "just now"
+  defp relative_age(seconds) when seconds < 3600, do: "#{div(seconds, 60)}m ago"
+  defp relative_age(seconds) when seconds < 86_400, do: "#{div(seconds, 3600)}h ago"
+  defp relative_age(seconds), do: "#{div(seconds, 86_400)}d ago"
+
+  # --- print helpers ------------------------------------------------
 
   defp print_history([]) do
     IO.puts("\e[33mNo turns yet.\e[0m")
@@ -180,21 +537,6 @@ defmodule ClaudeWrapper.IEx do
     IO.puts("\e[36m--- Turn #{i}#{cost_str}#{error_str} ---\e[0m")
     IO.puts(result.result)
     IO.puts("")
-  end
-
-  defp do_send(session, prompt, opts) do
-    IO.puts("\e[33m...\e[0m")
-
-    case Session.send(session, prompt, opts) do
-      {:ok, new_session, result} ->
-        Process.put(@session_key, new_session)
-        print_result(result, new_session)
-        :ok
-
-      {:error, reason} ->
-        IO.puts("\e[31mError: #{inspect(reason)}\e[0m")
-        {:error, reason}
-    end
   end
 
   defp print_result(%Result{} = result, session) do
@@ -226,7 +568,13 @@ defmodule ClaudeWrapper.IEx do
   def format_cost(nil), do: "?"
   def format_cost(cost) when is_number(cost), do: "$#{Float.round(cost + 0.0, 4)}"
 
-  @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
+  # --- opt / ambient helpers ----------------------------------------
+
+  defp ambient_config, do: Process.get(@config_key, [])
+
+  defp working_dir do
+    Keyword.get(ambient_config(), :working_dir) || File.cwd!()
+  end
 
   defp split_opts(opts) do
     Enum.split_with(opts, fn {k, _v} -> k in @config_keys end)

@@ -22,7 +22,7 @@ defmodule ClaudeWrapper.Session do
       session = ClaudeWrapper.Session.resume(config, "session-id-abc")
   """
 
-  alias ClaudeWrapper.{Config, Query, Result, Telemetry}
+  alias ClaudeWrapper.{Config, Error, Prompt, Query, Result, Telemetry}
 
   @type t :: %__MODULE__{
           config: Config.t(),
@@ -70,10 +70,22 @@ defmodule ClaudeWrapper.Session do
 
   The first turn creates a new session. Subsequent turns use `--resume`
   with the session ID from the first result.
+
+  `prompt` is either a plain string or a `t:ClaudeWrapper.Prompt.t/0`. A
+  `Prompt` is rendered (which expands attached files and git diffs)
+  before the turn runs; a render failure short-circuits to
+  `{:error, %ClaudeWrapper.Error{}}` without launching the CLI.
   """
-  @spec send(t(), String.t(), keyword()) :: {:ok, t(), Result.t()} | {:error, term()}
+  @spec send(t(), String.t() | Prompt.t(), keyword()) ::
+          {:ok, t(), Result.t()} | {:error, Error.t()}
   def send(%__MODULE__{} = session, prompt, opts \\ []) do
-    query = build_query(session, prompt, opts)
+    with {:ok, text} <- resolve_prompt(prompt) do
+      do_send(session, text, opts)
+    end
+  end
+
+  defp do_send(session, text, opts) do
+    query = build_query(session, text, opts)
 
     Telemetry.span_session_turn(session, query, fn ->
       case Query.execute(query, session.config) do
@@ -116,6 +128,46 @@ defmodule ClaudeWrapper.Session do
   end
 
   @doc """
+  Branch the conversation into a new, independent session.
+
+  Resumes the session's current `session_id` with `--fork-session` and
+  sends `prompt`. The CLI clones the prior context into a *new* session;
+  the returned `Session` is bound to that new forked id, while the
+  original struct passed in is left completely untouched -- you can keep
+  using it to continue the original thread.
+
+  `prompt` accepts a string or a `t:ClaudeWrapper.Prompt.t/0`, exactly
+  like `send/3`.
+
+  Returns `{:error, %ClaudeWrapper.Error{kind: :no_session}}` if the
+  session has no established `session_id` yet (nothing to fork from --
+  send at least one turn first).
+
+  ## Example
+
+      {:ok, session, _} = ClaudeWrapper.Session.send(session, "Draft a plan")
+      {:ok, branch, _} = ClaudeWrapper.Session.fork(session, "Now try a riskier variant")
+      # `session` still points at the original thread; `branch` is the fork.
+  """
+  @spec fork(t(), String.t() | Prompt.t(), keyword()) ::
+          {:ok, t(), Result.t()} | {:error, Error.t()}
+  def fork(session, prompt, opts \\ [])
+
+  def fork(%__MODULE__{session_id: nil}, _prompt, _opts) do
+    {:error, Error.new(:no_session)}
+  end
+
+  def fork(%__MODULE__{session_id: sid} = session, prompt, opts) when is_binary(sid) do
+    # Branch from a copy that resumes the current id, with --fork-session
+    # set so the CLI mints a new session rather than appending to this one.
+    # do_send binds the returned session to the new id from the result and
+    # the original `session` struct is never mutated.
+    forked = %{session | history: []}
+
+    send(forked, prompt, Keyword.put(opts, :fork_session, true))
+  end
+
+  @doc """
   Get the session ID (if established).
   """
   @spec session_id(t()) :: String.t() | nil
@@ -152,6 +204,12 @@ defmodule ClaudeWrapper.Session do
   def last_result(%__MODULE__{history: history}), do: List.last(history)
 
   # --- Private ---
+
+  # Normalize a prompt argument to a string. A %Prompt{} is rendered
+  # (expanding files / git diffs); a render failure becomes the caller's
+  # {:error, %Error{}} so core stays tuple-returning rather than raising.
+  defp resolve_prompt(prompt) when is_binary(prompt), do: {:ok, prompt}
+  defp resolve_prompt(%Prompt{} = prompt), do: Prompt.render(prompt)
 
   defp build_query(session, prompt, per_call_opts) do
     merged_opts = Keyword.merge(session.query_opts, per_call_opts)
