@@ -191,6 +191,26 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "build_args -- variadic tool flags (#105)" do
+    test "allowed_tools and disallowed_tools emit one flag followed by all values" do
+      args =
+        Query.new("p")
+        |> Query.allowed_tool("Read")
+        |> Query.allowed_tool("Bash")
+        |> Query.disallowed_tool("WebFetch")
+        |> Query.disallowed_tool("Edit")
+        |> Query.build_args()
+
+      assert Enum.count(args, &(&1 == "--allowed-tools")) == 1
+      ai = Enum.find_index(args, &(&1 == "--allowed-tools"))
+      assert Enum.slice(args, ai, 3) == ["--allowed-tools", "Read", "Bash"]
+
+      assert Enum.count(args, &(&1 == "--disallowed-tools")) == 1
+      di = Enum.find_index(args, &(&1 == "--disallowed-tools"))
+      assert Enum.slice(args, di, 3) == ["--disallowed-tools", "WebFetch", "Edit"]
+    end
+  end
+
   describe "Result" do
     test "from_json parses standard fields" do
       data = %{
