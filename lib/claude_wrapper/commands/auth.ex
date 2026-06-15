@@ -23,7 +23,7 @@ defmodule ClaudeWrapper.Commands.Auth do
   """
   @spec status(Config.t()) :: {:ok, auth_status()} | {:error, term()}
   def status(%Config{} = config) do
-    args = Config.base_args(config) ++ ["auth", "status", "--output-format", "json"]
+    args = Config.base_args(config) ++ ["auth", "status", "--json"]
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} ->
