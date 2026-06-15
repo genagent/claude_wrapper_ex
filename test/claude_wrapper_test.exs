@@ -725,6 +725,89 @@ defmodule ClaudeWrapperTest do
       assert {:disable, 3} in Plugin.__info__(:functions)
       assert {:update, 3} in Plugin.__info__(:functions)
       assert {:validate, 2} in Plugin.__info__(:functions)
+      assert {:tag, 2} in Plugin.__info__(:functions)
+      assert {:details, 2} in Plugin.__info__(:functions)
+      assert {:prune, 2} in Plugin.__info__(:functions)
+    end
+
+    test "tag_args defaults to just the subcommand" do
+      assert Plugin.tag_args([]) == ["plugin", "tag"]
+    end
+
+    test "tag_args composes all flags with path last" do
+      args =
+        Plugin.tag_args(
+          path: "./my-plugin",
+          dry_run: true,
+          force: true,
+          message: "release %s",
+          push: true,
+          remote: "upstream"
+        )
+
+      assert args == [
+               "plugin",
+               "tag",
+               "--dry-run",
+               "--force",
+               "--message",
+               "release %s",
+               "--push",
+               "--remote",
+               "upstream",
+               "./my-plugin"
+             ]
+    end
+
+    test "tag_args emits only the flags that are set" do
+      assert Plugin.tag_args(message: "v%s") == ["plugin", "tag", "--message", "v%s"]
+      assert Plugin.tag_args(push: true) == ["plugin", "tag", "--push"]
+      assert Plugin.tag_args(path: "./p") == ["plugin", "tag", "./p"]
+      refute "--force" in Plugin.tag_args(dry_run: true)
+    end
+
+    test "prune_args defaults to just the subcommand" do
+      assert Plugin.prune_args([]) == ["plugin", "prune"]
+    end
+
+    test "prune_args composes dry_run, scope, and yes" do
+      assert Plugin.prune_args(dry_run: true, scope: :user, yes: true) ==
+               ["plugin", "prune", "--dry-run", "--scope", "user", "--yes"]
+    end
+
+    test "prune_args emits scope value and omits unset flags" do
+      assert Plugin.prune_args(scope: :project) == ["plugin", "prune", "--scope", "project"]
+      assert Plugin.prune_args(yes: true) == ["plugin", "prune", "--yes"]
+      refute "--dry-run" in Plugin.prune_args(yes: true)
+    end
+
+    test "uninstall_args defaults to plugin name with no flags" do
+      assert Plugin.uninstall_args("old-plugin", []) == ["plugin", "uninstall", "old-plugin"]
+    end
+
+    test "uninstall_args composes scope, keep_data, prune, and yes" do
+      assert Plugin.uninstall_args("old-plugin",
+               scope: :user,
+               keep_data: true,
+               prune: true,
+               yes: true
+             ) ==
+               [
+                 "plugin",
+                 "uninstall",
+                 "old-plugin",
+                 "--scope",
+                 "user",
+                 "--keep-data",
+                 "--prune",
+                 "--yes"
+               ]
+    end
+
+    test "uninstall_args emits --prune and --yes independently" do
+      assert Plugin.uninstall_args("p", prune: true) == ["plugin", "uninstall", "p", "--prune"]
+      assert Plugin.uninstall_args("p", yes: true) == ["plugin", "uninstall", "p", "--yes"]
+      refute "--keep-data" in Plugin.uninstall_args("p", prune: true)
     end
   end
 
