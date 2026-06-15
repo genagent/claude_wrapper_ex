@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.8.0...v0.8.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* match CLI slug encoding for all non-alphanumeric path chars ([#135](https://github.com/genagent/claude_wrapper_ex/issues/135)) ([048cfd0](https://github.com/genagent/claude_wrapper_ex/commit/048cfd0e48831d73ae04cf47701f8f2c2da8511b))
+
 ## [0.8.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.7.1...v0.8.0) (2026-06-15)
 
 
