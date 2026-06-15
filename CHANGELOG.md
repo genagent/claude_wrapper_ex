@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.8.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.7.1...v0.8.0) (2026-06-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* every {:error, reason} now carries a %ClaudeWrapper.Error{} struct instead of an ad-hoc atom/tuple. Match on %ClaudeWrapper.Error{kind: ...}.
+* the Query :worktree field type widens from boolean() to boolean() | String.t(). Runtime behavior for existing worktree/1 callers is unchanged.
+
+### Features
+
+* add Auth login options (email, mode, force_sso) ([#126](https://github.com/genagent/claude_wrapper_ex/issues/126)) ([cb2b72e](https://github.com/genagent/claude_wrapper_ex/commit/cb2b72e227825b7aa6b393c62fd674473c2fbb4f)), closes [#101](https://github.com/genagent/claude_wrapper_ex/issues/101)
+* add auto-mode, install, update, and project purge command wrappers ([#127](https://github.com/genagent/claude_wrapper_ex/issues/127)) ([0e84cb3](https://github.com/genagent/claude_wrapper_ex/commit/0e84cb3e091259404a6f247e30d71a365d5dbfb2)), closes [#102](https://github.com/genagent/claude_wrapper_ex/issues/102)
+* add ClaudeWrapper.Agents for file-backed agent definitions ([#114](https://github.com/genagent/claude_wrapper_ex/issues/114)) ([7497fbc](https://github.com/genagent/claude_wrapper_ex/commit/7497fbcc764287ee9d91a9d3db87068b4f7ba5ae)), closes [#91](https://github.com/genagent/claude_wrapper_ex/issues/91)
+* add ClaudeWrapper.Auth for env detection and failure classification ([#118](https://github.com/genagent/claude_wrapper_ex/issues/118)) ([6eebe2c](https://github.com/genagent/claude_wrapper_ex/commit/6eebe2cb6902b73dfd96ff6edc5575ab0ec95e8c)), closes [#93](https://github.com/genagent/claude_wrapper_ex/issues/93)
+* add ClaudeWrapper.Budget client-side budget tracker ([#120](https://github.com/genagent/claude_wrapper_ex/issues/120)) ([47f2898](https://github.com/genagent/claude_wrapper_ex/commit/47f2898bdae5f032f8d20971eee7300a3adb5f68)), closes [#95](https://github.com/genagent/claude_wrapper_ex/issues/95)
+* add ClaudeWrapper.CliVersion for parsing and checking the CLI version ([#119](https://github.com/genagent/claude_wrapper_ex/issues/119)) ([f9fc5a6](https://github.com/genagent/claude_wrapper_ex/commit/f9fc5a68f882d6d71b8bfb24f23224d524650653)), closes [#94](https://github.com/genagent/claude_wrapper_ex/issues/94)
+* add ClaudeWrapper.DangerousClient env-gated bypass wrapper ([#122](https://github.com/genagent/claude_wrapper_ex/issues/122)) ([1a2f3e0](https://github.com/genagent/claude_wrapper_ex/commit/1a2f3e06c48c6de96b3be5632a6fe9ee46ac8c2f)), closes [#97](https://github.com/genagent/claude_wrapper_ex/issues/97)
+* add ClaudeWrapper.History for reading on-disk session transcripts ([#112](https://github.com/genagent/claude_wrapper_ex/issues/112)) ([eedbe1d](https://github.com/genagent/claude_wrapper_ex/commit/eedbe1df0b60fdeedd6eb44571e4a6404cf9fc78)), closes [#87](https://github.com/genagent/claude_wrapper_ex/issues/87)
+* add ClaudeWrapper.Jobs for reading background job state ([#117](https://github.com/genagent/claude_wrapper_ex/issues/117)) ([80a11d1](https://github.com/genagent/claude_wrapper_ex/commit/80a11d12bcdf578911ea3e27574cb610cb3dc741)), closes [#88](https://github.com/genagent/claude_wrapper_ex/issues/88)
+* add ClaudeWrapper.Settings for reading on-disk settings layers ([#113](https://github.com/genagent/claude_wrapper_ex/issues/113)) ([ca89fa4](https://github.com/genagent/claude_wrapper_ex/commit/ca89fa4bb50e5eb504c738d22ca7a4df3753c2fd)), closes [#86](https://github.com/genagent/claude_wrapper_ex/issues/86)
+* add ClaudeWrapper.Skills for reading ~/.claude/skills ([#116](https://github.com/genagent/claude_wrapper_ex/issues/116)) ([5f4ed1f](https://github.com/genagent/claude_wrapper_ex/commit/5f4ed1fd80dd42327a8b82279a12490abdf0e865)), closes [#89](https://github.com/genagent/claude_wrapper_ex/issues/89)
+* add ClaudeWrapper.ToolPattern typed tool-spec builder ([#121](https://github.com/genagent/claude_wrapper_ex/issues/121)) ([b3e5aeb](https://github.com/genagent/claude_wrapper_ex/commit/b3e5aebca1241ee9b8527f90d5c4fa97a9f85e66)), closes [#96](https://github.com/genagent/claude_wrapper_ex/issues/96)
+* add ClaudeWrapper.Worktrees for git worktree introspection ([#115](https://github.com/genagent/claude_wrapper_ex/issues/115)) ([fa8e449](https://github.com/genagent/claude_wrapper_ex/commit/fa8e449d0669602baf936ff1f45ae017d32a3b6b)), closes [#90](https://github.com/genagent/claude_wrapper_ex/issues/90)
+* add DuplexSession health helpers and Conversation bookkeeping ([#128](https://github.com/genagent/claude_wrapper_ex/issues/128)) ([fc12af8](https://github.com/genagent/claude_wrapper_ex/commit/fc12af8bb5e5bc4ce780290f017589d7f8ab78a9)), closes [#103](https://github.com/genagent/claude_wrapper_ex/issues/103)
+* add Mcp command parity (add-from-desktop, serve, richer add/add-json) ([#125](https://github.com/genagent/claude_wrapper_ex/issues/125)) ([eae71ea](https://github.com/genagent/claude_wrapper_ex/commit/eae71ea4d3bfe2f57ea39a2bcf7d9a0e01aac089)), closes [#100](https://github.com/genagent/claude_wrapper_ex/issues/100)
+* add missing per-call query flags and :xhigh effort tier ([#109](https://github.com/genagent/claude_wrapper_ex/issues/109)) ([f4c8f60](https://github.com/genagent/claude_wrapper_ex/commit/f4c8f60ed72515bfcb7e00446e8ae715835ba7ee)), closes [#83](https://github.com/genagent/claude_wrapper_ex/issues/83)
+* add Plugin command parity (tag, details, prune; uninstall --prune/--yes) ([#124](https://github.com/genagent/claude_wrapper_ex/issues/124)) ([9d82f73](https://github.com/genagent/claude_wrapper_ex/commit/9d82f733540ab1b7aa1de49a3a523176021837f3)), closes [#99](https://github.com/genagent/claude_wrapper_ex/issues/99)
+* add Query.from_pr/2 to resume a PR-linked session ([#110](https://github.com/genagent/claude_wrapper_ex/issues/110)) ([873e28b](https://github.com/genagent/claude_wrapper_ex/commit/873e28bd01946a8b5be091162fd3e2f743b365fb)), closes [#85](https://github.com/genagent/claude_wrapper_ex/issues/85)
+* add typed partial-message accessor to StreamEvent ([#123](https://github.com/genagent/claude_wrapper_ex/issues/123)) ([04936c5](https://github.com/genagent/claude_wrapper_ex/commit/04936c58c5bbd69108fc26dcc13d47e31ffbfc62)), closes [#98](https://github.com/genagent/claude_wrapper_ex/issues/98)
+* introduce canonical ClaudeWrapper.Error exception ([#129](https://github.com/genagent/claude_wrapper_ex/issues/129)) ([cf67532](https://github.com/genagent/claude_wrapper_ex/commit/cf6753273cec1c93ae3af05f034068b810a253fa)), closes [#92](https://github.com/genagent/claude_wrapper_ex/issues/92)
+* support named git worktrees in Query ([#111](https://github.com/genagent/claude_wrapper_ex/issues/111)) ([ed1875d](https://github.com/genagent/claude_wrapper_ex/commit/ed1875d811aa40e1fa520d28f8e30108170cae6e)), closes [#84](https://github.com/genagent/claude_wrapper_ex/issues/84)
+
+
+### Bug Fixes
+
+* correct mcp/auth command output handling; add live integration coverage ([#130](https://github.com/genagent/claude_wrapper_ex/issues/130)) ([ffc10bc](https://github.com/genagent/claude_wrapper_ex/commit/ffc10bc8a0e07a82f33039dd9048c6a1e5d87c77))
+* emit correct CLI flag names in Query.build_args ([#106](https://github.com/genagent/claude_wrapper_ex/issues/106)) ([4aecda8](https://github.com/genagent/claude_wrapper_ex/commit/4aecda8b662247da08c11ba8448d0258aa4c7fd6))
+
 ## [0.7.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.7.0...v0.7.1) (2026-05-13)
 
 
