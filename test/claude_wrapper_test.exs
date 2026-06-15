@@ -395,6 +395,117 @@ defmodule ClaudeWrapperTest do
       event = %StreamEvent{type: "result", data: %{"cost_usd" => 0.03}}
       assert StreamEvent.cost_usd(event) == 0.03
     end
+
+    # partial_message/1 -- ported from the Rust crate's streaming tests
+    # (src/streaming.rs). Each sample is the CLI's stream_event envelope
+    # wrapping a raw Anthropic content-block lifecycle event.
+    defp parse_partial(inner) do
+      line =
+        Jason.encode!(%{
+          "type" => "stream_event",
+          "event" => inner,
+          "session_id" => "sess-1",
+          "parent_tool_use_id" => nil
+        })
+
+      assert {:ok, event} = StreamEvent.parse(line)
+      StreamEvent.partial_message(event)
+    end
+
+    test "partial_message decodes a text block lifecycle" do
+      assert parse_partial(%{
+               "type" => "content_block_start",
+               "index" => 0,
+               "content_block" => %{"type" => "text", "text" => ""}
+             }) == {:block_start, 0, :text}
+
+      assert parse_partial(%{
+               "type" => "content_block_delta",
+               "index" => 0,
+               "delta" => %{"type" => "text_delta", "text" => "Hello"}
+             }) == {:block_delta, 0, {:text, "Hello"}}
+
+      assert parse_partial(%{"type" => "content_block_stop", "index" => 0}) ==
+               {:block_stop, 0}
+    end
+
+    test "partial_message decodes a thinking block lifecycle" do
+      assert parse_partial(%{
+               "type" => "content_block_start",
+               "index" => 1,
+               "content_block" => %{"type" => "thinking", "thinking" => "", "signature" => ""}
+             }) == {:block_start, 1, :thinking}
+
+      assert parse_partial(%{
+               "type" => "content_block_delta",
+               "index" => 1,
+               "delta" => %{"type" => "thinking_delta", "thinking" => "weighing options"}
+             }) == {:block_delta, 1, {:thinking, "weighing options"}}
+    end
+
+    test "partial_message carries tool_use id and name, and streams input json" do
+      assert parse_partial(%{
+               "type" => "content_block_start",
+               "index" => 2,
+               "content_block" => %{
+                 "type" => "tool_use",
+                 "id" => "toolu_abc",
+                 "name" => "Bash",
+                 "input" => %{}
+               }
+             }) == {:block_start, 2, {:tool_use, "toolu_abc", "Bash"}}
+
+      assert parse_partial(%{
+               "type" => "content_block_delta",
+               "index" => 2,
+               "delta" => %{"type" => "input_json_delta", "partial_json" => "{\"cmd\":"}
+             }) == {:block_delta, 2, {:input_json, "{\"cmd\":"}}
+    end
+
+    test "partial_message falls through to :other for unknown kinds" do
+      assert parse_partial(%{
+               "type" => "content_block_start",
+               "index" => 3,
+               "content_block" => %{"type" => "redacted_thinking", "data" => "..."}
+             }) == {:block_start, 3, {:other, "redacted_thinking"}}
+
+      assert parse_partial(%{
+               "type" => "content_block_delta",
+               "index" => 3,
+               "delta" => %{"type" => "signature_delta", "signature" => "sig"}
+             }) == {:block_delta, 3, :other}
+    end
+
+    test "partial_message returns nil for non-partial events" do
+      assert {:ok, result} =
+               StreamEvent.parse(
+                 ~s({"type":"result","result":"done","session_id":"sess-1","total_cost_usd":0.01})
+               )
+
+      assert StreamEvent.partial_message(result) == nil
+
+      assert {:ok, assistant} =
+               StreamEvent.parse(
+                 ~s({"type":"assistant","message":{"role":"assistant","content":[]},"session_id":"sess-1"})
+               )
+
+      assert StreamEvent.partial_message(assistant) == nil
+
+      # A message-level stream event (not a content-block event) is also nil.
+      assert parse_partial(%{
+               "type" => "message_start",
+               "message" => %{"id" => "msg_1", "role" => "assistant", "content" => []}
+             }) == nil
+    end
+
+    test "partial_message accepts a raw, unwrapped content-block event" do
+      assert {:ok, event} =
+               StreamEvent.parse(
+                 ~s({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}})
+               )
+
+      assert StreamEvent.partial_message(event) == {:block_delta, 0, {:text, "hi"}}
+    end
   end
 
   describe "Session" do
