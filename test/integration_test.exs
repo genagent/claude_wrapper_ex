@@ -15,6 +15,28 @@ defmodule ClaudeWrapper.IntegrationTest do
     {:ok, config: config}
   end
 
+  # Session persistence is eventually consistent across separate `claude`
+  # subprocess invocations: a rapid `--resume` can momentarily miss the
+  # prior turn ("No conversation found"). Retry with a short backoff --
+  # the same resilience a real consumer would want (and what
+  # ClaudeWrapper.Retry exists for).
+  defp send_resilient(session, prompt, opts, attempts \\ 4)
+
+  defp send_resilient(session, prompt, opts, 1) do
+    Session.send(session, prompt, opts)
+  end
+
+  defp send_resilient(session, prompt, opts, attempts) do
+    case Session.send(session, prompt, opts) do
+      {:ok, _session, _result} = ok ->
+        ok
+
+      {:error, _} ->
+        Process.sleep(750)
+        send_resilient(session, prompt, opts, attempts - 1)
+    end
+  end
+
   describe "version" do
     test "returns CLI version" do
       assert {:ok, %{version: version}} = ClaudeWrapper.version()
@@ -86,7 +108,7 @@ defmodule ClaudeWrapper.IntegrationTest do
       session = Session.new(config, max_turns: 1)
 
       {:ok, session, result1} =
-        Session.send(session, "Respond with exactly: Got it, 42.",
+        send_resilient(session, "Respond with exactly: Got it, 42.",
           dangerously_skip_permissions: true
         )
 
@@ -95,7 +117,7 @@ defmodule ClaudeWrapper.IntegrationTest do
       assert Session.session_id(session) != nil
 
       {:ok, session, result2} =
-        Session.send(session, "What number was in your last response?",
+        send_resilient(session, "What number was in your last response?",
           dangerously_skip_permissions: true
         )
 
