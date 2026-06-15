@@ -297,4 +297,58 @@ defmodule ClaudeWrapper.IntegrationTest do
       assert output =~ "Session closed"
     end
   end
+
+  describe "DuplexSession health" do
+    test "alive?/exit_status/wait_for_exit across a clean shutdown", %{config: config} do
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          extra_args: ["--permission-mode", "plan", "--no-session-persistence"]
+        )
+
+      # No turn is sent, so this spends no tokens -- it just verifies the
+      # health helpers against a real, live stream-json subprocess.
+      assert DuplexSession.alive?(pid)
+      assert DuplexSession.exit_status(pid) == :running
+
+      :ok = DuplexSession.stop(pid)
+
+      refute DuplexSession.alive?(pid)
+      assert DuplexSession.wait_for_exit(pid) == :completed
+      assert DuplexSession.exit_status(pid) == :completed
+    end
+  end
+
+  describe "Conversation" do
+    alias ClaudeWrapper.Conversation
+
+    test "accumulates history over a real turn", %{config: config} do
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          extra_args: [
+            "--permission-mode",
+            "plan",
+            "--max-turns",
+            "1",
+            "--no-session-persistence"
+          ]
+        )
+
+      try do
+        conv = Conversation.new(pid)
+
+        assert {:ok, conv, %ClaudeWrapper.Result{} = result} =
+                 Conversation.send(conv, "Respond with exactly: hi", 120_000)
+
+        assert is_binary(result.result)
+        assert Conversation.turn_count(conv) == 1
+        assert Conversation.last_result(conv) == result
+        assert Conversation.history(conv) == [result]
+        assert Conversation.session_id(conv) != nil
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+  end
 end

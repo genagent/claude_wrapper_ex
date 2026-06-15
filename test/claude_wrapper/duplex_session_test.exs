@@ -519,6 +519,151 @@ defmodule ClaudeWrapper.DuplexSessionTest do
     end
   end
 
+  describe "alive?/1" do
+    test "true for a live session, false after close" do
+      pid = start_with_fake_claude()
+
+      assert DuplexSession.alive?(pid) == true
+
+      :ok = DuplexSession.close(pid)
+      refute Process.alive?(pid)
+      assert DuplexSession.alive?(pid) == false
+    end
+
+    test "false for an unregistered name" do
+      assert DuplexSession.alive?(:no_such_duplex_session) == false
+    end
+  end
+
+  describe "exit_status/1" do
+    test "is :running while the session is live" do
+      pid = start_with_fake_claude()
+
+      try do
+        assert DuplexSession.exit_status(pid) == :running
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "reads :completed once the process is gone (clean close)" do
+      pid = start_with_fake_claude()
+      ref = Process.monitor(pid)
+
+      :ok = DuplexSession.close(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+      assert DuplexSession.exit_status(pid) == :completed
+    end
+
+    test "is a best-effort snapshot: a failed subprocess exit still reads :completed once dead" do
+      # exit_status/1 keeps no persisted terminal status, so a dead
+      # session always reads :completed regardless of how it died. The
+      # failure reason is only available via wait_for_exit/2 (covered
+      # below). This locks the documented snapshot semantics.
+      pid = start_with_fake_claude()
+      ref = Process.monitor(pid)
+      port = :sys.get_state(pid).port
+
+      Kernel.send(pid, {port, {:exit_status, 1}})
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+      assert DuplexSession.exit_status(pid) == :completed
+    end
+
+    test "is :completed for an unregistered name" do
+      assert DuplexSession.exit_status(:no_such_duplex_session) == :completed
+    end
+  end
+
+  describe "wait_for_exit/2" do
+    test "returns :completed promptly after the session is closed" do
+      pid = start_with_fake_claude()
+      :ok = DuplexSession.close(pid)
+
+      assert DuplexSession.wait_for_exit(pid, 1_000) == :completed
+    end
+
+    test "returns immediately if the session has already exited" do
+      pid = start_with_fake_claude()
+      ref = Process.monitor(pid)
+      :ok = DuplexSession.close(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+      # Process is already gone; the call must not block.
+      assert DuplexSession.wait_for_exit(pid, 1_000) == :completed
+    end
+
+    test "blocks until a live session exits, then returns :completed" do
+      pid = start_with_fake_claude()
+      parent = self()
+
+      task =
+        Task.async(fn ->
+          Kernel.send(parent, :waiting)
+          DuplexSession.wait_for_exit(pid, 5_000)
+        end)
+
+      # Wait until the waiter has actually registered on the session, so
+      # the terminal status flows through the {:duplex_exit, ...} path.
+      assert_receive :waiting, 1_000
+      wait_until(fn -> map_size(:sys.get_state(pid).exit_waiters) == 1 end)
+
+      :ok = DuplexSession.close(pid)
+      assert Task.await(task, 5_000) == :completed
+    end
+
+    test "surfaces a failed subprocess exit to a blocked waiter" do
+      pid = start_with_fake_claude()
+      port = :sys.get_state(pid).port
+
+      task = Task.async(fn -> DuplexSession.wait_for_exit(pid, 5_000) end)
+
+      # Ensure the waiter is registered before driving the non-zero exit,
+      # so the {:failed, ...} status is delivered via {:duplex_exit, ...}.
+      wait_until(fn -> map_size(:sys.get_state(pid).exit_waiters) == 1 end)
+      Kernel.send(pid, {port, {:exit_status, 2}})
+
+      assert Task.await(task, 5_000) == {:failed, {:port_exit, 2}}
+    end
+
+    test "falls back to the monitor when the session is hard-killed" do
+      # A hard kill is untrappable: terminate/2 never runs, so no
+      # {:duplex_exit, ...} is sent even though the waiter registered.
+      # This exercises the :DOWN fallback, where a non-:normal exit
+      # reason (:killed) maps to {:failed, reason}.
+      pid = start_with_fake_claude_quiet()
+      parent = self()
+
+      spawn(fn ->
+        status = DuplexSession.wait_for_exit(pid, 5_000)
+        Kernel.send(parent, {:waited, status})
+      end)
+
+      # Register first so the test is deterministic; the kill still skips
+      # terminate/2, forcing the monitor path.
+      wait_until(fn -> map_size(:sys.get_state(pid).exit_waiters) == 1 end)
+      Process.exit(pid, :kill)
+
+      assert_receive {:waited, {:failed, :killed}}, 5_000
+    end
+
+    test "returns :running on timeout while the session is still alive" do
+      pid = start_with_fake_claude()
+
+      try do
+        assert DuplexSession.wait_for_exit(pid, 50) == :running
+        assert Process.alive?(pid)
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "returns :completed for an unregistered name" do
+      assert DuplexSession.wait_for_exit(:no_such_duplex_session, 100) == :completed
+    end
+  end
+
   defp poll_for(fun, deadline_ms \\ 1_000) do
     deadline = System.monotonic_time(:millisecond) + deadline_ms
     do_poll_for(fun, deadline)
