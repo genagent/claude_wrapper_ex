@@ -211,6 +211,66 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "build_args -- added flags (#83)" do
+    test "boolean flags emit when set" do
+      args =
+        Query.new("p")
+        |> Query.prompt_suggestions()
+        |> Query.replay_user_messages()
+        |> Query.bare()
+        |> Query.disable_slash_commands()
+        |> Query.include_hook_events()
+        |> Query.exclude_dynamic_system_prompt_sections()
+        |> Query.build_args()
+
+      assert "--prompt-suggestions" in args
+      assert "--replay-user-messages" in args
+      assert "--bare" in args
+      assert "--disable-slash-commands" in args
+      assert "--include-hook-events" in args
+      assert "--exclude-dynamic-system-prompt-sections" in args
+    end
+
+    test "boolean flags absent by default" do
+      args = Query.new("p") |> Query.build_args()
+
+      refute "--bare" in args
+      refute "--prompt-suggestions" in args
+      refute "--replay-user-messages" in args
+      refute "--disable-slash-commands" in args
+      refute "--include-hook-events" in args
+      refute "--exclude-dynamic-system-prompt-sections" in args
+    end
+
+    test "flags settable via apply_opts" do
+      q =
+        Query.new("p")
+        |> Query.apply_opts(
+          prompt_suggestions: true,
+          replay_user_messages: true,
+          bare: true,
+          disable_slash_commands: true,
+          include_hook_events: true,
+          exclude_dynamic_system_prompt_sections: true
+        )
+
+      assert q.prompt_suggestions
+      assert q.replay_user_messages
+      assert q.bare
+      assert q.disable_slash_commands
+      assert q.include_hook_events
+      assert q.exclude_dynamic_system_prompt_sections
+    end
+
+    test ":xhigh effort emits xhigh" do
+      args = Query.new("p") |> Query.effort(:xhigh) |> Query.build_args()
+
+      assert "--effort" in args
+      idx = Enum.find_index(args, &(&1 == "--effort"))
+      assert Enum.at(args, idx + 1) == "xhigh"
+    end
+  end
+
   describe "Result" do
     test "from_json parses standard fields" do
       data = %{

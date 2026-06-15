@@ -30,7 +30,7 @@ defmodule ClaudeWrapper.Query do
 
   @type output_format :: :text | :json | :stream_json
   @type input_format :: :text | :stream_json
-  @type effort :: :low | :medium | :high | :max
+  @type effort :: :low | :medium | :high | :xhigh | :max
 
   @type t :: %__MODULE__{
           prompt: String.t(),
@@ -69,7 +69,13 @@ defmodule ClaudeWrapper.Query do
           betas: String.t() | nil,
           plugin_dirs: [String.t()],
           setting_sources: String.t() | nil,
-          tmux: boolean()
+          tmux: boolean(),
+          prompt_suggestions: boolean(),
+          replay_user_messages: boolean(),
+          bare: boolean(),
+          disable_slash_commands: boolean(),
+          include_hook_events: boolean(),
+          exclude_dynamic_system_prompt_sections: boolean()
         }
 
   defstruct [
@@ -109,7 +115,13 @@ defmodule ClaudeWrapper.Query do
     fork_session: false,
     worktree: false,
     brief: false,
-    tmux: false
+    tmux: false,
+    prompt_suggestions: false,
+    replay_user_messages: false,
+    bare: false,
+    disable_slash_commands: false,
+    include_hook_events: false,
+    exclude_dynamic_system_prompt_sections: false
   ]
 
   @doc """
@@ -268,6 +280,31 @@ defmodule ClaudeWrapper.Query do
   @spec tmux(t()) :: t()
   def tmux(%__MODULE__{} = q), do: %{q | tmux: true}
 
+  @doc "Enable prompt suggestions (`--prompt-suggestions`)."
+  @spec prompt_suggestions(t()) :: t()
+  def prompt_suggestions(%__MODULE__{} = q), do: %{q | prompt_suggestions: true}
+
+  @doc "Re-emit user messages from stdin (`--replay-user-messages`). Mainly for stream/duplex use."
+  @spec replay_user_messages(t()) :: t()
+  def replay_user_messages(%__MODULE__{} = q), do: %{q | replay_user_messages: true}
+
+  @doc "Minimal mode: skip hooks, LSP, plugins, and settings (`--bare`)."
+  @spec bare(t()) :: t()
+  def bare(%__MODULE__{} = q), do: %{q | bare: true}
+
+  @doc "Disable all slash commands / skills (`--disable-slash-commands`)."
+  @spec disable_slash_commands(t()) :: t()
+  def disable_slash_commands(%__MODULE__{} = q), do: %{q | disable_slash_commands: true}
+
+  @doc "Include hook lifecycle events in the output stream (`--include-hook-events`)."
+  @spec include_hook_events(t()) :: t()
+  def include_hook_events(%__MODULE__{} = q), do: %{q | include_hook_events: true}
+
+  @doc "Exclude dynamic system-prompt sections (`--exclude-dynamic-system-prompt-sections`)."
+  @spec exclude_dynamic_system_prompt_sections(t()) :: t()
+  def exclude_dynamic_system_prompt_sections(%__MODULE__{} = q),
+    do: %{q | exclude_dynamic_system_prompt_sections: true}
+
   # --- Bulk option application ---
 
   @doc """
@@ -340,6 +377,21 @@ defmodule ClaudeWrapper.Query do
   defp apply_opt({:include_partial_messages, _}, q), do: q
   defp apply_opt({:tmux, true}, q), do: tmux(q)
   defp apply_opt({:tmux, _}, q), do: q
+  defp apply_opt({:prompt_suggestions, true}, q), do: prompt_suggestions(q)
+  defp apply_opt({:prompt_suggestions, _}, q), do: q
+  defp apply_opt({:replay_user_messages, true}, q), do: replay_user_messages(q)
+  defp apply_opt({:replay_user_messages, _}, q), do: q
+  defp apply_opt({:bare, true}, q), do: bare(q)
+  defp apply_opt({:bare, _}, q), do: q
+  defp apply_opt({:disable_slash_commands, true}, q), do: disable_slash_commands(q)
+  defp apply_opt({:disable_slash_commands, _}, q), do: q
+  defp apply_opt({:include_hook_events, true}, q), do: include_hook_events(q)
+  defp apply_opt({:include_hook_events, _}, q), do: q
+
+  defp apply_opt({:exclude_dynamic_system_prompt_sections, true}, q),
+    do: exclude_dynamic_system_prompt_sections(q)
+
+  defp apply_opt({:exclude_dynamic_system_prompt_sections, _}, q), do: q
 
   # List opts (or single value, where it makes sense).
   defp apply_opt({:allowed_tools, tools}, q) when is_list(tools),
@@ -521,6 +573,15 @@ defmodule ClaudeWrapper.Query do
     |> add_list("--plugin-dir", q.plugin_dirs)
     |> add_opt("--setting-sources", q.setting_sources)
     |> add_bool("--tmux", q.tmux)
+    |> add_bool("--prompt-suggestions", q.prompt_suggestions)
+    |> add_bool("--replay-user-messages", q.replay_user_messages)
+    |> add_bool("--bare", q.bare)
+    |> add_bool("--disable-slash-commands", q.disable_slash_commands)
+    |> add_bool("--include-hook-events", q.include_hook_events)
+    |> add_bool(
+      "--exclude-dynamic-system-prompt-sections",
+      q.exclude_dynamic_system_prompt_sections
+    )
   end
 
   defp add_flag(args, flag, value), do: args ++ [flag, value]
@@ -554,6 +615,7 @@ defmodule ClaudeWrapper.Query do
   defp format_effort(:low), do: "low"
   defp format_effort(:medium), do: "medium"
   defp format_effort(:high), do: "high"
+  defp format_effort(:xhigh), do: "xhigh"
   defp format_effort(:max), do: "max"
 
   defp format_input_format(nil), do: nil
