@@ -87,6 +87,37 @@ defmodule ClaudeWrapper.DuplexSession do
 
   Subscribers are monitored; if a subscriber crashes or exits, it is
   automatically removed.
+
+  > #### Subscriber delivery has no capacity bound {: .info}
+  >
+  > The Rust crate backs `subscribe` with a bounded
+  > `tokio::sync::broadcast` channel (default capacity 256) and slow
+  > consumers observe a `Lagged` error. The Elixir session instead
+  > delivers each event with `Process.send/3` straight into every
+  > subscriber's process mailbox, which is unbounded, so there is no
+  > `subscriber_capacity` knob and no lag/drop semantics: a slow
+  > subscriber simply accumulates messages in its own mailbox. Apply
+  > back-pressure at the subscriber (drain promptly, or unsubscribe)
+  > if that is a concern.
+
+  ## Health and liveness
+
+  `alive?/1`, `exit_status/1`, and `wait_for_exit/2` give service-shaped
+  hosts non-consuming visibility into whether a session is still usable,
+  mirroring the Rust crate's `is_alive` / `exit_status` / `wait_for_exit`
+  (`SessionExitStatus`). See `t:exit_status/0`.
+
+  `wait_for_exit/2` is the authoritative source of the terminal status:
+  it blocks until the session exits and returns `:completed` for a clean
+  shutdown or `{:failed, {:port_exit, code}}` when the underlying
+  `claude` subprocess exits with a non-zero status (or the port closes
+  abnormally). The status is delivered live from `terminate/2`, so there
+  is no persisted state and nothing to read post-mortem.
+
+  `exit_status/1` is only a *live snapshot*: it reports `:running` while
+  the session process is alive and `:completed` once the process is
+  gone. It cannot distinguish a clean exit from a failed one after the
+  fact -- use `wait_for_exit/2` if you need the failure reason.
   """
 
   use GenServer
@@ -130,6 +161,20 @@ defmodule ClaudeWrapper.DuplexSession do
           | {:name, GenServer.name()}
           | GenServer.option()
 
+  @typedoc """
+  Terminal liveness status of a session, mirroring the Rust crate's
+  `SessionExitStatus`:
+
+    * `:running` -- the session process is alive and usable.
+    * `:completed` -- the session shut down cleanly (graceful
+      `stop/3`/`close/1`, or the `claude` subprocess exited with status
+      `0`).
+    * `{:failed, reason}` -- the `claude` subprocess exited abnormally
+      (non-zero status, or the port closed with an error reason). The
+      `reason` is the recorded `{:port_exit, code | term}` tuple.
+  """
+  @type exit_status :: :running | :completed | {:failed, term()}
+
   @type state :: %__MODULE__{
           port: port() | nil,
           config: Config.t(),
@@ -138,7 +183,9 @@ defmodule ClaudeWrapper.DuplexSession do
           pending_turn: {GenServer.from(), [map()]} | nil,
           pending_control: %{String.t() => GenServer.from()},
           subscribers: %{pid() => reference()},
-          on_permission: permission_handler()
+          on_permission: permission_handler(),
+          exit_status: exit_status(),
+          exit_waiters: %{reference() => pid()}
         }
 
   defstruct [
@@ -149,7 +196,9 @@ defmodule ClaudeWrapper.DuplexSession do
     buffer: <<>>,
     pending_turn: nil,
     pending_control: %{},
-    subscribers: %{}
+    subscribers: %{},
+    exit_status: :running,
+    exit_waiters: %{}
   ]
 
   # --- Public API ------------------------------------------------------
@@ -280,6 +329,117 @@ defmodule ClaudeWrapper.DuplexSession do
     GenServer.call(server, :interrupt, timeout)
   end
 
+  @doc """
+  Cheap, non-consuming liveness check. Mirrors the Rust `is_alive`.
+
+  Returns `true` while the session process is alive, `false` once it has
+  exited (cleanly or with an error). Resolves registered names and pids;
+  any non-pid name that does not resolve is treated as not alive.
+  """
+  @spec alive?(GenServer.server()) :: boolean()
+  def alive?(server) do
+    case resolve_pid(server) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      nil -> false
+    end
+  end
+
+  @doc """
+  Live snapshot of the session's `t:exit_status/0`. Mirrors the Rust
+  `exit_status` / `SessionExitStatus`, but is best-effort only.
+
+  Returns `:running` while the session process is alive and `:completed`
+  once it is gone. Unlike `wait_for_exit/2`, this cannot distinguish a
+  clean exit from a failed one after the fact: the session keeps no
+  persisted terminal status, so a dead process always reads back as
+  `:completed`. If you need the failure reason (e.g.
+  `{:failed, {:port_exit, code}}`), use `wait_for_exit/2`, which is the
+  authoritative source.
+  """
+  @spec exit_status(GenServer.server()) :: exit_status()
+  def exit_status(server) do
+    case resolve_pid(server) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          call_exit_status(pid)
+        else
+          :completed
+        end
+
+      nil ->
+        :completed
+    end
+  end
+
+  @doc """
+  Block until the session exits, then return its terminal
+  `t:exit_status/0`. Mirrors the Rust `wait_for_exit`.
+
+  This is the authoritative source of the terminal status. It returns
+  `:completed` for a clean shutdown and `{:failed, {:port_exit, code}}`
+  when the underlying `claude` subprocess exited with a non-zero status
+  (or the port closed abnormally). Returns immediately (`:completed`) if
+  the session has already exited.
+
+  Implemented with a `Process.monitor/1` plus a one-shot waiter
+  registration on the session: `terminate/2` sends each registered
+  waiter the precise terminal status, and the monitor `:DOWN` is the
+  fallback if the session dies before (or during) registration. Multiple
+  concurrent callers are fine and the call does not consume the session.
+
+  `timeout` (default 5 seconds) bounds the wait; on timeout this returns
+  `:running` to signal "still alive past the deadline" (the analog of
+  the Rust call simply not having resolved yet).
+  """
+  @spec wait_for_exit(GenServer.server(), timeout()) :: exit_status()
+  def wait_for_exit(server, timeout \\ 5_000) do
+    case resolve_pid(server) do
+      nil -> :completed
+      pid when is_pid(pid) -> await_exit(pid, timeout)
+    end
+  end
+
+  # Register as an exit waiter and block for the terminal status. The
+  # monitor guards the window where the session dies before/while we
+  # register: if the GenServer.call races a shutdown (:noproc/:normal
+  # exit), we fall through to the :DOWN branch rather than raising.
+  defp await_exit(pid, timeout) do
+    mref = Process.monitor(pid)
+    ref = make_ref()
+    register_exit_waiter(pid, ref)
+
+    receive do
+      {:duplex_exit, ^ref, status} ->
+        Process.demonitor(mref, [:flush])
+        status
+
+      {:DOWN, ^mref, :process, ^pid, reason} ->
+        down_reason_to_status(reason)
+    after
+      timeout ->
+        Process.demonitor(mref, [:flush])
+        :running
+    end
+  end
+
+  # GenServer.call that tolerates the process dying mid-call. A normal
+  # shutdown (:normal/:noproc) means the :DOWN message is already (or
+  # about to be) in our mailbox, so swallow the exit and let await_exit's
+  # receive pick it up. Any other exit is genuinely unexpected; re-raise.
+  defp register_exit_waiter(pid, ref) do
+    GenServer.call(pid, {:await_exit, ref})
+  catch
+    :exit, {reason, _} when reason in [:normal, :noproc, :shutdown] -> :ok
+    :exit, {{:shutdown, _}, _} -> :ok
+  end
+
+  defp call_exit_status(pid) do
+    GenServer.call(pid, :exit_status)
+  catch
+    :exit, {reason, _} when reason in [:normal, :noproc, :shutdown] -> :completed
+    :exit, {{:shutdown, _}, _} -> :completed
+  end
+
   # --- GenServer callbacks --------------------------------------------
 
   @impl true
@@ -325,6 +485,12 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
+
+  def handle_call(:exit_status, _from, state), do: {:reply, state.exit_status, state}
+
+  def handle_call({:await_exit, ref}, {pid, _tag}, state) do
+    {:reply, :ok, %{state | exit_waiters: Map.put(state.exit_waiters, ref, pid)}}
+  end
 
   def handle_call({:subscribe, pid}, _from, state) do
     state =
@@ -373,12 +539,14 @@ defmodule ClaudeWrapper.DuplexSession do
 
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
     state = fail_pending(state, {:port_exit, code})
-    {:stop, :normal, %{state | port: nil}}
+    status = derive_exit_status({:port_exit, code})
+    {:stop, :normal, %{state | port: nil, exit_status: status}}
   end
 
   def handle_info({:EXIT, port, reason}, %{port: port} = state) do
     state = fail_pending(state, {:port_exit, reason})
-    {:stop, :normal, %{state | port: nil}}
+    status = derive_exit_status({:port_exit, reason})
+    {:stop, :normal, %{state | port: nil, exit_status: status}}
   end
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
@@ -391,9 +559,10 @@ defmodule ClaudeWrapper.DuplexSession do
   def handle_info(_other, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, %{port: port} = state) do
+  def terminate(reason, %{port: port} = state) do
     if is_port(port) and Port.info(port) != nil, do: Port.close(port)
     fail_pending(state, :terminated)
+    notify_exit_waiters(state, final_exit_status(state, reason))
     :ok
   end
 
@@ -657,4 +826,56 @@ defmodule ClaudeWrapper.DuplexSession do
   defp generate_request_id do
     :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
   end
+
+  # --- Health helpers (internals) -------------------------------------
+
+  # Resolve a GenServer.server() reference to a concrete pid. Pids pass
+  # through; registered names (atoms / {:via, ...} / {name, node}) are
+  # looked up via GenServer.whereis/1, which returns nil if unregistered.
+  defp resolve_pid(pid) when is_pid(pid), do: pid
+  defp resolve_pid(server), do: GenServer.whereis(server)
+
+  # Map a port-exit observation to a terminal status. A status code of 0
+  # (or a reason of :normal) is a clean completion; anything else is a
+  # failure carrying the original {:port_exit, ...} tuple.
+  defp derive_exit_status({:port_exit, 0}), do: :completed
+  defp derive_exit_status({:port_exit, :normal}), do: :completed
+  defp derive_exit_status({:port_exit, _} = reason), do: {:failed, reason}
+
+  # The terminal status to hand to exit waiters from terminate/2. A port
+  # exit already recorded a status in state; honor it. Otherwise the
+  # GenServer is being stopped externally (stop/3, close/1, supervisor)
+  # -- :normal and :shutdown are clean completions, any other reason is a
+  # failure.
+  defp final_exit_status(%{exit_status: status}, _reason) when status != :running, do: status
+  defp final_exit_status(_state, :normal), do: :completed
+  defp final_exit_status(_state, :shutdown), do: :completed
+  defp final_exit_status(_state, {:shutdown, _}), do: :completed
+  defp final_exit_status(_state, reason), do: {:failed, reason}
+
+  # Notify every registered exit waiter with the terminal status. Called
+  # once from terminate/2. This is the authoritative delivery path; the
+  # monitor :DOWN that each waiter also holds is only the fallback for
+  # the death-before-registration race.
+  defp notify_exit_waiters(%{exit_waiters: waiters}, _status)
+       when map_size(waiters) == 0,
+       do: :ok
+
+  defp notify_exit_waiters(%{exit_waiters: waiters}, status) do
+    Enum.each(waiters, fn {ref, pid} ->
+      Process.send(pid, {:duplex_exit, ref, status}, [])
+    end)
+  end
+
+  # Fallback translation of a monitor :DOWN reason into a terminal status,
+  # used only when a waiter never received a {:duplex_exit, ...} message
+  # (the session died before/while it registered). We stop with :normal
+  # even when the child failed (to keep supervision semantics unchanged),
+  # so a clean-looking down reason is treated as :completed; only a
+  # genuinely abnormal exit (e.g. a hard kill) maps to {:failed, reason}.
+  defp down_reason_to_status(:noproc), do: :completed
+  defp down_reason_to_status(:normal), do: :completed
+  defp down_reason_to_status(:shutdown), do: :completed
+  defp down_reason_to_status({:shutdown, _}), do: :completed
+  defp down_reason_to_status(reason), do: {:failed, reason}
 end
