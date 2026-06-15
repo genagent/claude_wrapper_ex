@@ -153,6 +153,44 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "build_args -- CLI flag names (#82)" do
+    test "emits --agents (not --agents-json) for agents_json" do
+      args =
+        Query.new("p")
+        |> Query.agents_json(~s({"reviewer":{}}))
+        |> Query.build_args()
+
+      assert "--agents" in args
+      refute "--agents-json" in args
+
+      idx = Enum.find_index(args, &(&1 == "--agents"))
+      assert Enum.at(args, idx + 1) == ~s({"reviewer":{}})
+    end
+
+    test "emits a single variadic --tools (not repeated --tool)" do
+      args =
+        Query.new("p")
+        |> Query.tool("Read")
+        |> Query.tool("Bash")
+        |> Query.build_args()
+
+      refute "--tool" in args
+      assert Enum.count(args, &(&1 == "--tools")) == 1
+
+      idx = Enum.find_index(args, &(&1 == "--tools"))
+      assert Enum.slice(args, idx, 3) == ["--tools", "Read", "Bash"]
+    end
+
+    test "omits --tools and --agents when unset" do
+      args = Query.new("p") |> Query.build_args()
+
+      refute "--tools" in args
+      refute "--tool" in args
+      refute "--agents" in args
+      refute "--agents-json" in args
+    end
+  end
+
   describe "Result" do
     test "from_json parses standard fields" do
       data = %{

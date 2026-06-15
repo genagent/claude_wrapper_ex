@@ -505,8 +505,8 @@ defmodule ClaudeWrapper.Query do
     |> add_bool("--no-session-persistence", q.no_session_persistence)
     |> add_bool("--dangerously-skip-permissions", q.dangerously_skip_permissions)
     |> add_opt("--agent", q.agent)
-    |> add_opt("--agents-json", q.agents_json)
-    |> add_list("--tool", q.tools)
+    |> add_opt("--agents", q.agents_json)
+    |> add_variadic("--tools", q.tools)
     |> add_list("--file", q.files)
     |> add_bool("--include-partial-messages", q.include_partial_messages)
     |> add_opt("--input-format", format_input_format(q.input_format))
@@ -530,6 +530,12 @@ defmodule ClaudeWrapper.Query do
   defp add_bool(args, flag, true), do: args ++ [flag]
   defp add_list(args, _flag, []), do: args
   defp add_list(args, flag, values), do: args ++ Enum.flat_map(values, &[flag, &1])
+
+  # Variadic list flag: emit the flag once followed by all values, matching the
+  # CLI's `<tools...>` contract (e.g. `--tools Read Bash`). Use this for flags
+  # the CLI declares variadic rather than repeatable.
+  defp add_variadic(args, _flag, []), do: args
+  defp add_variadic(args, flag, values), do: args ++ [flag | values]
 
   defp format_output_format(nil), do: nil
   defp format_output_format(:text), do: "text"
