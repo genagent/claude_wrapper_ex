@@ -5,9 +5,9 @@ defmodule ClaudeWrapper.Budget do
   A budget process accumulates cost across turns and fires
   caller-supplied callbacks when configurable thresholds are first
   crossed. When a `:max_usd` ceiling is set, `check/1` returns
-  `{:error, {:budget_exceeded, total, max}}` once the running total is
-  at or above the ceiling, giving callers a hard stop before the next
-  CLI invocation.
+  `{:error, %ClaudeWrapper.Error{kind: :budget_exceeded}}` once the
+  running total is at or above the ceiling, giving callers a hard stop
+  before the next CLI invocation.
 
   This is the Elixir port of the Rust crate's `BudgetTracker` /
   `BudgetBuilder`. The Rust type is an `Arc<Mutex<...>>` handle shared
@@ -27,7 +27,8 @@ defmodule ClaudeWrapper.Budget do
       total is at or above this value, and never again until `reset/1`.
     * `:max_usd` -- `:on_exceeded` fires the first time the running
       total is at or above this value, and `check/1` returns
-      `{:error, {:budget_exceeded, total, max}}` from then on.
+      `{:error, %ClaudeWrapper.Error{kind: :budget_exceeded}}` from then
+      on.
 
   Both thresholds are "at or above" (`>=`), so a record that lands the
   total exactly on the threshold crosses it. Non-positive and
@@ -49,7 +50,7 @@ defmodule ClaudeWrapper.Budget do
 
       case ClaudeWrapper.Budget.check(budget) do
         :ok -> :keep_going
-        {:error, {:budget_exceeded, total, max}} -> {:halt, total, max}
+        {:error, %ClaudeWrapper.Error{kind: :budget_exceeded, reason: %{total_usd: total, max_usd: max}}} -> {:halt, total, max}
       end
 
       ClaudeWrapper.Budget.total(budget)
@@ -107,8 +108,8 @@ defmodule ClaudeWrapper.Budget do
 
     * `:max_usd` - Hard ceiling in USD. Once the running total reaches
       this value, `check/1` returns
-      `{:error, {:budget_exceeded, total, max}}`. `nil` (default)
-      means no ceiling.
+      `{:error, %ClaudeWrapper.Error{kind: :budget_exceeded}}`. `nil`
+      (default) means no ceiling.
     * `:warn_at_usd` - Warning threshold in USD. `:on_warning` fires
       the first time the running total reaches this value. `nil`
       (default) means no warning.
@@ -154,11 +155,12 @@ defmodule ClaudeWrapper.Budget do
   @doc """
   Check the budget against the configured ceiling.
 
-  Returns `{:error, {:budget_exceeded, total, max}}` when the running
-  total is at or above `:max_usd`, and `:ok` otherwise (including when
-  no ceiling is set).
+  Returns `{:error, %ClaudeWrapper.Error{kind: :budget_exceeded}}` (with
+  `:reason` `%{total_usd: total, max_usd: max}`) when the running total
+  is at or above `:max_usd`, and `:ok` otherwise (including when no
+  ceiling is set).
   """
-  @spec check(server()) :: :ok | {:error, {:budget_exceeded, float(), float()}}
+  @spec check(server()) :: :ok | {:error, ClaudeWrapper.Error.t()}
   def check(server) do
     GenServer.call(server, :check)
   end
@@ -296,7 +298,7 @@ defmodule ClaudeWrapper.Budget do
   defp check_state(%State{max_usd: nil}), do: :ok
 
   defp check_state(%State{max_usd: max, total: total}) when total >= max do
-    {:error, {:budget_exceeded, total, max}}
+    {:error, ClaudeWrapper.Error.new(:budget_exceeded, reason: %{total_usd: total, max_usd: max})}
   end
 
   defp check_state(_state), do: :ok

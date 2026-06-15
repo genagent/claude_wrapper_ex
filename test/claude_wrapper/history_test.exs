@@ -214,8 +214,9 @@ defmodule ClaudeWrapper.HistoryTest do
       assert raw["operation"] == "enqueue"
     end
 
-    test "read_session unknown id returns {:error, :not_found}", %{root: root} do
-      assert History.read_session(History.at(root), "nope") == {:error, :not_found}
+    test "read_session unknown id returns a :not_found error", %{root: root} do
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "nope"}} =
+               History.read_session(History.at(root), "nope")
     end
 
     test "find_session locates a real session and rejects unknown ids", %{root: root} do
@@ -225,7 +226,9 @@ defmodule ClaudeWrapper.HistoryTest do
 
       assert {:ok, {path, "-projB"}} = History.find_session(h, "session-ccc")
       assert String.ends_with?(path, "session-ccc.jsonl")
-      assert History.find_session(h, "missing") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "missing"}} =
+               History.find_session(h, "missing")
     end
   end
 

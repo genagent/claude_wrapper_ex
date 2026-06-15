@@ -3,7 +3,7 @@ defmodule ClaudeWrapper.Commands.Version do
   `claude --version` command.
   """
 
-  alias ClaudeWrapper.Config
+  alias ClaudeWrapper.{Config, Error}
 
   @type version_info :: %{
           version: String.t(),
@@ -21,7 +21,7 @@ defmodule ClaudeWrapper.Commands.Version do
         {:ok, %{version: raw, raw: raw}}
 
       {output, code} ->
-        {:error, {:exit, code, output}}
+        {:error, Error.command_failed(code, output)}
     end
   end
 end

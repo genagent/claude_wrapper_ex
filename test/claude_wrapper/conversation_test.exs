@@ -123,7 +123,7 @@ defmodule ClaudeWrapper.ConversationTest do
       end
     end
 
-    test "propagates :turn_in_flight without recording a turn" do
+    test "propagates a :turn_in_flight error without recording a turn" do
       pid = start_with_fake_claude()
 
       try do
@@ -146,16 +146,18 @@ defmodule ClaudeWrapper.ConversationTest do
         end)
 
         # A second concurrent send must be rejected, leaving history empty.
-        assert {:error, :turn_in_flight} = Conversation.send(conv, "second", 1_000)
+        assert {:error, %ClaudeWrapper.Error{kind: :turn_in_flight}} =
+                 Conversation.send(conv, "second", 1_000)
+
         assert Conversation.turn_count(conv) == 0
       after
         DuplexSession.stop(pid)
       end
     end
 
-    test "propagates :port_closed without recording a turn" do
+    test "propagates a :duplex_closed error without recording a turn" do
       # A session whose port has been closed but whose GenServer is still
-      # alive replies {:error, :port_closed}. We reach that state by
+      # alive replies {:error, %Error{kind: :duplex_closed}}. We reach that state by
       # nil-ing the port via :sys.replace_state, which leaves the
       # GenServer running so it can answer the call.
       pid = start_with_fake_claude()
@@ -173,7 +175,9 @@ defmodule ClaudeWrapper.ConversationTest do
           %{state | port: nil}
         end)
 
-        assert {:error, :port_closed} = Conversation.send(conv, "hello", 1_000)
+        assert {:error, %ClaudeWrapper.Error{kind: :duplex_closed}} =
+                 Conversation.send(conv, "hello", 1_000)
+
         assert Conversation.turn_count(conv) == 0
       after
         DuplexSession.stop(pid)

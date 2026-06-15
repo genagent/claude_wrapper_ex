@@ -3,7 +3,7 @@ defmodule ClaudeWrapper.Commands.Auth do
   Authentication commands -- login, logout, status, token setup.
   """
 
-  alias ClaudeWrapper.Config
+  alias ClaudeWrapper.{Config, Error}
 
   @type auth_status :: %{
           logged_in: boolean(),
@@ -65,7 +65,7 @@ defmodule ClaudeWrapper.Commands.Auth do
         end
 
       {output, code} ->
-        {:error, {:exit, code, output}}
+        {:error, Error.command_failed(code, output)}
     end
   end
 
@@ -109,7 +109,7 @@ defmodule ClaudeWrapper.Commands.Auth do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 
@@ -141,7 +141,7 @@ defmodule ClaudeWrapper.Commands.Auth do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 
@@ -162,11 +162,11 @@ defmodule ClaudeWrapper.Commands.Auth do
 
     receive do
       {^port, {:exit_status, 0}} -> {:ok, "token configured"}
-      {^port, {:exit_status, code}} -> {:error, {:exit, code, ""}}
+      {^port, {:exit_status, code}} -> {:error, Error.command_failed(code, "")}
     after
       30_000 ->
         send(port, {self(), :close})
-        {:error, :timeout}
+        {:error, Error.timeout(30_000)}
     end
   end
 end

@@ -71,7 +71,7 @@ defmodule ClaudeWrapper.Telemetry do
       )
   """
 
-  alias ClaudeWrapper.{Query, Result, StreamEvent}
+  alias ClaudeWrapper.{Error, Query, Result, StreamEvent}
 
   @type metadata :: %{optional(atom()) => term()}
 
@@ -173,7 +173,7 @@ defmodule ClaudeWrapper.Telemetry do
     }
   end
 
-  defp exec_stop_metadata({:error, {:exit, code, _stdout}}) do
+  defp exec_stop_metadata({:error, %Error{exit_code: code}}) do
     %{cost_usd: nil, exit_code: code}
   end
 
@@ -189,7 +189,7 @@ defmodule ClaudeWrapper.Telemetry do
     }
   end
 
-  defp session_turn_stop_metadata({:error, {:exit, code, _stdout}}) do
+  defp session_turn_stop_metadata({:error, %Error{exit_code: code}}) do
     %{cost_usd: nil, exit_code: code}
   end
 

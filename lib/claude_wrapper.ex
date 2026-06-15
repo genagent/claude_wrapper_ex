@@ -92,7 +92,7 @@ defmodule ClaudeWrapper do
   3. System PATH lookup
   """
 
-  alias ClaudeWrapper.{Commands, Config, Query, Result}
+  alias ClaudeWrapper.{Commands, Config, Error, Query, Result}
 
   @doc """
   Run an arbitrary CLI command that isn't wrapped by a dedicated module.
@@ -112,10 +112,10 @@ defmodule ClaudeWrapper do
 
     case System.cmd(config.binary, all_args, cmd_opts) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   rescue
-    e in ErlangError -> {:error, {:system_cmd, e}}
+    e in ErlangError -> {:error, Error.io(e)}
   end
 
   @doc """

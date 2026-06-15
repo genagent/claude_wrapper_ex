@@ -114,6 +114,7 @@ defmodule ClaudeWrapper.History do
       end
   """
 
+  alias ClaudeWrapper.Error
   alias ClaudeWrapper.History.{ProjectSummary, SessionLog, SessionSummary}
 
   @enforce_keys [:root]
@@ -174,12 +175,13 @@ defmodule ClaudeWrapper.History do
   @doc """
   Resolve the default history root, `~/.claude/projects`.
 
-  Returns `{:error, :no_home}` when the user home cannot be determined.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :no_home}}` when the user
+  home cannot be determined.
   """
-  @spec home() :: {:ok, t()} | {:error, :no_home}
+  @spec home() :: {:ok, t()} | {:error, Error.t()}
   def home do
     case System.user_home() do
-      nil -> {:error, :no_home}
+      nil -> {:error, Error.new(:no_home)}
       home -> {:ok, %__MODULE__{root: Path.join([home, ".claude", "projects"])}}
     end
   end
@@ -201,7 +203,7 @@ defmodule ClaudeWrapper.History do
   Returns `{:ok, []}` when the root directory does not exist. See
   `t:list_opt/0` for options.
   """
-  @spec list_projects(t(), [list_opt()]) :: {:ok, [ProjectSummary.t()]} | {:error, term()}
+  @spec list_projects(t(), [list_opt()]) :: {:ok, [ProjectSummary.t()]} | {:error, Error.t()}
   def list_projects(%__MODULE__{} = h, opts \\ []) do
     case File.ls(h.root) do
       {:ok, names} ->
@@ -220,7 +222,7 @@ defmodule ClaudeWrapper.History do
         {:ok, []}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, Error.io(reason)}
     end
   end
 
@@ -230,7 +232,7 @@ defmodule ClaudeWrapper.History do
 
   When no `:slug` is given, every project directory is unioned.
   """
-  @spec list_sessions(t(), [list_opt()]) :: {:ok, [SessionSummary.t()]} | {:error, term()}
+  @spec list_sessions(t(), [list_opt()]) :: {:ok, [SessionSummary.t()]} | {:error, Error.t()}
   def list_sessions(%__MODULE__{} = h, opts \\ []) do
     with {:ok, dirs} <- session_dirs(h, Keyword.get(opts, :slug)) do
       sessions =
@@ -249,7 +251,7 @@ defmodule ClaudeWrapper.History do
   `project_slug/1`. Convenience over `list_sessions(h, slug: ...)`.
   """
   @spec sessions_for_path(t(), String.t(), [list_opt()]) ::
-          {:ok, [SessionSummary.t()]} | {:error, term()}
+          {:ok, [SessionSummary.t()]} | {:error, Error.t()}
   def sessions_for_path(%__MODULE__{} = h, cwd, opts \\ []) when is_binary(cwd) do
     list_sessions(h, Keyword.put(opts, :slug, project_slug(cwd)))
   end
@@ -258,9 +260,10 @@ defmodule ClaudeWrapper.History do
   Read one session's full entry log, searching every project directory
   for `<session_id>.jsonl`. Malformed lines are skipped.
 
-  Returns `{:error, :not_found}` when no session file matches.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :not_found}}` when no
+  session file matches.
   """
-  @spec read_session(t(), String.t()) :: {:ok, SessionLog.t()} | {:error, :not_found | term()}
+  @spec read_session(t(), String.t()) :: {:ok, SessionLog.t()} | {:error, Error.t()}
   def read_session(%__MODULE__{} = h, session_id) when is_binary(session_id) do
     case find_session(h, session_id) do
       {:ok, {path, slug}} -> {:ok, parse_session(path, session_id, slug)}
@@ -272,13 +275,18 @@ defmodule ClaudeWrapper.History do
   Locate the on-disk path and project slug for a session id, searching
   every project directory.
 
-  Returns `{:ok, {path, slug}}` or `{:error, :not_found}`.
+  Returns `{:ok, {path, slug}}` or `{:error, %ClaudeWrapper.Error{kind:
+  :not_found}}`.
   """
   @spec find_session(t(), String.t()) ::
-          {:ok, {String.t(), String.t()}} | {:error, :not_found | term()}
+          {:ok, {String.t(), String.t()}} | {:error, Error.t()}
   def find_session(%__MODULE__{} = h, session_id) when is_binary(session_id) do
     with {:ok, projects} <- list_projects(h) do
-      Enum.find_value(projects, {:error, :not_found}, &session_in_project(h, &1, session_id))
+      Enum.find_value(
+        projects,
+        {:error, Error.new(:not_found, reason: session_id)},
+        &session_in_project(h, &1, session_id)
+      )
     end
   end
 

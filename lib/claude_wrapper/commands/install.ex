@@ -21,7 +21,7 @@ defmodule ClaudeWrapper.Commands.Install do
         ClaudeWrapper.Commands.Install.install(config, target: "latest", force: true)
   """
 
-  alias ClaudeWrapper.Config
+  alias ClaudeWrapper.{Config, Error}
 
   @doc """
   Install a Claude Code native build.
@@ -39,7 +39,7 @@ defmodule ClaudeWrapper.Commands.Install do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 

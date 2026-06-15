@@ -152,19 +152,25 @@ defmodule ClaudeWrapper.JobsTest do
       assert job.timeline == []
     end
 
-    test "unknown id returns {:error, :not_found}", %{root: root} do
+    test "unknown id returns a :not_found error", %{root: root} do
       fixture(root)
-      assert Jobs.get(Jobs.at(root), "nope") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "nope"}} =
+               Jobs.get(Jobs.at(root), "nope")
     end
 
-    test "dir present but state.json missing returns {:error, :not_found}", %{root: root} do
+    test "dir present but state.json missing returns a :not_found error", %{root: root} do
       File.mkdir_p!(Path.join(root, "cccccccc"))
-      assert Jobs.get(Jobs.at(root), "cccccccc") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "cccccccc"}} =
+               Jobs.get(Jobs.at(root), "cccccccc")
     end
 
-    test "malformed state.json returns {:error, :not_found}", %{root: root} do
+    test "malformed state.json returns a :not_found error", %{root: root} do
       write_job(root, "deadbeef", "not valid json {{")
-      assert Jobs.get(Jobs.at(root), "deadbeef") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "deadbeef"}} =
+               Jobs.get(Jobs.at(root), "deadbeef")
     end
 
     test "timeline skips blank and malformed lines without failing", %{root: root} do

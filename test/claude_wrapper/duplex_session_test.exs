@@ -328,7 +328,7 @@ defmodule ClaudeWrapper.DuplexSessionTest do
         assert :ok = DuplexSession.respond_to_permission(pid, "deferred-1", :allow)
 
         # Calling respond_to_permission with :defer is rejected.
-        assert {:error, :cannot_defer_again} =
+        assert {:error, %ClaudeWrapper.Error{kind: :cannot_defer_again}} =
                  DuplexSession.respond_to_permission(pid, "deferred-1", :defer)
       after
         DuplexSession.stop(pid)
@@ -474,7 +474,10 @@ defmodule ClaudeWrapper.DuplexSessionTest do
           }
         })
 
-        assert_receive {:interrupt_returned, {:error, "boom"}}, 5_000
+        assert_receive {:interrupt_returned,
+                        {:error,
+                         %ClaudeWrapper.Error{kind: :duplex_control_failed, reason: "boom"}}},
+                       5_000
       after
         if Process.alive?(caller), do: Process.exit(caller, :kill)
         DuplexSession.stop(pid)

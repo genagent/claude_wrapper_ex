@@ -32,27 +32,33 @@ defmodule ClaudeWrapper.CliVersionTest do
     end
 
     test "rejects non-version text, carrying the original string" do
-      assert {:error, {:invalid_version, "not-a-version"}} = CliVersion.parse("not-a-version")
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_version, reason: "not-a-version"}} =
+               CliVersion.parse("not-a-version")
     end
 
     test "rejects a two-part version" do
-      assert {:error, {:invalid_version, "2.1"}} = CliVersion.parse("2.1")
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_version, reason: "2.1"}} =
+               CliVersion.parse("2.1")
     end
 
     test "rejects a non-numeric component" do
-      assert {:error, {:invalid_version, "2.1.x"}} = CliVersion.parse("2.1.x")
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_version, reason: "2.1.x"}} =
+               CliVersion.parse("2.1.x")
     end
 
     test "rejects a four-part version" do
-      assert {:error, {:invalid_version, "1.2.3.4"}} = CliVersion.parse("1.2.3.4")
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_version, reason: "1.2.3.4"}} =
+               CliVersion.parse("1.2.3.4")
     end
 
     test "rejects an empty string" do
-      assert {:error, {:invalid_version, ""}} = CliVersion.parse("")
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_version, reason: ""}} =
+               CliVersion.parse("")
     end
 
     test "the error keeps the untrimmed original" do
-      assert {:error, {:invalid_version, "  bad\n"}} = CliVersion.parse("  bad\n")
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_version, reason: "  bad\n"}} =
+               CliVersion.parse("  bad\n")
     end
   end
 
@@ -161,8 +167,11 @@ defmodule ClaudeWrapper.CliVersionTest do
       found = CliVersion.new(2, 1, 71)
       minimum = CliVersion.new(2, 2, 0)
 
-      assert CliVersion.check_version(found, minimum) ==
-               {:error, {:version_mismatch, found, minimum}}
+      assert {:error,
+              %ClaudeWrapper.Error{
+                kind: :version_mismatch,
+                reason: %{found: ^found, minimum: ^minimum}
+              }} = CliVersion.check_version(found, minimum)
     end
   end
 end

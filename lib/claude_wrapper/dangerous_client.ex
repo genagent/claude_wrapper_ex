@@ -24,10 +24,10 @@ defmodule ClaudeWrapper.DangerousClient do
           query = ClaudeWrapper.Query.new("clean up the build artifacts")
           {:ok, result} = ClaudeWrapper.DangerousClient.query_bypass(client, query)
 
-        {:error, {:dangerous_not_allowed, env_var}} ->
+        {:error, %ClaudeWrapper.Error{kind: :dangerous_not_allowed} = error} ->
           # The caller forgot to set the env var; refuse loudly rather
           # than silently running with (or without) bypass.
-          {:error, {:dangerous_not_allowed, env_var}}
+          {:error, error}
       end
 
   ## Why this shape
@@ -54,7 +54,7 @@ defmodule ClaudeWrapper.DangerousClient do
   is synchronous and there are no feature gates.
   """
 
-  alias ClaudeWrapper.{Config, Query, Result}
+  alias ClaudeWrapper.{Config, Error, Query, Result}
 
   @typedoc """
   A guarded client. Holds the shared `t:ClaudeWrapper.Config.t/0` that
@@ -85,8 +85,8 @@ defmodule ClaudeWrapper.DangerousClient do
   Build a guarded client, refusing unless the opt-in env var is set.
 
   Succeeds only when `System.get_env("#{@allow_env}") == "1"`. Otherwise
-  returns `{:error, {:dangerous_not_allowed, env_var}}`, where `env_var`
-  is the name of the env var to set.
+  returns `{:error, %ClaudeWrapper.Error{kind: :dangerous_not_allowed}}`,
+  whose `:reason` is the name of the env var to set.
 
   The check is made on each call rather than memoized, so a process that
   sets the env var after start (or a test that flips it) is honored.
@@ -95,15 +95,15 @@ defmodule ClaudeWrapper.DangerousClient do
 
       {:ok, client} = ClaudeWrapper.DangerousClient.new(ClaudeWrapper.Config.new())
 
-      {:error, {:dangerous_not_allowed, "CLAUDE_WRAPPER_ALLOW_DANGEROUS"}} =
+      {:error, %ClaudeWrapper.Error{kind: :dangerous_not_allowed, reason: "CLAUDE_WRAPPER_ALLOW_DANGEROUS"}} =
         ClaudeWrapper.DangerousClient.new(ClaudeWrapper.Config.new())
   """
-  @spec new(Config.t()) :: {:ok, t()} | {:error, {:dangerous_not_allowed, String.t()}}
+  @spec new(Config.t()) :: {:ok, t()} | {:error, Error.t()}
   def new(%Config{} = config) do
     if allowed?() do
       {:ok, %__MODULE__{config: config}}
     else
-      {:error, {:dangerous_not_allowed, @allow_env}}
+      {:error, Error.new(:dangerous_not_allowed, reason: @allow_env)}
     end
   end
 

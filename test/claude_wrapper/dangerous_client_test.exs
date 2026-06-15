@@ -32,16 +32,16 @@ defmodule ClaudeWrapper.DangerousClientTest do
     test "errors when the env var is unset" do
       System.delete_env(@allow_env)
 
-      assert DangerousClient.new(Config.new()) ==
-               {:error, {:dangerous_not_allowed, @allow_env}}
+      assert {:error, %ClaudeWrapper.Error{kind: :dangerous_not_allowed, reason: @allow_env}} =
+               DangerousClient.new(Config.new())
     end
 
     test "errors when the env var is set to something other than \"1\"" do
       for value <- ["0", "true", "yes", ""] do
         System.put_env(@allow_env, value)
 
-        assert DangerousClient.new(Config.new()) ==
-                 {:error, {:dangerous_not_allowed, @allow_env}},
+        assert {:error, %ClaudeWrapper.Error{kind: :dangerous_not_allowed, reason: @allow_env}} =
+                 DangerousClient.new(Config.new()),
                "expected the gate to stay closed for #{inspect(value)}"
       end
     end

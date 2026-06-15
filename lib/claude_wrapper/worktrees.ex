@@ -67,6 +67,7 @@ defmodule ClaudeWrapper.Worktrees do
       end
   """
 
+  alias ClaudeWrapper.Error
   alias ClaudeWrapper.Worktrees.Worktree
 
   @enforce_keys [:repo_path]
@@ -81,12 +82,13 @@ defmodule ClaudeWrapper.Worktrees do
   resolves the `.git` itself. Runs `git worktree list --porcelain` once
   to validate that `path` is in fact inside a git repository.
 
-  Returns `{:error, {:not_a_git_repo, path}}` when `path` is not inside a
-  repository, `{:error, {:git_failed, exit_status, stderr}}` for other
-  non-zero git exits, and `{:error, {:git_unavailable, reason}}` when the
-  `git` binary cannot be spawned.
+  Returns `{:error, %ClaudeWrapper.Error{kind: :not_a_git_repo}}` when
+  `path` is not inside a repository (the path is in `:reason`),
+  `{:error, %ClaudeWrapper.Error{kind: :git_failed}}` for other non-zero
+  git exits, and `{:error, %ClaudeWrapper.Error{kind: :git_unavailable}}`
+  when the `git` binary cannot be spawned.
   """
-  @spec for_repo(String.t()) :: {:ok, t()} | {:error, term()}
+  @spec for_repo(String.t()) :: {:ok, t()} | {:error, Error.t()}
   def for_repo(path) when is_binary(path) do
     root = %__MODULE__{repo_path: path}
 
@@ -108,7 +110,7 @@ defmodule ClaudeWrapper.Worktrees do
 
   Returns the same error shapes as `for_repo/1`.
   """
-  @spec list(t()) :: {:ok, [Worktree.t()]} | {:error, term()}
+  @spec list(t()) :: {:ok, [Worktree.t()]} | {:error, Error.t()}
   def list(%__MODULE__{} = root) do
     case run_porcelain(root) do
       {:ok, stdout} -> {:ok, parse_porcelain(stdout)}
@@ -133,14 +135,20 @@ defmodule ClaudeWrapper.Worktrees do
   defp safe_cmd(args) do
     {:ok, System.cmd("git", args, stderr_to_stdout: true)}
   rescue
-    e in ErlangError -> {:error, {:git_unavailable, e.original}}
+    e in ErlangError -> {:error, Error.new(:git_unavailable, reason: e.original)}
   end
 
   defp classify_failure(repo_path, status, output) do
     if String.contains?(output, "not a git repository") do
-      {:not_a_git_repo, repo_path}
+      Error.new(:not_a_git_repo, reason: repo_path)
     else
-      {:git_failed, status, String.trim(output)}
+      stderr = String.trim(output)
+
+      Error.new(:git_failed,
+        reason: %{status: status, stderr: stderr},
+        exit_code: status,
+        stderr: stderr
+      )
     end
   end
 

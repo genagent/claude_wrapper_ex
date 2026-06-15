@@ -125,9 +125,11 @@ defmodule ClaudeWrapper.AgentsTest do
       assert agent.extra == %{}
     end
 
-    test "unknown stem returns {:error, :not_found}", %{root: root} do
+    test "unknown stem returns a :not_found error", %{root: root} do
       fixture(root)
-      assert Agents.get(Agents.at(root), "nope") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "nope"}} =
+               Agents.get(Agents.at(root), "nope")
     end
 
     test "extra frontmatter keys round-trip as raw strings", %{root: root} do
@@ -275,15 +277,18 @@ defmodule ClaudeWrapper.AgentsTest do
       a = Agents.at(root)
 
       for bad <- ["", ".", "..", "a/b", "a\\b", "a\0b"] do
-        assert Agents.write(a, bad, body: "b") == {:error, {:invalid_stem, bad}}
+        assert {:error, %ClaudeWrapper.Error{kind: :invalid_stem, reason: ^bad}} =
+                 Agents.write(a, bad, body: "b")
       end
     end
   end
 
   describe "write_new/3" do
-    test "errors with {:error, :exists} when the agent already exists", %{root: root} do
+    test "errors with an :already_exists error when the agent already exists", %{root: root} do
       fixture(root)
-      assert Agents.write_new(Agents.at(root), "rust-qa", body: "body") == {:error, :exists}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :already_exists, reason: "rust-qa"}} =
+               Agents.write_new(Agents.at(root), "rust-qa", body: "body")
     end
 
     test "succeeds for a fresh stem", %{root: root} do
@@ -295,8 +300,8 @@ defmodule ClaudeWrapper.AgentsTest do
     end
 
     test "rejects path-traversal stems before touching the filesystem", %{root: root} do
-      assert Agents.write_new(Agents.at(root), "a/b", body: "b") ==
-               {:error, {:invalid_stem, "a/b"}}
+      assert {:error, %ClaudeWrapper.Error{kind: :invalid_stem, reason: "a/b"}} =
+               Agents.write_new(Agents.at(root), "a/b", body: "b")
     end
   end
 
@@ -307,19 +312,24 @@ defmodule ClaudeWrapper.AgentsTest do
 
       assert {:ok, _} = Agents.get(a, "rust-qa")
       assert :ok = Agents.delete(a, "rust-qa")
-      assert Agents.get(a, "rust-qa") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "rust-qa"}} =
+               Agents.get(a, "rust-qa")
     end
 
-    test "unknown stem returns {:error, :not_found}", %{root: root} do
+    test "unknown stem returns a :not_found error", %{root: root} do
       fixture(root)
-      assert Agents.delete(Agents.at(root), "nope") == {:error, :not_found}
+
+      assert {:error, %ClaudeWrapper.Error{kind: :not_found, reason: "nope"}} =
+               Agents.delete(Agents.at(root), "nope")
     end
 
     test "rejects path-traversal stems", %{root: root} do
       a = Agents.at(root)
 
       for bad <- ["", ".", "..", "a/b", "a\\b"] do
-        assert Agents.delete(a, bad) == {:error, {:invalid_stem, bad}}
+        assert {:error, %ClaudeWrapper.Error{kind: :invalid_stem, reason: ^bad}} =
+                 Agents.delete(a, bad)
       end
     end
   end

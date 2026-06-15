@@ -23,7 +23,7 @@ defmodule ClaudeWrapper.Query do
       |> Stream.run()
   """
 
-  alias ClaudeWrapper.{Command, Config, Result, StreamEvent, Telemetry}
+  alias ClaudeWrapper.{Auth, Command, Config, Error, Result, StreamEvent, Telemetry}
 
   @type permission_mode ::
           :default | :accept_edits | :bypass_permissions | :dont_ask | :plan | :auto
@@ -463,7 +463,7 @@ defmodule ClaudeWrapper.Query do
 
   Automatically sets `--output-format json` for parsing.
   """
-  @spec execute(t(), Config.t()) :: {:ok, Result.t()} | {:error, term()}
+  @spec execute(t(), Config.t()) :: {:ok, Result.t()} | {:error, Error.t()}
   def execute(%__MODULE__{} = query, %Config{} = config) do
     query = %{query | output_format: :json}
 
@@ -482,15 +482,49 @@ defmodule ClaudeWrapper.Query do
       {:ok, stdout} ->
         parse_json_output(stdout)
 
-      {:error, {:exit, code, stdout}} ->
-        # CLI may exit non-zero but still produce valid JSON (e.g. max_turns reached)
-        case parse_json_output(stdout) do
-          {:ok, result} -> {:ok, result}
-          {:error, _} -> {:error, {:exit, code, stdout}}
-        end
+      {:error, %Error{kind: :command_failed, exit_code: code, stdout: stdout}} ->
+        handle_nonzero_exit(code, stdout)
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  # A non-zero CLI exit that still emits valid JSON is not always a hard
+  # failure: max-turns is the one case the CLI reports this way and we
+  # surface it as a typed error; any other valid-JSON result keeps its
+  # `is_error` flag and returns `{:ok, %Result{}}`. When the output is not
+  # decodable JSON the exit is a genuine command failure -- classified as
+  # an auth error first when it looks auth-shaped, otherwise plain.
+  defp handle_nonzero_exit(code, stdout) do
+    case parse_json_output(stdout) do
+      {:ok, result} ->
+        if max_turns_result?(result) do
+          {:error, Error.new(:max_turns_exceeded, exit_code: code, stdout: stdout)}
+        else
+          {:ok, result}
+        end
+
+      {:error, _} ->
+        classify_command_failure(code, stdout)
+    end
+  end
+
+  defp max_turns_result?(%Result{extra: extra}) do
+    Map.get(extra, "subtype") == "error_max_turns"
+  end
+
+  # A non-zero exit with no parseable JSON: run the auth classifier over
+  # the output and, when it recognizes an auth-shaped failure, surface a
+  # typed `:auth` error carrying the classified kind in `:reason`.
+  # Otherwise fall back to a plain `:command_failed`.
+  defp classify_command_failure(code, stdout) do
+    case Auth.classify_failure(code, stdout, "") do
+      nil ->
+        {:error, Error.command_failed(code, stdout)}
+
+      kind ->
+        {:error, Error.new(:auth, reason: kind, exit_code: code, stdout: stdout)}
     end
   end
 
@@ -668,7 +702,7 @@ defmodule ClaudeWrapper.Query do
 
     case Jason.decode(json_line) do
       {:ok, data} -> {:ok, Result.from_json(data)}
-      {:error, reason} -> {:error, {:json_decode, reason, stdout}}
+      {:error, reason} -> {:error, Error.json(reason, stdout)}
     end
   end
 
@@ -686,10 +720,10 @@ defmodule ClaudeWrapper.Query do
   defp run_cmd(binary, args, opts, nil) do
     case System.cmd(binary, args, opts) do
       {stdout, 0} -> {:ok, stdout}
-      {stdout, code} -> {:error, {:exit, code, stdout}}
+      {stdout, code} -> {:error, Error.command_failed(code, stdout)}
     end
   rescue
-    e in ErlangError -> {:error, {:system_cmd, e}}
+    e in ErlangError -> {:error, Error.io(e)}
   end
 
   defp run_cmd(binary, args, opts, timeout) do
@@ -697,8 +731,8 @@ defmodule ClaudeWrapper.Query do
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
       {:ok, {stdout, 0}} -> {:ok, stdout}
-      {:ok, {stdout, code}} -> {:error, {:exit, code, stdout}}
-      nil -> {:error, {:timeout, timeout}}
+      {:ok, {stdout, code}} -> {:error, Error.command_failed(code, stdout)}
+      nil -> {:error, Error.timeout(timeout)}
     end
   end
 

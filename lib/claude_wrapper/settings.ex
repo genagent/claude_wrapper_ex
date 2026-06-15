@@ -33,6 +33,8 @@ defmodule ClaudeWrapper.Settings do
       end
   """
 
+  alias ClaudeWrapper.Error
+
   @enforce_keys [:user, :user_local, :project, :project_local, :paths]
   defstruct [:user, :user_local, :project, :project_local, :paths]
 
@@ -66,11 +68,12 @@ defmodule ClaudeWrapper.Settings do
       project layers (default: none, so the project layers stay `nil`)
 
   Missing files become `nil`; a malformed JSON file returns
-  `{:error, {:invalid_settings_json, path, reason}}`. Returns
-  `{:error, :no_home}` when `:user_root` is omitted and the home
-  directory cannot be determined.
+  `{:error, %ClaudeWrapper.Error{kind: :invalid_settings_json}}` (with
+  `:reason` `%{path:, error:}`). Returns `{:error,
+  %ClaudeWrapper.Error{kind: :no_home}}` when `:user_root` is omitted
+  and the home directory cannot be determined.
   """
-  @spec load(keyword()) :: {:ok, t()} | {:error, term()}
+  @spec load(keyword()) :: {:ok, t()} | {:error, Error.t()}
   def load(opts \\ []) do
     with {:ok, user_root} <- resolve_user_root(opts) do
       paths = build_paths(user_root, Keyword.get(opts, :project_root))
@@ -125,7 +128,7 @@ defmodule ClaudeWrapper.Settings do
     case Keyword.get(opts, :user_root) do
       nil ->
         case System.user_home() do
-          nil -> {:error, :no_home}
+          nil -> {:error, Error.new(:no_home)}
           home -> {:ok, Path.join(home, ".claude")}
         end
 
@@ -147,16 +150,24 @@ defmodule ClaudeWrapper.Settings do
 
   defp read_layer(path) do
     case File.read(path) do
-      {:ok, raw} -> decode_layer(path, raw)
-      {:error, :enoent} -> {:ok, nil}
-      {:error, reason} -> {:error, {:settings_read_error, path, reason}}
+      {:ok, raw} ->
+        decode_layer(path, raw)
+
+      {:error, :enoent} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error, Error.new(:settings_read_error, reason: %{path: path, error: reason})}
     end
   end
 
   defp decode_layer(path, raw) do
     case Jason.decode(raw) do
-      {:ok, value} -> {:ok, value}
-      {:error, reason} -> {:error, {:invalid_settings_json, path, reason}}
+      {:ok, value} ->
+        {:ok, value}
+
+      {:error, reason} ->
+        {:error, Error.new(:invalid_settings_json, reason: %{path: path, error: reason})}
     end
   end
 end

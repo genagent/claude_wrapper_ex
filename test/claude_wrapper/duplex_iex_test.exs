@@ -47,14 +47,20 @@ defmodule ClaudeWrapper.DuplexIExTest do
 
   describe "say/2" do
     test "prints error when no session is active" do
-      output = capture_io(fn -> assert {:error, :no_session} = DuplexIEx.say("hi") end)
+      output =
+        capture_io(fn ->
+          assert {:error, %ClaudeWrapper.Error{kind: :no_session}} = DuplexIEx.say("hi")
+        end)
+
       assert output =~ "No active session"
     end
   end
 
   describe "interrupt/1" do
-    test "returns :no_session when no session is active" do
-      capture_io(fn -> assert {:error, :no_session} = DuplexIEx.interrupt() end)
+    test "returns a :no_session error when no session is active" do
+      capture_io(fn ->
+        assert {:error, %ClaudeWrapper.Error{kind: :no_session}} = DuplexIEx.interrupt()
+      end)
     end
   end
 

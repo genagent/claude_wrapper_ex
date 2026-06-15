@@ -3,7 +3,7 @@ defmodule ClaudeWrapper.Commands.Agents do
   `claude agents` command -- lists configured agents.
   """
 
-  alias ClaudeWrapper.Config
+  alias ClaudeWrapper.{Config, Error}
 
   @type agent :: %{
           name: String.t(),
@@ -30,7 +30,7 @@ defmodule ClaudeWrapper.Commands.Agents do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, parse_agents(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 
@@ -43,7 +43,7 @@ defmodule ClaudeWrapper.Commands.Agents do
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, {:exit, code, output}}
+      {output, code} -> {:error, Error.command_failed(code, output)}
     end
   end
 

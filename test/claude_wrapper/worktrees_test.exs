@@ -51,11 +51,12 @@ defmodule ClaudeWrapper.WorktreesTest do
       assert Worktrees.path(root) == repo
     end
 
-    test "errors with {:not_a_git_repo, path} for a plain directory", %{base: base} do
+    test "errors with a :not_a_git_repo error for a plain directory", %{base: base} do
       plain = Path.join(base, "plain")
       File.mkdir_p!(plain)
 
-      assert {:error, {:not_a_git_repo, ^plain}} = Worktrees.for_repo(plain)
+      assert {:error, %ClaudeWrapper.Error{kind: :not_a_git_repo, reason: ^plain}} =
+               Worktrees.for_repo(plain)
     end
   end
 
@@ -191,12 +192,13 @@ defmodule ClaudeWrapper.WorktreesTest do
   end
 
   describe "list/1 -- error path" do
-    test "errors with {:not_a_git_repo, path} for a non-repo directory", %{base: base} do
+    test "errors with a :not_a_git_repo error for a non-repo directory", %{base: base} do
       plain = Path.join(base, "plain")
       File.mkdir_p!(plain)
       root = %Worktrees{repo_path: plain}
 
-      assert {:error, {:not_a_git_repo, ^plain}} = Worktrees.list(root)
+      assert {:error, %ClaudeWrapper.Error{kind: :not_a_git_repo, reason: ^plain}} =
+               Worktrees.list(root)
     end
   end
 end
