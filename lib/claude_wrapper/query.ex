@@ -63,7 +63,7 @@ defmodule ClaudeWrapper.Query do
           strict_mcp_config: boolean(),
           settings: String.t() | nil,
           fork_session: boolean(),
-          worktree: boolean(),
+          worktree: boolean() | String.t(),
           brief: boolean(),
           debug_filter: String.t() | nil,
           debug_file: String.t() | nil,
@@ -259,9 +259,13 @@ defmodule ClaudeWrapper.Query do
   @spec fork_session(t()) :: t()
   def fork_session(%__MODULE__{} = q), do: %{q | fork_session: true}
 
-  @doc "Create a git worktree for execution."
+  @doc "Create a git worktree for execution (`--worktree`). See `worktree/2` for a named worktree."
   @spec worktree(t()) :: t()
   def worktree(%__MODULE__{} = q), do: %{q | worktree: true}
+
+  @doc "Create a named git worktree for execution (`--worktree <name>`)."
+  @spec worktree(t(), String.t()) :: t()
+  def worktree(%__MODULE__{} = q, name) when is_binary(name), do: %{q | worktree: name}
 
   @doc "Enable brief mode."
   @spec brief(t()) :: t()
@@ -378,6 +382,7 @@ defmodule ClaudeWrapper.Query do
   defp apply_opt({:no_session_persistence, true}, q), do: no_session_persistence(q)
   defp apply_opt({:no_session_persistence, _}, q), do: q
   defp apply_opt({:worktree, true}, q), do: worktree(q)
+  defp apply_opt({:worktree, name}, q) when is_binary(name), do: worktree(q, name)
   defp apply_opt({:worktree, _}, q), do: q
   defp apply_opt({:brief, true}, q), do: brief(q)
   defp apply_opt({:brief, _}, q), do: q
@@ -578,7 +583,7 @@ defmodule ClaudeWrapper.Query do
     |> add_bool("--strict-mcp-config", q.strict_mcp_config)
     |> add_opt("--settings", q.settings)
     |> add_bool("--fork-session", q.fork_session)
-    |> add_bool("--worktree", q.worktree)
+    |> add_worktree(q.worktree)
     |> add_bool("--brief", q.brief)
     |> add_opt("--debug-filter", q.debug_filter)
     |> add_opt("--debug-file", q.debug_file)
@@ -610,6 +615,12 @@ defmodule ClaudeWrapper.Query do
   # the CLI declares variadic rather than repeatable.
   defp add_variadic(args, _flag, []), do: args
   defp add_variadic(args, flag, values), do: args ++ [flag | values]
+
+  # --worktree takes an optional name: bare flag when true, flag + name when a
+  # string, omitted when false.
+  defp add_worktree(args, false), do: args
+  defp add_worktree(args, true), do: args ++ ["--worktree"]
+  defp add_worktree(args, name) when is_binary(name), do: args ++ ["--worktree", name]
 
   defp format_output_format(nil), do: nil
   defp format_output_format(:text), do: "text"
