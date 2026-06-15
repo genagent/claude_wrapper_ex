@@ -9,7 +9,8 @@ defmodule ClaudeWrapperTest do
     Retry,
     Session,
     SessionServer,
-    StreamEvent
+    StreamEvent,
+    ToolPattern
   }
 
   describe "Config" do
@@ -208,6 +209,31 @@ defmodule ClaudeWrapperTest do
       assert Enum.count(args, &(&1 == "--disallowed-tools")) == 1
       di = Enum.find_index(args, &(&1 == "--disallowed-tools"))
       assert Enum.slice(args, di, 3) == ["--disallowed-tools", "WebFetch", "Edit"]
+    end
+  end
+
+  describe "allowed_tool/disallowed_tool accept ToolPattern (#96)" do
+    test "a ToolPattern renders to its string form in --allowed-tools" do
+      args =
+        Query.new("p")
+        |> Query.allowed_tool(ToolPattern.tool("Read"))
+        |> Query.allowed_tool(ToolPattern.tool_with_args("Bash", "git log:*"))
+        |> Query.build_args()
+
+      ai = Enum.find_index(args, &(&1 == "--allowed-tools"))
+      assert Enum.slice(args, ai, 3) == ["--allowed-tools", "Read", "Bash(git log:*)"]
+    end
+
+    test "plain strings still work and can be mixed with ToolPatterns" do
+      query =
+        Query.new("p")
+        |> Query.allowed_tool("Read")
+        |> Query.allowed_tool(ToolPattern.all("Write"))
+        |> Query.disallowed_tool(ToolPattern.mcp("srv", "*"))
+        |> Query.disallowed_tool("WebFetch")
+
+      assert query.allowed_tools == ["Read", "Write(*)"]
+      assert query.disallowed_tools == ["mcp__srv__*", "WebFetch"]
     end
   end
 

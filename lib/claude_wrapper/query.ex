@@ -160,12 +160,29 @@ defmodule ClaudeWrapper.Query do
   @spec permission_mode(t(), permission_mode()) :: t()
   def permission_mode(%__MODULE__{} = q, mode), do: %{q | permission_mode: mode}
 
-  @doc "Add an allowed tool."
-  @spec allowed_tool(t(), String.t()) :: t()
+  @doc """
+  Add an allowed tool.
+
+  Accepts either a plain CLI-format string (`"Bash(git log:*)"`) or a
+  `t:ClaudeWrapper.ToolPattern.t/0`, which is rendered to its string
+  form. The stored field stays a list of strings.
+  """
+  @spec allowed_tool(t(), String.t() | ClaudeWrapper.ToolPattern.t()) :: t()
+  def allowed_tool(%__MODULE__{} = q, %ClaudeWrapper.ToolPattern{} = pattern),
+    do: allowed_tool(q, ClaudeWrapper.ToolPattern.to_string(pattern))
+
   def allowed_tool(%__MODULE__{} = q, tool), do: %{q | allowed_tools: q.allowed_tools ++ [tool]}
 
-  @doc "Add a disallowed tool."
-  @spec disallowed_tool(t(), String.t()) :: t()
+  @doc """
+  Add a disallowed tool.
+
+  Accepts either a plain CLI-format string or a
+  `t:ClaudeWrapper.ToolPattern.t/0`, mirroring `allowed_tool/2`.
+  """
+  @spec disallowed_tool(t(), String.t() | ClaudeWrapper.ToolPattern.t()) :: t()
+  def disallowed_tool(%__MODULE__{} = q, %ClaudeWrapper.ToolPattern{} = pattern),
+    do: disallowed_tool(q, ClaudeWrapper.ToolPattern.to_string(pattern))
+
   def disallowed_tool(%__MODULE__{} = q, tool),
     do: %{q | disallowed_tools: q.disallowed_tools ++ [tool]}
 
