@@ -29,15 +29,21 @@ defmodule ClaudeWrapper.IEx do
 
   ## Configuration
 
-  `configure/1` sets ambient options that persist across calls; `chat/2`
-  and `say/2` merge per-call options on top (last wins). Ambient + call
-  options cover config (`:working_dir`, `:binary`, `:env`, `:timeout`,
-  `:verbose`, `:debug`), query options (`:model`, `:max_turns`,
-  `:permission_mode`, ...), and prompt-composition keys (see below).
+  `configure/1` is the single source of sticky defaults: whatever you set
+  there applies to every later `chat/2` and `say/2`. Options passed
+  directly to `chat/2` or `say/2` apply to **that call only** and are
+  never written back to ambient -- a one-off `attach:` or `model:` won't
+  silently ride along on the next turn. Per-call options win over ambient
+  for the call they're on.
+
+  Ambient and per-call options both cover config (`:working_dir`,
+  `:binary`, `:env`, `:timeout`, `:verbose`, `:debug`), query options
+  (`:model`, `:max_turns`, `:permission_mode`, ...), and prompt-composition
+  keys (see below).
 
       configure(model: "sonnet", working_dir: "/my/project")
-      chat("hello")                 # uses the ambient config
-      say("do something big", max_turns: 20)
+      chat("hello")                            # uses the ambient sonnet + cwd
+      say("do something big", max_turns: 20)   # max_turns: this turn only
 
   ## Prompt composition
 
@@ -110,14 +116,19 @@ defmodule ClaudeWrapper.IEx do
   Effective options are the ambient config (see `configure/1`) merged
   with `opts` (per-call wins). Config keys build the session config;
   composition keys build a prompt around `prompt`; everything else is
-  forwarded as turn options.
+  forwarded as turn options. Per-call `opts` apply to this turn only and
+  are **not** persisted -- use `configure/1` for sticky defaults.
 
   Raises `ClaudeWrapper.Error` on a CLI/render failure.
   """
   @spec chat(String.t(), keyword()) :: Result.t()
   def chat(prompt, opts \\ []) do
+    # Per-call opts apply to THIS turn only; they are never written back to
+    # ambient. configure/1 is the single source of sticky defaults, so a
+    # one-off attach:/model: here can't silently ride along on later say/2
+    # turns. run_turn stores the live session (which carries config
+    # forward); ambient carries only configure-set query/composition defaults.
     effective = Keyword.merge(ambient_config(), opts)
-    Process.put(@config_key, effective)
 
     {config_opts, rest} = Keyword.split(effective, @config_keys)
     {composition_opts, query_opts} = Keyword.split(rest, @composition_keys)
@@ -144,8 +155,9 @@ defmodule ClaudeWrapper.IEx do
         :no_session
 
       session ->
-        # Ambient query + composition opts apply to follow-ups too; the
-        # ambient config keys are already baked into the live session.
+        # Ambient (configure-set) query + composition opts apply to
+        # follow-ups; config keys are already baked into the live session,
+        # so they're dropped here. Per-call opts win, for this turn only.
         {_config_opts, rest} = Keyword.split(ambient_config(), @config_keys)
         effective = Keyword.merge(rest, opts)
         {composition_opts, query_opts} = Keyword.split(effective, @composition_keys)

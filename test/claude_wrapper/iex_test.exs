@@ -99,4 +99,49 @@ defmodule ClaudeWrapper.IExTest do
       end)
     end
   end
+
+  describe "per-call options never leak into ambient (regression: composition leak)" do
+    # A glob that matches nothing makes chat/2 raise :not_found at *render*
+    # time -- before any CLI call -- so we can observe exactly what chat/2
+    # persisted to ambient without needing a live `claude`.
+    setup do
+      glob =
+        Path.join(System.tmp_dir!(), "cwx_iex_leak_#{System.unique_integer([:positive])}/*")
+
+      {:ok, glob: glob}
+    end
+
+    test "a per-call attach is not written back to ambient", %{glob: glob} do
+      capture_io(fn ->
+        assert_raise Error, fn -> CIEx.chat("go", attach: glob) end
+      end)
+
+      # Before the fix, chat/2 wrote its effective opts (incl. :attach) into
+      # ambient, so the file silently rode along on the next say/2 turn --
+      # re-sending and re-caching it. Per-call opts must not persist.
+      assert CIEx.config() == []
+    end
+
+    test "a per-call query opt is not written back to ambient either", %{glob: glob} do
+      capture_io(fn ->
+        assert_raise Error, fn -> CIEx.chat("go", attach: glob, model: "sonnet") end
+      end)
+
+      refute Keyword.has_key?(CIEx.config(), :model)
+    end
+
+    test "configure/1 composition IS sticky and is applied to chat/2", %{glob: glob} do
+      :ok = CIEx.configure(attach: glob)
+
+      capture_io(fn ->
+        # the configured attach drove the render -> proves it reached chat/2
+        error = assert_raise Error, fn -> CIEx.chat("go") end
+        assert error.kind == :not_found
+        assert error.reason == glob
+      end)
+
+      # ...and it stays configured for later turns (sticky, by opt-in)
+      assert CIEx.config()[:attach] == glob
+    end
+  end
 end
