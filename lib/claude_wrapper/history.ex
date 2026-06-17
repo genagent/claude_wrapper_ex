@@ -22,6 +22,17 @@ defmodule ClaudeWrapper.History.SessionSummary do
   Summary of one session `.jsonl` file.
 
   See `ClaudeWrapper.History` for how these are produced.
+
+  Two fields deserve a note:
+
+    * `total_tokens` counts throughput -- fresh input, output, and cache
+      *creation* -- and **excludes** cache-read tokens. Cache reads re-count
+      context already tallied when it was first cached, so including them
+      inflates a long session 10-100x and makes the figure track
+      conversation length rather than work done. The raw per-turn usage is
+      still available via `ClaudeWrapper.History.read_session/2`.
+    * `total_cost_usd` is almost always `nil`: Claude Code does not persist
+      per-message cost in its transcripts, only token usage.
   """
 
   @enforce_keys [:session_id, :project_slug, :message_count, :size_bytes]
@@ -448,6 +459,9 @@ defmodule ClaudeWrapper.History do
     end
   end
 
+  # Interactive Claude Code transcripts persist token usage but not cost,
+  # so `total_cost_usd` is nil for virtually every real session. Kept for
+  # the rare transcript that does carry a `total_cost_usd`.
   defp add_cost(current, usage) do
     case usage["total_cost_usd"] do
       c when is_number(c) -> (current || 0.0) + c
@@ -455,9 +469,15 @@ defmodule ClaudeWrapper.History do
     end
   end
 
+  # Sum only throughput tokens: fresh input, output, and cache *creation*
+  # (first-time processing of context). cache_read_input_tokens is
+  # deliberately excluded -- it re-counts context already tallied on the
+  # turn it was cached, so including it inflates a long session 10-100x
+  # (re-reads dominate) and makes the total track conversation length
+  # rather than work done.
   defp add_tokens(current, usage) do
     sum =
-      ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+      ["input_tokens", "output_tokens", "cache_creation_input_tokens"]
       |> Enum.reduce(0, fn k, t ->
         case usage[k] do
           n when is_integer(n) -> t + n
