@@ -3,7 +3,9 @@ defmodule ClaudeWrapperTest do
 
   alias ClaudeWrapper.{
     Config,
+    Error,
     McpConfig,
+    Prompt,
     Query,
     Result,
     Retry,
@@ -551,6 +553,26 @@ defmodule ClaudeWrapperTest do
       config = Config.new()
       session = Session.new(config)
       assert Session.turns(session) == []
+    end
+
+    test "send/3 accepts a %Prompt{} and propagates a render error before any CLI call" do
+      config = Config.new()
+      session = Session.new(config)
+
+      # A glob that matches nothing fails at render time, so send/3 must
+      # short-circuit with the typed error -- no claude subprocess is
+      # spawned (the binary is never invoked because render fails first).
+      glob = Path.join(System.tmp_dir!(), "cwx_no_match_#{System.unique_integer([:positive])}/*")
+      prompt = Prompt.new("hi") |> Prompt.attach(glob)
+
+      assert {:error, %Error{kind: :not_found, reason: ^glob}} = Session.send(session, prompt)
+    end
+
+    test "fork/3 on a session with no id returns :no_session" do
+      config = Config.new()
+      session = Session.new(config)
+
+      assert {:error, %Error{kind: :no_session}} = Session.fork(session, "branch this")
     end
   end
 
