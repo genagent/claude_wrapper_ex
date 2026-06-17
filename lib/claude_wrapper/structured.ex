@@ -1,0 +1,126 @@
+defmodule ClaudeWrapper.Structured do
+  @moduledoc """
+  Run a Claude call as a typed function.
+
+  A `Structured` task turns **structured input** into a rendered prompt,
+  constrains the model's output to a **JSON Schema**, and parses the
+  validated object into a **domain value** -- returning the raw
+  `t:ClaudeWrapper.Result.t/0` alongside as an audit log. The model call is
+  the only stochastic step; prompt construction, output shape, and parsing
+  are deterministic and typed -- a deterministic envelope around a
+  stochastic core.
+
+  A task module implements:
+
+    * `render/1` -- input -> a `t:ClaudeWrapper.Prompt.t/0` or a string
+    * `schema/0` -- the JSON Schema the output must conform to (claude's
+      `--json-schema`); the validated object arrives as the result's
+      `structured_output`
+    * `parse/1` -- *optional*; map the validated object into a domain
+      value. Defaults to returning the object unchanged.
+
+  `run/3` wires them together.
+
+  ## Example
+
+      defmodule ExtractName do
+        @behaviour ClaudeWrapper.Structured
+
+        @impl true
+        def render(text), do: "Extract the person's name from: " <> text
+
+        @impl true
+        def schema do
+          %{
+            "type" => "object",
+            "properties" => %{"name" => %{"type" => "string"}},
+            "required" => ["name"]
+          }
+        end
+      end
+
+      {:ok, %{"name" => name}, %ClaudeWrapper.Result{}} =
+        ClaudeWrapper.Structured.run(ExtractName, "Hi, I'm Ada Lovelace.")
+
+  ## Reasoning room
+
+  A hard schema gives the model no space to think before answering. If a
+  task needs reasoning, add a field for it to the schema (e.g. a
+  `"reasoning"` string beside the `"answer"` object) rather than dropping
+  the schema -- you keep a guaranteed-parseable object *and* thinking room
+  in one deterministic call.
+  """
+
+  alias ClaudeWrapper.{Prompt, Result}
+
+  @doc "Turn the task input into a prompt (a `Prompt` struct or a string)."
+  @callback render(input :: term()) :: Prompt.t() | String.t()
+
+  @doc "The JSON Schema the model output must conform to."
+  @callback schema() :: map()
+
+  @doc """
+  Map the schema-validated object into a domain value. Optional; the
+  default returns the object unchanged.
+  """
+  @callback parse(structured_output :: map() | list()) :: {:ok, term()} | {:error, term()}
+
+  @optional_callbacks parse: 1
+
+  @doc """
+  Run `module` over `input`.
+
+  Returns `{:ok, parsed, result}` -- the parsed domain value plus the raw
+  `t:ClaudeWrapper.Result.t/0` (the audit log) -- or `{:error, reason}`.
+
+  `opts` are forwarded to `ClaudeWrapper.query/2` (e.g. `:model`,
+  `:working_dir`, `:timeout`); `:json_schema` is set from `schema/0`.
+
+  Error reasons:
+
+    * `{:invalid_render, value}` -- `render/1` returned neither a `Prompt`
+      nor a string
+    * a `Jason` encode error -- `schema/0` was not JSON-encodable
+    * a `ClaudeWrapper.Error` -- the prompt failed to render, or the CLI
+      call failed
+    * `:no_structured_output` -- the result carried no `structured_output`
+      (no schema took effect)
+    * whatever `parse/1` returned on `{:error, _}`
+  """
+  @spec run(module(), term(), keyword()) :: {:ok, term(), Result.t()} | {:error, term()}
+  def run(module, input, opts \\ []) when is_atom(module) and is_list(opts) do
+    with {:ok, rendered} <- render_input(module, input),
+         {:ok, schema_json} <- Jason.encode(module.schema()),
+         {:ok, result} <-
+           ClaudeWrapper.query(rendered, Keyword.put(opts, :json_schema, schema_json)),
+         {:ok, output} <- extract_output(result),
+         {:ok, parsed} <- parse_output(module, output) do
+      {:ok, parsed, result}
+    end
+  end
+
+  defp render_input(module, input) do
+    case module.render(input) do
+      %Prompt{} = prompt -> Prompt.render(prompt)
+      text when is_binary(text) -> {:ok, text}
+      other -> {:error, {:invalid_render, other}}
+    end
+  end
+
+  # Read the schema-validated object. Inline for now; becomes
+  # `Result.structured_output/1` once #142 lands.
+  defp extract_output(%Result{extra: extra}) do
+    case extra["structured_output"] do
+      nil -> {:error, :no_structured_output}
+      output -> {:ok, output}
+    end
+  end
+
+  defp parse_output(module, output) do
+    if function_exported?(module, :parse, 1) do
+      module.parse(output)
+    else
+      {:ok, output}
+    end
+  end
+end
