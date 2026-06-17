@@ -136,7 +136,8 @@ defmodule ClaudeWrapper.HistoryTest do
   end
 
   describe "summary details" do
-    test "ai-title accepts camelCase and legacy title; sums usage tokens", %{root: root} do
+    test "ai-title accepts camelCase and legacy title; sums throughput tokens (excludes cache reads)",
+         %{root: root} do
       dir = Path.join(root, "-p")
 
       write_session(dir, "camel", [
@@ -150,7 +151,7 @@ defmodule ClaudeWrapper.HistoryTest do
       ])
 
       write_session(dir, "tokens", [
-        ~s({"type":"assistant","timestamp":"2026-05-01T00:00:00Z","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":2}}})
+        ~s({"type":"assistant","timestamp":"2026-05-01T00:00:00Z","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":2}}})
       ])
 
       {:ok, sessions} = History.list_sessions(History.at(root), slug: "-p")
@@ -158,7 +159,9 @@ defmodule ClaudeWrapper.HistoryTest do
 
       assert by_id["camel"].title == "Camel Title"
       assert by_id["legacy"].title == "Legacy Title"
-      assert by_id["tokens"].total_tokens == 17
+      # input 10 + output 5 + cache_creation 3 = 18; cache_read (2) excluded
+      assert by_id["tokens"].total_tokens == 18
+      assert by_id["tokens"].total_cost_usd == nil
     end
 
     test "include_empty: false drops zero-message orphan sessions", %{root: root} do
