@@ -51,7 +51,7 @@ defmodule ClaudeWrapper.Structured do
   in one deterministic call.
   """
 
-  alias ClaudeWrapper.{Prompt, Result}
+  alias ClaudeWrapper.{Error, Prompt, Result}
 
   @doc "Turn the task input into a prompt (a `Prompt` struct or a string)."
   @callback render(input :: term()) :: Prompt.t() | String.t()
@@ -62,6 +62,8 @@ defmodule ClaudeWrapper.Structured do
   @doc """
   Map the schema-validated object into a domain value. Optional; the
   default returns the object unchanged.
+
+      def parse(%{"name" => name}), do: {:ok, %Person{name: name}}
   """
   @callback parse(structured_output :: map() | list()) :: {:ok, term()} | {:error, term()}
 
@@ -78,13 +80,11 @@ defmodule ClaudeWrapper.Structured do
 
   Error reasons:
 
-    * `{:invalid_render, value}` -- `render/1` returned neither a `Prompt`
-      nor a string
+    * a `ClaudeWrapper.Error` -- `render/1` returned a non-prompt
+      (`:invalid_render`), the prompt failed to render, the CLI call
+      failed, or the result carried no `structured_output`
+      (`:no_structured_output`)
     * a `Jason` encode error -- `schema/0` was not JSON-encodable
-    * a `ClaudeWrapper.Error` -- the prompt failed to render, or the CLI
-      call failed
-    * `:no_structured_output` -- the result carried no `structured_output`
-      (no schema took effect)
     * whatever `parse/1` returned on `{:error, _}`
   """
   @spec run(module(), term(), keyword()) :: {:ok, term(), Result.t()} | {:error, term()}
@@ -103,15 +103,15 @@ defmodule ClaudeWrapper.Structured do
     case module.render(input) do
       %Prompt{} = prompt -> Prompt.render(prompt)
       text when is_binary(text) -> {:ok, text}
-      other -> {:error, {:invalid_render, other}}
+      other -> {:error, Error.new(:invalid_render, reason: other)}
     end
   end
 
   # Read the schema-validated object. Inline for now; becomes
   # `Result.structured_output/1` once #142 lands.
-  defp extract_output(%Result{extra: extra}) do
+  defp extract_output(%Result{extra: extra} = result) do
     case extra["structured_output"] do
-      nil -> {:error, :no_structured_output}
+      nil -> {:error, Error.new(:no_structured_output, reason: result)}
       output -> {:ok, output}
     end
   end
