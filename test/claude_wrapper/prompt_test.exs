@@ -4,6 +4,8 @@ defmodule ClaudeWrapper.PromptTest do
   # cwd), which is global state that cannot be shared across async tests.
   use ExUnit.Case, async: false
 
+  doctest ClaudeWrapper.Prompt
+
   alias ClaudeWrapper.{Error, Prompt}
 
   setup do
@@ -32,6 +34,23 @@ defmodule ClaudeWrapper.PromptTest do
       assert prompt.prepends == ["p1", "p2"]
       assert prompt.appends == ["ap1"]
       assert prompt.context == [{:attach, "a/*.ex"}, {:diff, nil}, {:diff, "HEAD~1"}]
+    end
+
+    test "git_log / git_status / vars accumulate" do
+      prompt =
+        "base"
+        |> Prompt.new()
+        |> Prompt.git_log(n: 3)
+        |> Prompt.git_status()
+        |> Prompt.vars(a: 1, b: "two")
+        |> Prompt.vars(%{"a" => "override"})
+
+      assert prompt.context == [{:log, 3}, :status]
+      assert prompt.vars == %{"a" => "override", "b" => "two"}
+    end
+
+    test "git_log defaults to 5 commits" do
+      assert %Prompt{context: [{:log, 5}]} = "x" |> Prompt.new() |> Prompt.git_log()
     end
   end
 
@@ -200,6 +219,114 @@ defmodule ClaudeWrapper.PromptTest do
         end)
 
       assert {:error, %Error{kind: :git_failed}} = rendered
+    end
+
+    test "the diff block is headed `# git diff`", %{base: base} do
+      init_repo(base)
+      File.write!(Path.join(base, "t.txt"), "a\n")
+      git!(base, ["add", "."])
+      git!(base, ["commit", "-m", "c"])
+      File.write!(Path.join(base, "t.txt"), "b\n")
+
+      assert {:ok, text} =
+               in_dir(base, fn ->
+                 "r" |> Prompt.new() |> Prompt.git_diff(nil) |> Prompt.render()
+               end)
+
+      assert text =~ "# git diff\n```diff"
+    end
+  end
+
+  describe "render/1 git_log" do
+    test "renders a headed, fenced oneline log", %{base: base} do
+      init_repo(base)
+      File.write!(Path.join(base, "f.txt"), "x")
+      git!(base, ["add", "."])
+      git!(base, ["commit", "-m", "first commit"])
+
+      assert {:ok, text} =
+               in_dir(base, fn ->
+                 "review" |> Prompt.new() |> Prompt.git_log(n: 1) |> Prompt.render()
+               end)
+
+      assert text =~ "# git log --oneline -n 1"
+      assert text =~ "first commit"
+    end
+
+    test "a non-repo directory is a :git_failed error", %{base: base} do
+      assert {:error, %Error{kind: :git_failed}} =
+               in_dir(base, fn ->
+                 "review" |> Prompt.new() |> Prompt.git_log() |> Prompt.render()
+               end)
+    end
+  end
+
+  describe "render/1 git_status" do
+    test "renders a headed, fenced short status", %{base: base} do
+      init_repo(base)
+      File.write!(Path.join(base, "tracked.txt"), "v1\n")
+      git!(base, ["add", "."])
+      git!(base, ["commit", "-m", "init"])
+      File.write!(Path.join(base, "new.txt"), "untracked\n")
+
+      assert {:ok, text} =
+               in_dir(base, fn ->
+                 "review" |> Prompt.new() |> Prompt.git_status() |> Prompt.render()
+               end)
+
+      assert text =~ "# git status --short"
+      assert text =~ "new.txt"
+    end
+
+    test "a clean working tree contributes no block", %{base: base} do
+      init_repo(base)
+      File.write!(Path.join(base, "f.txt"), "stable\n")
+      git!(base, ["add", "."])
+      git!(base, ["commit", "-m", "c1"])
+
+      assert {:ok, "review"} =
+               in_dir(base, fn ->
+                 "review" |> Prompt.new() |> Prompt.git_status() |> Prompt.render()
+               end)
+    end
+  end
+
+  describe "render/1 vars" do
+    test "substitutes {{key}} in base, prepends, and appends" do
+      assert {:ok, "Hi Ada --\n\nbase for Ada\n\n-- bye Ada"} =
+               "base for {{name}}"
+               |> Prompt.new()
+               |> Prompt.prepend("Hi {{name}} --")
+               |> Prompt.append("-- bye {{name}}")
+               |> Prompt.vars(name: "Ada")
+               |> Prompt.render()
+    end
+
+    test "unknown placeholders are left verbatim" do
+      assert {:ok, "fill A leave {{b}}"} =
+               "fill {{a}} leave {{b}}"
+               |> Prompt.new()
+               |> Prompt.vars(a: "A")
+               |> Prompt.render()
+    end
+
+    test "does not substitute inside captured context blocks", %{base: base} do
+      file = Path.join(base, "f.txt")
+      File.write!(file, "literal {{name}} in file")
+
+      assert {:ok, text} =
+               "greet {{name}}"
+               |> Prompt.new()
+               |> Prompt.attach(file)
+               |> Prompt.vars(name: "Ada")
+               |> Prompt.render()
+
+      assert text =~ "greet Ada"
+      assert text =~ "literal {{name}} in file"
+    end
+
+    test "a prompt with no vars is unchanged" do
+      assert {:ok, "raw {{x}}"} = "raw {{x}}" |> Prompt.new() |> Prompt.render()
     end
   end
 

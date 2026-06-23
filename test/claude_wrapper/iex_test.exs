@@ -98,6 +98,24 @@ defmodule ClaudeWrapper.IExTest do
         assert error.reason == glob
       end)
     end
+
+    test "git_log / git_status / vars compose without error (wired as composition keys)" do
+      glob =
+        Path.join(System.tmp_dir!(), "cwx_iex_comp_#{System.unique_integer([:positive])}/*")
+
+      # The bad-glob attach raises :not_found at render -- but only after
+      # compose/2 applies the other composition keys. A missing apply_composition
+      # clause would raise FunctionClauseError instead, so reaching a typed
+      # ClaudeWrapper.Error proves git_log/git_status/vars are all wired.
+      capture_io(fn ->
+        error =
+          assert_raise Error, fn ->
+            CIEx.chat("go", git_log: 5, git_status: true, vars: %{x: "y"}, attach: glob)
+          end
+
+        assert error.kind == :not_found
+      end)
+    end
   end
 
   describe "per-call options never leak into ambient (regression: composition leak)" do

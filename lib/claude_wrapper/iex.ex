@@ -75,7 +75,7 @@ defmodule ClaudeWrapper.IEx do
   @history_key :claude_wrapper_iex_history
 
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
-  @composition_keys [:attach, :git_diff, :prepend, :append]
+  @composition_keys [:attach, :git_diff, :git_log, :git_status, :prepend, :append, :vars]
 
   @typedoc "A session row as returned by `sessions/0`."
   @type session_summary :: %{
@@ -395,8 +395,20 @@ defmodule ClaudeWrapper.IEx do
   defp apply_composition({:attach, values}, prompt),
     do: reduce_strings(prompt, values, &Prompt.attach/2)
 
+  defp apply_composition({:git_diff, false}, prompt), do: prompt
   defp apply_composition({:git_diff, true}, prompt), do: Prompt.git_diff(prompt, nil)
   defp apply_composition({:git_diff, ref}, prompt), do: Prompt.git_diff(prompt, ref)
+
+  defp apply_composition({:git_log, false}, prompt), do: prompt
+  defp apply_composition({:git_log, true}, prompt), do: Prompt.git_log(prompt)
+
+  defp apply_composition({:git_log, n}, prompt) when is_integer(n),
+    do: Prompt.git_log(prompt, n: n)
+
+  defp apply_composition({:git_status, false}, prompt), do: prompt
+  defp apply_composition({:git_status, _}, prompt), do: Prompt.git_status(prompt)
+
+  defp apply_composition({:vars, vars}, prompt), do: Prompt.vars(prompt, vars)
 
   # A composition value may be a single string or a list of them.
   defp reduce_strings(prompt, values, fun) when is_list(values) do
@@ -413,7 +425,13 @@ defmodule ClaudeWrapper.IEx do
     if attaches == 0 do
       nil
     else
-      files = rendered |> String.split("\n") |> Enum.count(&String.starts_with?(&1, "# "))
+      # Count attach headers (`# <path>`) only -- git context blocks now
+      # carry `# git <cmd>` headers too, which must not inflate the count.
+      files =
+        rendered
+        |> String.split("\n")
+        |> Enum.count(&(String.starts_with?(&1, "# ") and not String.starts_with?(&1, "# git ")))
+
       "(attached #{files} file#{plural(files)}, ~#{kb(byte_size(rendered))})"
     end
   end
