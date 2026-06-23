@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.9.0...v0.10.0) (2026-06-23)
+
+
+### Features
+
+* **history:** last_answer/1 and assistant_texts/1 over SessionLog ([#149](https://github.com/genagent/claude_wrapper_ex/issues/149)) ([2983449](https://github.com/genagent/claude_wrapper_ex/commit/2983449f5fae921a0179c2db4cbee4feb50580a9))
+* **stream:** ClaudeWrapper.Stream combinators over DuplexSession ([#151](https://github.com/genagent/claude_wrapper_ex/issues/151)) ([abc946a](https://github.com/genagent/claude_wrapper_ex/commit/abc946aaf5f85865dab367e9ee67e8016314259d))
+* **test:** adapter seam on DuplexSession + ClaudeWrapper.Test (network-free session tests) ([#152](https://github.com/genagent/claude_wrapper_ex/issues/152)) ([ab39b5f](https://github.com/genagent/claude_wrapper_ex/commit/ab39b5f98e761346fab5cf00d55ff99b94e57f1e))
+
 ## [0.9.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.8.1...v0.9.0) (2026-06-23)
 
 
