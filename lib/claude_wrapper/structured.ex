@@ -42,6 +42,30 @@ defmodule ClaudeWrapper.Structured do
       {:ok, %{"name" => name}, %ClaudeWrapper.Result{}} =
         ClaudeWrapper.Structured.run(ExtractName, "Hi, I'm Ada Lovelace.")
 
+  ## Parsing into a domain value
+
+  An optional `parse/1` maps the validated object into whatever shape the
+  caller wants -- a struct, an Ecto schema, a normalized tuple. The model
+  still only returns the schema-validated object; `parse/1` is the
+  deterministic last step.
+
+      defmodule ExtractPerson do
+        @behaviour ClaudeWrapper.Structured
+
+        @impl true
+        def render(text), do: "Extract the person's full name from: " <> text
+
+        @impl true
+        def schema, do: ExtractName.schema()
+
+        @impl true
+        def parse(%{"name" => name}), do: {:ok, %Person{name: name}}
+        def parse(other), do: {:error, {:unexpected_shape, other}}
+      end
+
+      {:ok, %Person{name: "Ada Lovelace"}, %ClaudeWrapper.Result{}} =
+        ClaudeWrapper.Structured.run(ExtractPerson, "Hi, I'm Ada Lovelace.")
+
   ## Reasoning room
 
   A hard schema gives the model no space to think before answering. If a
@@ -107,10 +131,9 @@ defmodule ClaudeWrapper.Structured do
     end
   end
 
-  # Read the schema-validated object. Inline for now; becomes
-  # `Result.structured_output/1` once #142 lands.
-  defp extract_output(%Result{extra: extra} = result) do
-    case extra["structured_output"] do
+  # Read the schema-validated object via the typed accessor (#142).
+  defp extract_output(%Result{} = result) do
+    case Result.structured_output(result) do
       nil -> {:error, Error.new(:no_structured_output, reason: result)}
       output -> {:ok, output}
     end
