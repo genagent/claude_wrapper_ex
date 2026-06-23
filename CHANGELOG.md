@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.8.1...v0.9.0) (2026-06-23)
+
+
+### Features
+
+* high-level conversational API (Prompt + Session ergonomics + IEx skin) ([#134](https://github.com/genagent/claude_wrapper_ex/issues/134)) ([f2a45ce](https://github.com/genagent/claude_wrapper_ex/commit/f2a45ceb94f24fd278d25262ca5dbf7c1c42c8a2))
+* Prompt git_log/git_status/vars composition; unify git block headers ([#141](https://github.com/genagent/claude_wrapper_ex/issues/141)) ([f7376df](https://github.com/genagent/claude_wrapper_ex/commit/f7376df177f61d31942be82c97d253062b0363d6))
+* typed Result accessors -- usage/1, stop_reason/1, structured_output/1 ([#142](https://github.com/genagent/claude_wrapper_ex/issues/142)) ([ad6e0ca](https://github.com/genagent/claude_wrapper_ex/commit/ad6e0ca1a0686d346706ca56e5355fe309a1be11))
+
+
+### Bug Fixes
+
+* exclude cache-read tokens from session total_tokens; document cost gap ([#137](https://github.com/genagent/claude_wrapper_ex/issues/137)) ([437202f](https://github.com/genagent/claude_wrapper_ex/commit/437202f07baf128f75d29ac9169d86d1325decec))
+
 ## [0.8.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.8.0...v0.8.1) (2026-06-15)
 
 
