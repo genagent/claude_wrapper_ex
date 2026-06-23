@@ -34,7 +34,10 @@ defmodule ClaudeWrapper.Config do
 
   ## Options
 
-    * `:binary` - Path to the claude binary (default: auto-discover)
+    * `:binary` - Path to the claude binary (default: auto-discover via
+      `CLAUDE_CLI`/PATH). Pass the atom `:bundled` to resolve the opt-in
+      bundled binary (`ClaudeWrapper.Bundled.path/0`); install it first
+      with `mix claude_wrapper.install`.
     * `:working_dir` - Working directory for the subprocess
     * `:env` - List of `{key, value}` environment variable tuples
     * `:timeout` - Command timeout in milliseconds
@@ -44,7 +47,7 @@ defmodule ClaudeWrapper.Config do
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     %__MODULE__{
-      binary: opts[:binary] || find_binary(),
+      binary: resolve_binary(opts[:binary]),
       working_dir: opts[:working_dir],
       env: opts[:env] || [],
       timeout: opts[:timeout],
@@ -52,6 +55,16 @@ defmodule ClaudeWrapper.Config do
       debug: Keyword.get(opts, :debug, false)
     }
   end
+
+  # Resolve the `:binary` option into a concrete path.
+  #
+  #   * `nil`        -> PATH/`CLAUDE_CLI` auto-discovery (`find_binary/0`)
+  #   * `:bundled`   -> the opt-in bundled binary path (pure; install is
+  #                     a separate step -- see `ClaudeWrapper.Bundled`)
+  #   * a string     -> used verbatim
+  defp resolve_binary(nil), do: find_binary()
+  defp resolve_binary(:bundled), do: ClaudeWrapper.Bundled.path()
+  defp resolve_binary(path) when is_binary(path), do: path
 
   @doc """
   Find the claude binary path.

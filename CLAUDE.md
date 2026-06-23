@@ -45,7 +45,13 @@ ClaudeWrapper.CliVersion      # Parse/compare the claude CLI version
 ClaudeWrapper.DangerousClient # Env-gated --dangerously-skip-permissions wrapper
 ClaudeWrapper.Auth            # Env-based auth detection + failure classification
 ClaudeWrapper.Test            # Drive a DuplexSession against an in-process double (network-free)
+ClaudeWrapper.Bundled         # Opt-in bundled-binary resolve/install (cli_path: :bundled)
 ```
+
+Binary resolution is opt-in: `Config.new(binary: :bundled)` resolves to
+`priv/bin/claude` (pure); installing is explicit via `ClaudeWrapper.Bundled`
+or the `mix claude_wrapper.install` / `.uninstall` / `.path` tasks. The
+default stays PATH/`CLAUDE_CLI` discovery.
 
 ### DuplexSession transport adapter
 
