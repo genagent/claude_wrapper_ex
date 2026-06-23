@@ -289,6 +289,47 @@ defmodule ClaudeWrapper.History do
   end
 
   @doc """
+  Every assistant text answer in a session, in order.
+
+  Each `:assistant` entry's `message["content"]` is reduced to its text
+  blocks (string content is taken verbatim; a content list keeps only
+  `"text"` blocks, joined). Entries with no text (tool-use-only turns,
+  say) contribute nothing.
+
+      {:ok, log} = ClaudeWrapper.History.read_session(root, id)
+      ClaudeWrapper.History.assistant_texts(log)
+      #=> ["First answer.", "Second answer."]
+  """
+  @spec assistant_texts(SessionLog.t()) :: [String.t()]
+  def assistant_texts(%SessionLog{entries: entries}) do
+    entries
+    |> Enum.flat_map(fn
+      {:assistant, %{message: message}} -> [message_text(message)]
+      _ -> []
+    end)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  @doc """
+  The last assistant text answer in a session.
+
+  Returns `{:ok, text}`, or `{:error, :no_answer}` when the session has
+  no assistant entry carrying text. Pairs with a `show`/`last` style
+  command reconstructing a stored session's answer from disk.
+
+      {:ok, log} = ClaudeWrapper.History.read_session(root, id)
+      ClaudeWrapper.History.last_answer(log)
+      #=> {:ok, "The answer."}
+  """
+  @spec last_answer(SessionLog.t()) :: {:ok, String.t()} | {:error, :no_answer}
+  def last_answer(%SessionLog{} = log) do
+    case List.last(assistant_texts(log)) do
+      nil -> {:error, :no_answer}
+      text -> {:ok, text}
+    end
+  end
+
+  @doc """
   Locate the on-disk path and project slug for a session id, searching
   every project directory.
 
@@ -524,6 +565,19 @@ defmodule ClaudeWrapper.History do
 
   defp text_block(%{"type" => "text", "text" => t}) when is_binary(t), do: t
   defp text_block(_), do: ""
+
+  # Reduce a message map to its text: string content verbatim, a content
+  # list to its joined `"text"` blocks, anything else to "".
+  defp message_text(%{"content" => content}) when is_binary(content), do: content
+
+  defp message_text(%{"content" => content}) when is_list(content) do
+    content
+    |> Enum.map(&text_block/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
+  end
+
+  defp message_text(_), do: ""
 
   # -- full session parse --------------------------------------------
 

@@ -237,6 +237,62 @@ defmodule ClaudeWrapper.HistoryTest do
     end
   end
 
+  describe "assistant_texts/1 and last_answer/1" do
+    defp asst(content),
+      do: {:assistant, %{uuid: "a", timestamp: nil, message: %{"content" => content}}}
+
+    defp usr(content),
+      do:
+        {:user,
+         %{uuid: "u", timestamp: nil, cwd: nil, git_branch: nil, message: %{"content" => content}}}
+
+    defp log(entries), do: %SessionLog{session_id: "s", project_slug: "-p", entries: entries}
+
+    test "assistant_texts returns each answer in order, ignoring user turns" do
+      l = log([usr("q1"), asst("a1"), usr("q2"), asst("a2")])
+      assert History.assistant_texts(l) == ["a1", "a2"]
+    end
+
+    test "a content list keeps only text blocks, joined by newline" do
+      content = [
+        %{"type" => "text", "text" => "line one"},
+        %{"type" => "tool_use", "name" => "Read", "input" => %{}},
+        %{"type" => "text", "text" => "line two"}
+      ]
+
+      assert History.assistant_texts(log([asst(content)])) == ["line one\nline two"]
+    end
+
+    test "a tool-use-only assistant turn contributes nothing" do
+      tool_only = [%{"type" => "tool_use", "name" => "Read", "input" => %{}}]
+      l = log([asst("real answer"), asst(tool_only)])
+
+      assert History.assistant_texts(l) == ["real answer"]
+      assert History.last_answer(l) == {:ok, "real answer"}
+    end
+
+    test "last_answer returns the final assistant text" do
+      assert History.last_answer(log([asst("first"), asst("last")])) == {:ok, "last"}
+    end
+
+    test "last_answer is :no_answer when no assistant entry carries text" do
+      assert History.last_answer(log([usr("q")])) == {:error, :no_answer}
+      assert History.assistant_texts(log([usr("q")])) == []
+    end
+
+    test "round-trips from a parsed session on disk", %{root: root} do
+      dir = Path.join(root, "-ans")
+
+      write_session(dir, "s-ans", [
+        user("2026-03-01T00:00:00Z", "hi"),
+        assistant("2026-03-01T00:00:01Z", "hello there")
+      ])
+
+      {:ok, l} = History.read_session(History.at(root), "s-ans")
+      assert History.last_answer(l) == {:ok, "hello there"}
+    end
+  end
+
   describe "project_slug/1 and sessions_for_path/3" do
     test "encodes '/', '.', and '_' as '-' (matching the CLI)" do
       tmp = Path.join(System.tmp_dir!(), "cwx_slug_#{System.unique_integer([:positive])}")
