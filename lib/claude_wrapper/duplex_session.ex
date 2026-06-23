@@ -124,6 +124,7 @@ defmodule ClaudeWrapper.DuplexSession do
   require Logger
 
   alias ClaudeWrapper.{Config, Error, Result}
+  alias ClaudeWrapper.DuplexSession.Adapter
 
   @type tool_input :: map()
 
@@ -176,7 +177,8 @@ defmodule ClaudeWrapper.DuplexSession do
   @type exit_status :: :running | :completed | {:failed, term()}
 
   @type state :: %__MODULE__{
-          port: port() | nil,
+          port: Adapter.handle() | nil,
+          adapter: module(),
           config: Config.t(),
           session_id: String.t() | nil,
           buffer: binary(),
@@ -190,6 +192,7 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defstruct [
     :port,
+    :adapter,
     :config,
     :session_id,
     :on_permission,
@@ -456,13 +459,23 @@ defmodule ClaudeWrapper.DuplexSession do
     # Not part of the public surface.
     args = Keyword.get(opts, :args_override, build_args(extra_args))
 
-    port_opts =
-      [:binary, :exit_status, :use_stdio, {:args, args}] ++
-        port_env_opts(config) ++
-        port_cd_opts(config)
+    adapter = Keyword.get(opts, :adapter, Adapter.Port)
+    adapter_opts = Keyword.get(opts, :adapter_opts, [])
+    open_opts = [config: config, args: args, owner: self()] ++ adapter_opts
 
-    port = Port.open({:spawn_executable, config.binary}, port_opts)
-    {:ok, %__MODULE__{port: port, config: config, on_permission: on_permission}}
+    case adapter.open(open_opts) do
+      {:ok, handle} ->
+        {:ok,
+         %__MODULE__{
+           port: handle,
+           adapter: adapter,
+           config: config,
+           on_permission: on_permission
+         }}
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
   end
 
   @impl true
@@ -474,7 +487,7 @@ defmodule ClaudeWrapper.DuplexSession do
       parent_tool_use_id: nil
     }
 
-    Port.command(port, [Jason.encode!(msg), ?\n])
+    state.adapter.command(port, [Jason.encode!(msg), ?\n])
     {:noreply, %{state | pending_turn: {from, []}}}
   end
 
@@ -511,7 +524,7 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   def handle_call({:respond_to_permission, request_id, decision}, _from, state) do
-    write_permission_response(state.port, request_id, decision)
+    write_permission_response(state, request_id, decision)
     {:reply, :ok, state}
   end
 
@@ -528,7 +541,7 @@ defmodule ClaudeWrapper.DuplexSession do
       request: %{subtype: "interrupt"}
     }
 
-    Port.command(state.port, [Jason.encode!(msg), ?\n])
+    state.adapter.command(state.port, [Jason.encode!(msg), ?\n])
     {:noreply, %{state | pending_control: Map.put(state.pending_control, request_id, from)}}
   end
 
@@ -562,7 +575,7 @@ defmodule ClaudeWrapper.DuplexSession do
 
   @impl true
   def terminate(reason, %{port: port} = state) do
-    if is_port(port) and Port.info(port) != nil, do: Port.close(port)
+    if not is_nil(port), do: state.adapter.close(port)
     fail_pending(state, :terminated)
     notify_exit_waiters(state, final_exit_status(state, reason))
     :ok
@@ -648,7 +661,7 @@ defmodule ClaudeWrapper.DuplexSession do
 
     case decision do
       :defer -> :ok
-      _ -> write_permission_response(state.port, id, default_allow_input(decision, input))
+      _ -> write_permission_response(state, id, default_allow_input(decision, input))
     end
 
     state
@@ -791,18 +804,12 @@ defmodule ClaudeWrapper.DuplexSession do
   # CLI via a `subtype: "error"` control_response.
   defp control_failed(reason), do: Error.new(:duplex_control_failed, reason: reason)
 
-  defp port_env_opts(%Config{env: []}), do: []
-  defp port_env_opts(%Config{env: env}), do: [{:env, env}]
-
-  defp port_cd_opts(%Config{working_dir: nil}), do: []
-  defp port_cd_opts(%Config{working_dir: dir}), do: [{:cd, String.to_charlist(dir)}]
-
   # Wraps a permission decision in the SDK's control_response envelope
-  # and writes it to the port's stdin. Shape mirrors the SDK's
+  # and writes it to the transport's stdin. Shape mirrors the SDK's
   # PermissionResult / SDKControlResponse schemas (see sdk.d.ts).
-  defp write_permission_response(nil, _request_id, _decision), do: :ok
+  defp write_permission_response(%{port: nil}, _request_id, _decision), do: :ok
 
-  defp write_permission_response(port, request_id, decision) do
+  defp write_permission_response(state, request_id, decision) do
     response = decision_to_permission_response(decision)
 
     msg = %{
@@ -814,7 +821,7 @@ defmodule ClaudeWrapper.DuplexSession do
       }
     }
 
-    Port.command(port, [Jason.encode!(msg), ?\n])
+    state.adapter.command(state.port, [Jason.encode!(msg), ?\n])
     :ok
   end
 

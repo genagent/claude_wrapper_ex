@@ -44,6 +44,15 @@ ClaudeWrapper.ToolPattern     # Typed, validated tool-spec builder
 ClaudeWrapper.CliVersion      # Parse/compare the claude CLI version
 ClaudeWrapper.DangerousClient # Env-gated --dangerously-skip-permissions wrapper
 ClaudeWrapper.Auth            # Env-based auth detection + failure classification
+ClaudeWrapper.Test            # Drive a DuplexSession against an in-process double (network-free)
+```
+
+### DuplexSession transport adapter
+
+```
+ClaudeWrapper.DuplexSession.Adapter        # open/command/close transport seam
+ClaudeWrapper.DuplexSession.Adapter.Port   # default: real claude subprocess over a Port
+ClaudeWrapper.DuplexSession.Adapter.Test   # per-session controllable double (ClaudeWrapper.Test)
 ```
 
 ### Read-side introspection of `~/.claude`
@@ -185,10 +194,14 @@ mix test --include integration  # All tests, including those that hit the real C
 mix test --only integration     # Only integration tests
 ```
 
-The unit suite uses `cat` as a fake `claude` for `DuplexSession` and
+Some unit tests use `cat` as a fake `claude` for `DuplexSession` and
 `DuplexIEx` -- we inject NDJSON via `Port.command/2` and observe the
-GenServer's dispatch behavior. Integration tests run against the real
-`claude` binary and against real `~/.claude` data (for the read-side
+GenServer's dispatch behavior. New session tests prefer
+`ClaudeWrapper.Test` (the `Adapter.Test` transport double): each
+`start_session/1` gets its own controllable stub with no shared state, so
+it is `async`-safe and is also the supported way for downstream users to
+test code that drives `claude_wrapper`. Integration tests run against the
+real `claude` binary and against real `~/.claude` data (for the read-side
 modules), so they are environment-dependent and excluded by default.
 
 Pre-commit checklist: `mix format`, `mix compile --warnings-as-errors`,
