@@ -93,6 +93,8 @@ defmodule ClaudeWrapper.Error do
           | :git_unavailable
           | :invalid_tool_pattern
           | :auth
+          | :invalid_render
+          | :no_structured_output
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -218,6 +220,12 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :auth, reason: reason}),
     do: "authentication error: #{inspect(reason)}"
+
+  defp default_message(%{kind: :invalid_render, reason: value}),
+    do: "Structured render/1 returned #{inspect(value)}; expected a Prompt or a string"
+
+  defp default_message(%{kind: :no_structured_output}),
+    do: "the result carried no structured_output (no JSON schema took effect)"
 
   defp default_message(%{kind: kind}), do: "claude_wrapper error: #{kind}"
 end
