@@ -238,6 +238,19 @@ setters; `ClaudeWrapper.query/2`, `ClaudeWrapper.stream/2`, and
 `Session.send/3` all delegate to it, so you can pass any of those
 opts uniformly.
 
+Less common setters: `Query.name/2` tags the query for CLI-side
+tracing, `Query.plugin_url/2` loads a plugin from a URL for the
+duration of the call, and `Query.safe_mode/1` enables the CLI's
+safe-mode guardrails:
+
+```elixir
+Query.new("Review this PR")
+|> Query.name("pr-review")
+|> Query.plugin_url("https://example.com/my-plugin.zip")
+|> Query.safe_mode()
+|> Query.execute(config)
+```
+
 ## Multi-agent coordination
 
 Multi-agent coordination has moved to a separate package,
@@ -439,10 +452,11 @@ end
 | Module | Description |
 |---|---|
 | `ClaudeWrapper.Commands.Auth` | Auth management (login modes, status, setup-token) |
-| `ClaudeWrapper.Commands.Mcp` | MCP server management |
+| `ClaudeWrapper.Commands.Mcp` | MCP server management (add/list/get/remove/serve/login/logout) |
 | `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update/tag/details/prune |
 | `ClaudeWrapper.Commands.Marketplace` | Marketplace add/remove/list/update |
 | `ClaudeWrapper.Commands.AutoMode` | auto-mode config/defaults/critique |
+| `ClaudeWrapper.Commands.Ultrareview` | `ultrareview` (cloud multi-agent code review) |
 | `ClaudeWrapper.Commands.Install` | `claude install` |
 | `ClaudeWrapper.Commands.Update` | `claude update` |
 | `ClaudeWrapper.Commands.Project` | `claude project purge` |
