@@ -636,7 +636,7 @@ defmodule ClaudeWrapper.Query do
     |> add_bool("--fork-session", q.fork_session)
     |> add_worktree(q.worktree)
     |> add_bool("--brief", q.brief)
-    |> add_opt("--debug-filter", q.debug_filter)
+    |> add_opt("--debug", q.debug_filter)
     |> add_opt("--debug-file", q.debug_file)
     |> add_opt("--betas", q.betas)
     |> add_list("--plugin-dir", q.plugin_dirs)
