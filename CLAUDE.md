@@ -86,6 +86,7 @@ ClaudeWrapper.Commands.AutoMode      # auto-mode config / defaults / critique
 ClaudeWrapper.Commands.Install       # claude install
 ClaudeWrapper.Commands.Update        # claude update
 ClaudeWrapper.Commands.Project       # project purge
+ClaudeWrapper.Commands.Ultrareview   # ultrareview (cloud multi-agent code review)
 ClaudeWrapper.Commands.Version       # claude --version
 ```
 
