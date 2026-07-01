@@ -59,19 +59,19 @@ defmodule ClaudeWrapper.Commands.Marketplace do
   """
   @spec add(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def add(%Config{} = config, source, opts \\ []) do
-    args = Config.base_args(config) ++ ["plugin", "marketplace", "add", source]
-    args = args ++ scope_args(opts[:scope])
-
-    args =
-      case opts[:sparse] do
-        nil -> args
-        paths when is_list(paths) -> args ++ ["--sparse" | paths]
-      end
+    args = Config.base_args(config) ++ add_args(source, opts)
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
+  end
+
+  @doc false
+  @spec add_args(String.t(), keyword()) :: [String.t()]
+  def add_args(source, opts) do
+    flags = scope_args(opts[:scope]) ++ sparse_args(opts[:sparse])
+    ["plugin", "marketplace", "add", source | flags]
   end
 
   @doc """
@@ -94,8 +94,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
   """
   @spec update(Config.t(), String.t() | nil) :: {:ok, String.t()} | {:error, term()}
   def update(%Config{} = config, name \\ nil) do
-    args = Config.base_args(config) ++ ["plugin", "marketplace", "update"]
-    args = if name, do: args ++ [name], else: args
+    args = Config.base_args(config) ++ update_args(name)
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
@@ -103,8 +102,18 @@ defmodule ClaudeWrapper.Commands.Marketplace do
     end
   end
 
+  @doc false
+  @spec update_args(String.t() | nil) :: [String.t()]
+  def update_args(name) do
+    base = ["plugin", "marketplace", "update"]
+    if name, do: base ++ [name], else: base
+  end
+
   defp scope_args(nil), do: []
   defp scope_args(:user), do: ["--scope", "user"]
   defp scope_args(:project), do: ["--scope", "project"]
   defp scope_args(:local), do: ["--scope", "local"]
+
+  defp sparse_args(nil), do: []
+  defp sparse_args(paths) when is_list(paths), do: ["--sparse" | paths]
 end
