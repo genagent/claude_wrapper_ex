@@ -1290,6 +1290,45 @@ defmodule ClaudeWrapperTest do
       assert {:add, 3} in Marketplace.__info__(:functions)
       assert {:remove, 2} in Marketplace.__info__(:functions)
       assert {:update, 2} in Marketplace.__info__(:functions)
+      assert {:add_args, 2} in Marketplace.__info__(:functions)
+      assert {:update_args, 1} in Marketplace.__info__(:functions)
+    end
+
+    test "add_args defaults to source with no flags" do
+      assert Marketplace.add_args("url", []) == ["plugin", "marketplace", "add", "url"]
+    end
+
+    test "add_args composes scope" do
+      assert Marketplace.add_args("url", scope: :project) ==
+               ["plugin", "marketplace", "add", "url", "--scope", "project"]
+    end
+
+    test "add_args composes sparse as a flag followed by each path" do
+      assert Marketplace.add_args("url", sparse: [".claude-plugin", "plugins"]) ==
+               ["plugin", "marketplace", "add", "url", "--sparse", ".claude-plugin", "plugins"]
+    end
+
+    test "add_args composes scope and sparse together, scope first" do
+      assert Marketplace.add_args("url", scope: :local, sparse: ["plugins"]) ==
+               [
+                 "plugin",
+                 "marketplace",
+                 "add",
+                 "url",
+                 "--scope",
+                 "local",
+                 "--sparse",
+                 "plugins"
+               ]
+    end
+
+    test "update_args with no name updates all marketplaces" do
+      assert Marketplace.update_args(nil) == ["plugin", "marketplace", "update"]
+    end
+
+    test "update_args with a name updates just that marketplace" do
+      assert Marketplace.update_args("my-marketplace") ==
+               ["plugin", "marketplace", "update", "my-marketplace"]
     end
   end
 
