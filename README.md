@@ -419,6 +419,22 @@ end
 | `ClaudeWrapper.SessionServer` | Supervised wrapper for `Session` |
 | `ClaudeWrapper.IEx` | REPL helpers for one-shot/per-call mode |
 
+**Prompt building & structured output**
+
+| Module | Description |
+|---|---|
+| `ClaudeWrapper.Prompt` | Composable prompt builder with deferred file/git expansion |
+| `ClaudeWrapper.Stream` | Lazy `Stream` combinators over a `DuplexSession` turn |
+| `ClaudeWrapper.Structured` | Typed structured-output tasks |
+
+**DuplexSession transport adapter**
+
+| Module | Description |
+|---|---|
+| `ClaudeWrapper.DuplexSession.Adapter` | Transport seam for `DuplexSession` |
+| `ClaudeWrapper.DuplexSession.Adapter.Port` | Default adapter: real `claude` subprocess over a Port |
+| `ClaudeWrapper.DuplexSession.Adapter.Test` | Controllable in-process test double |
+
 **Shared infrastructure**
 
 | Module | Description |
@@ -435,6 +451,8 @@ end
 | `ClaudeWrapper.CliVersion` | Parse/compare the CLI version |
 | `ClaudeWrapper.DangerousClient` | Env-gated `--dangerously-skip-permissions` |
 | `ClaudeWrapper.Auth` | Env auth detection + failure classification |
+| `ClaudeWrapper.Test` | Drive a `DuplexSession` against an in-process double (network-free) |
+| `ClaudeWrapper.Bundled` | Opt-in bundled-binary resolution for the `claude` CLI |
 
 **Reading `~/.claude` state**
 
@@ -452,6 +470,7 @@ end
 | Module | Description |
 |---|---|
 | `ClaudeWrapper.Commands.Auth` | Auth management (login modes, status, setup-token) |
+| `ClaudeWrapper.Commands.Agents` | List configured agents |
 | `ClaudeWrapper.Commands.Mcp` | MCP server management (add/list/get/remove/serve/login/logout) |
 | `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update/tag/details/prune |
 | `ClaudeWrapper.Commands.Marketplace` | Marketplace add/remove/list/update |

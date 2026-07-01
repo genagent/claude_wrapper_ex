@@ -44,26 +44,51 @@ defmodule ClaudeWrapper.MixProject do
       source_url: @source_url,
       extras: ["README.md", "CHANGELOG.md"],
       groups_for_modules: [
-        "Long-lived sessions": [
+        "Driving claude": [
           ClaudeWrapper.DuplexSession,
-          ClaudeWrapper.DuplexIEx
-        ],
-        "One-shot / per-call": [
+          ClaudeWrapper.DuplexIEx,
+          ClaudeWrapper.Conversation,
           ClaudeWrapper,
           ClaudeWrapper.Query,
           ClaudeWrapper.Session,
           ClaudeWrapper.SessionServer,
           ClaudeWrapper.IEx
         ],
-        "Shared infrastructure": [
+        "Prompt building & structured output": [
+          ClaudeWrapper.Prompt,
+          ClaudeWrapper.Stream,
+          ClaudeWrapper.Structured
+        ],
+        "Config, results, support": [
           ClaudeWrapper.Config,
           ClaudeWrapper.Result,
           ClaudeWrapper.StreamEvent,
+          ClaudeWrapper.Error,
           ClaudeWrapper.McpConfig,
           ClaudeWrapper.Retry,
-          ClaudeWrapper.Telemetry
+          ClaudeWrapper.Telemetry,
+          ClaudeWrapper.Budget,
+          ClaudeWrapper.ToolPattern,
+          ClaudeWrapper.CliVersion,
+          ClaudeWrapper.DangerousClient,
+          ClaudeWrapper.Auth,
+          ClaudeWrapper.Test,
+          ClaudeWrapper.Bundled
         ],
-        "CLI subcommand wrappers": [
+        "DuplexSession transport adapter": [
+          ClaudeWrapper.DuplexSession.Adapter,
+          ClaudeWrapper.DuplexSession.Adapter.Port,
+          ClaudeWrapper.DuplexSession.Adapter.Test
+        ],
+        "Read-side introspection of ~/.claude": [
+          ClaudeWrapper.History,
+          ClaudeWrapper.Settings,
+          ClaudeWrapper.Agents,
+          ClaudeWrapper.Skills,
+          ClaudeWrapper.Jobs,
+          ClaudeWrapper.Worktrees
+        ],
+        "Command surface": [
           ClaudeWrapper.Command,
           ClaudeWrapper.Commands.Auth,
           ClaudeWrapper.Commands.Agents,
@@ -71,6 +96,11 @@ defmodule ClaudeWrapper.MixProject do
           ClaudeWrapper.Commands.Mcp,
           ClaudeWrapper.Commands.Plugin,
           ClaudeWrapper.Commands.Marketplace,
+          ClaudeWrapper.Commands.AutoMode,
+          ClaudeWrapper.Commands.Install,
+          ClaudeWrapper.Commands.Update,
+          ClaudeWrapper.Commands.Project,
+          ClaudeWrapper.Commands.Ultrareview,
           ClaudeWrapper.Commands.Version
         ]
       ]
