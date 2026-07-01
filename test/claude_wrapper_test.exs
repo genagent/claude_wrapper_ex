@@ -885,6 +885,8 @@ defmodule ClaudeWrapperTest do
       assert {:add_from_desktop, 3} in funcs
       assert {:remove, 3} in funcs
       assert {:serve, 2} in funcs
+      assert {:login, 3} in funcs
+      assert {:logout, 2} in funcs
       assert {:reset_project_choices, 1} in funcs
 
       # @doc false builders are public for arg-composition testing.
@@ -892,6 +894,21 @@ defmodule ClaudeWrapperTest do
       assert {:add_json_args, 3} in funcs
       assert {:add_from_desktop_args, 2} in funcs
       assert {:serve_args, 1} in funcs
+      assert {:login_args, 2} in funcs
+      assert {:logout_args, 1} in funcs
+    end
+
+    test "login_args defaults to subcommand plus name" do
+      assert Mcp.login_args("sentry", []) == ["mcp", "login", "sentry"]
+    end
+
+    test "login_args emits --no-browser before the name" do
+      assert Mcp.login_args("sentry", no_browser: true) ==
+               ["mcp", "login", "--no-browser", "sentry"]
+    end
+
+    test "logout_args is subcommand plus name" do
+      assert Mcp.logout_args("sentry") == ["mcp", "logout", "sentry"]
     end
 
     test "add_args defaults to subcommand plus positionals" do
