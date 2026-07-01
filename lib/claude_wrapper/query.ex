@@ -69,6 +69,9 @@ defmodule ClaudeWrapper.Query do
           debug_file: String.t() | nil,
           betas: String.t() | nil,
           plugin_dirs: [String.t()],
+          plugin_urls: [String.t()],
+          name: String.t() | nil,
+          safe_mode: boolean(),
           setting_sources: String.t() | nil,
           tmux: boolean(),
           prompt_suggestions: boolean(),
@@ -101,6 +104,7 @@ defmodule ClaudeWrapper.Query do
     :debug_filter,
     :debug_file,
     :betas,
+    :name,
     :setting_sources,
     allowed_tools: [],
     disallowed_tools: [],
@@ -109,6 +113,8 @@ defmodule ClaudeWrapper.Query do
     tools: [],
     files: [],
     plugin_dirs: [],
+    plugin_urls: [],
+    safe_mode: false,
     continue_session: false,
     no_session_persistence: false,
     dangerously_skip_permissions: false,
@@ -304,6 +310,18 @@ defmodule ClaudeWrapper.Query do
   @spec plugin_dir(t(), String.t()) :: t()
   def plugin_dir(%__MODULE__{} = q, dir), do: %{q | plugin_dirs: q.plugin_dirs ++ [dir]}
 
+  @doc "Fetch a plugin `.zip` from a URL (`--plugin-url`). Repeatable."
+  @spec plugin_url(t(), String.t()) :: t()
+  def plugin_url(%__MODULE__{} = q, url), do: %{q | plugin_urls: q.plugin_urls ++ [url]}
+
+  @doc "Set a display name for the session (`--name`)."
+  @spec name(t(), String.t()) :: t()
+  def name(%__MODULE__{} = q, name), do: %{q | name: name}
+
+  @doc "Start with all customizations disabled (`--safe-mode`)."
+  @spec safe_mode(t()) :: t()
+  def safe_mode(%__MODULE__{} = q), do: %{q | safe_mode: true}
+
   @doc "Set settings source list."
   @spec setting_sources(t(), String.t()) :: t()
   def setting_sources(%__MODULE__{} = q, sources), do: %{q | setting_sources: sources}
@@ -389,6 +407,7 @@ defmodule ClaudeWrapper.Query do
   defp apply_opt({:debug_filter, v}, q), do: debug_filter(q, v)
   defp apply_opt({:debug_file, v}, q), do: debug_file(q, v)
   defp apply_opt({:betas, v}, q), do: betas(q, v)
+  defp apply_opt({:name, v}, q), do: name(q, v)
   defp apply_opt({:setting_sources, v}, q), do: setting_sources(q, v)
 
   # Boolean flags: only apply on true.
@@ -421,6 +440,8 @@ defmodule ClaudeWrapper.Query do
   defp apply_opt({:disable_slash_commands, _}, q), do: q
   defp apply_opt({:include_hook_events, true}, q), do: include_hook_events(q)
   defp apply_opt({:include_hook_events, _}, q), do: q
+  defp apply_opt({:safe_mode, true}, q), do: safe_mode(q)
+  defp apply_opt({:safe_mode, _}, q), do: q
 
   defp apply_opt({:exclude_dynamic_system_prompt_sections, true}, q),
     do: exclude_dynamic_system_prompt_sections(q)
@@ -447,6 +468,9 @@ defmodule ClaudeWrapper.Query do
 
   defp apply_opt({:plugin_dirs, dirs}, q) when is_list(dirs),
     do: Enum.reduce(dirs, q, &plugin_dir(&2, &1))
+
+  defp apply_opt({:plugin_urls, urls}, q) when is_list(urls),
+    do: Enum.reduce(urls, q, &plugin_url(&2, &1))
 
   defp apply_opt({:mcp_config, paths}, q) when is_list(paths),
     do: Enum.reduce(paths, q, &mcp_config(&2, &1))
@@ -640,6 +664,9 @@ defmodule ClaudeWrapper.Query do
     |> add_opt("--debug-file", q.debug_file)
     |> add_opt("--betas", q.betas)
     |> add_list("--plugin-dir", q.plugin_dirs)
+    |> add_list("--plugin-url", q.plugin_urls)
+    |> add_opt("--name", q.name)
+    |> add_bool("--safe-mode", q.safe_mode)
     |> add_opt("--setting-sources", q.setting_sources)
     |> add_bool("--tmux", q.tmux)
     |> add_bool("--prompt-suggestions", q.prompt_suggestions)

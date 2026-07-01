@@ -128,6 +128,31 @@ defmodule ClaudeWrapperTest do
       assert Enum.at(args, idx + 1) == "api,hooks"
     end
 
+    test "build_args emits --name with the value" do
+      args = Query.new("p") |> Query.name("my session") |> Query.build_args()
+
+      idx = Enum.find_index(args, &(&1 == "--name"))
+      assert idx != nil
+      assert Enum.at(args, idx + 1) == "my session"
+    end
+
+    test "build_args emits --safe-mode only when set" do
+      assert "--safe-mode" in (Query.new("p") |> Query.safe_mode() |> Query.build_args())
+      refute "--safe-mode" in (Query.new("p") |> Query.build_args())
+    end
+
+    test "build_args emits repeated --plugin-url for each url" do
+      args =
+        Query.new("p")
+        |> Query.plugin_url("https://example.com/a.zip")
+        |> Query.plugin_url("https://example.com/b.zip")
+        |> Query.build_args()
+
+      assert Enum.count(args, &(&1 == "--plugin-url")) == 2
+      assert "https://example.com/a.zip" in args
+      assert "https://example.com/b.zip" in args
+    end
+
     test "to_command_string" do
       config = Config.new()
 

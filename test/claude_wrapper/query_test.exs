@@ -28,6 +28,7 @@ defmodule ClaudeWrapper.QueryTest do
           debug_filter: "api,hooks",
           debug_file: "/tmp/dbg.log",
           betas: "feature-x",
+          name: "my session",
           setting_sources: "user,project"
         )
 
@@ -50,6 +51,7 @@ defmodule ClaudeWrapper.QueryTest do
       assert q.debug_filter == "api,hooks"
       assert q.debug_file == "/tmp/dbg.log"
       assert q.betas == "feature-x"
+      assert q.name == "my session"
       assert q.setting_sources == "user,project"
     end
   end
@@ -68,7 +70,8 @@ defmodule ClaudeWrapper.QueryTest do
           fork_session: true,
           strict_mcp_config: true,
           include_partial_messages: true,
-          tmux: true
+          tmux: true,
+          safe_mode: true
         )
 
       assert q.dangerously_skip_permissions
@@ -80,6 +83,7 @@ defmodule ClaudeWrapper.QueryTest do
       assert q.strict_mcp_config
       assert q.include_partial_messages
       assert q.tmux
+      assert q.safe_mode
     end
 
     test "false (or any non-true) leaves the flag unchanged" do
@@ -121,12 +125,14 @@ defmodule ClaudeWrapper.QueryTest do
         |> Query.apply_opts(
           tools: ["Read", "Edit"],
           files: ["doc.txt", "img.png"],
-          plugin_dirs: ["/p1", "/p2"]
+          plugin_dirs: ["/p1", "/p2"],
+          plugin_urls: ["https://x/a.zip", "https://x/b.zip"]
         )
 
       assert q.tools == ["Read", "Edit"]
       assert q.files == ["doc.txt", "img.png"]
       assert q.plugin_dirs == ["/p1", "/p2"]
+      assert q.plugin_urls == ["https://x/a.zip", "https://x/b.zip"]
     end
 
     test "add_dir accepts a list or a single binary" do
