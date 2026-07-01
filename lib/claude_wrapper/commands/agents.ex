@@ -1,6 +1,19 @@
 defmodule ClaudeWrapper.Commands.Agents do
   @moduledoc """
   `claude agents` command -- lists configured agents.
+
+  ## Usage
+
+      config = ClaudeWrapper.Config.new()
+
+      # Parsed list of agent names and models
+      {:ok, agents} = ClaudeWrapper.Commands.Agents.list(config)
+
+      # Raw CLI output
+      {:ok, output} = ClaudeWrapper.Commands.Agents.execute(config)
+
+      # Restrict which setting sources are loaded
+      {:ok, agents} = ClaudeWrapper.Commands.Agents.list(config, setting_sources: "user,project")
   """
 
   alias ClaudeWrapper.{Config, Error}
