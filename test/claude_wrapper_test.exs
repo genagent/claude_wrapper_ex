@@ -128,6 +128,17 @@ defmodule ClaudeWrapperTest do
       assert Enum.at(args, idx + 1) == "api,hooks"
     end
 
+    test "build_args emits --debug-file with the path" do
+      args =
+        Query.new("p")
+        |> Query.debug_file("/tmp/debug.log")
+        |> Query.build_args()
+
+      idx = Enum.find_index(args, &(&1 == "--debug-file"))
+      assert idx != nil
+      assert Enum.at(args, idx + 1) == "/tmp/debug.log"
+    end
+
     test "build_args emits --name with the value" do
       args = Query.new("p") |> Query.name("my session") |> Query.build_args()
 
