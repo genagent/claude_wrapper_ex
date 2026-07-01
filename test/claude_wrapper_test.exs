@@ -115,6 +115,19 @@ defmodule ClaudeWrapperTest do
       assert "--continue" in args
     end
 
+    test "build_args emits --debug with the filter value (not --debug-filter)" do
+      args =
+        Query.new("p")
+        |> Query.debug_filter("api,hooks")
+        |> Query.build_args()
+
+      # Regression for #156: the CLI flag is `--debug [filter]`, not `--debug-filter`.
+      refute "--debug-filter" in args
+      idx = Enum.find_index(args, &(&1 == "--debug"))
+      assert idx != nil
+      assert Enum.at(args, idx + 1) == "api,hooks"
+    end
+
     test "to_command_string" do
       config = Config.new()
 
