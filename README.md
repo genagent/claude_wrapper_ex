@@ -37,6 +37,29 @@ end
 Requires the `claude` CLI to be installed and on your `PATH` (or set
 `CLAUDE_CLI` to point at it).
 
+### Bundled binary (opt-in)
+
+`claude_wrapper` can also resolve, install, and version-pin a `claude`
+binary under its own `priv/bin/`, so an app can depend on
+`claude_wrapper` and get a known CLI version without a separate PATH
+install. This is opt-in; the PATH/`CLAUDE_CLI` default above is
+unchanged for everyone else.
+
+```elixir
+config = ClaudeWrapper.Config.new(binary: :bundled)
+```
+
+`Config.new/1` resolution is pure -- it does not touch the network.
+Install the pinned binary explicitly:
+
+```bash
+mix claude_wrapper.install    # install/update the pinned bundled binary
+mix claude_wrapper.uninstall  # remove it
+mix claude_wrapper.path       # print its path and install state
+```
+
+See `ClaudeWrapper.Bundled` for details.
+
 ## DuplexSession (long-lived chat-style sessions)
 
 Holds one `claude` subprocess open across many turns. Subscribers
