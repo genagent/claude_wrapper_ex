@@ -6,7 +6,7 @@ defmodule ClaudeWrapper.IntegrationTest do
   """
   use ExUnit.Case, async: false
 
-  alias ClaudeWrapper.{Config, DuplexSession, Query, Session}
+  alias ClaudeWrapper.{Config, DuplexSession, Query, Session, SessionServer}
 
   @moduletag :integration
 
@@ -34,6 +34,23 @@ defmodule ClaudeWrapper.IntegrationTest do
       {:error, _} ->
         Process.sleep(750)
         send_resilient(session, prompt, opts, attempts - 1)
+    end
+  end
+
+  defp send_resilient_server(pid, prompt, opts, attempts \\ 4)
+
+  defp send_resilient_server(pid, prompt, opts, 1) do
+    SessionServer.send_message(pid, prompt, opts)
+  end
+
+  defp send_resilient_server(pid, prompt, opts, attempts) do
+    case SessionServer.send_message(pid, prompt, opts) do
+      {:ok, _result} = ok ->
+        ok
+
+      {:error, _} ->
+        Process.sleep(750)
+        send_resilient_server(pid, prompt, opts, attempts - 1)
     end
   end
 
@@ -124,6 +141,32 @@ defmodule ClaudeWrapper.IntegrationTest do
       assert is_binary(result2.result)
       assert Session.turn_count(session) == 2
       assert Session.total_cost(session) > 0.0
+    end
+  end
+
+  describe "SessionServer" do
+    test "live round-trip: send_message mutates server state across turns", %{config: config} do
+      {:ok, pid} = SessionServer.start_link(config: config, query_opts: [max_turns: 1])
+
+      assert {:ok, result1} =
+               send_resilient_server(pid, "Respond with exactly: Got it, 42.",
+                 dangerously_skip_permissions: true
+               )
+
+      assert is_binary(result1.result)
+      assert SessionServer.turn_count(pid) == 1
+      assert SessionServer.session_id(pid) != nil
+      assert SessionServer.last_result(pid) == result1
+
+      assert {:ok, result2} =
+               send_resilient_server(pid, "What number was in your last response?",
+                 dangerously_skip_permissions: true
+               )
+
+      assert is_binary(result2.result)
+      assert SessionServer.turn_count(pid) == 2
+      assert SessionServer.total_cost(pid) > 0.0
+      assert SessionServer.history(pid) == [result1, result2]
     end
   end
 
