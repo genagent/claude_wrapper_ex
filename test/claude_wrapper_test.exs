@@ -1099,6 +1099,41 @@ defmodule ClaudeWrapperTest do
     end
   end
 
+  describe "Commands.Ultrareview" do
+    alias ClaudeWrapper.Commands.Ultrareview
+
+    test "module is loaded and has expected functions" do
+      Code.ensure_loaded!(Ultrareview)
+      funcs = Ultrareview.__info__(:functions)
+
+      assert {:execute, 1} in funcs
+      assert {:execute, 2} in funcs
+      assert {:args, 1} in funcs
+    end
+
+    test "args defaults to the bare subcommand" do
+      assert Ultrareview.args([]) == ["ultrareview"]
+    end
+
+    test "args emits --json, --timeout, then the target" do
+      assert Ultrareview.args(target: "123", json: true, timeout: 45) ==
+               ["ultrareview", "--json", "--timeout", "45", "123"]
+    end
+
+    test "args emits the target as a positional only" do
+      assert Ultrareview.args(target: "main") == ["ultrareview", "main"]
+    end
+
+    test "args emits --json only" do
+      assert Ultrareview.args(json: true) == ["ultrareview", "--json"]
+    end
+
+    test "args omits unset flags" do
+      refute "--json" in Ultrareview.args(timeout: 10)
+      refute "--timeout" in Ultrareview.args(json: true)
+    end
+  end
+
   describe "Commands.Auth" do
     alias ClaudeWrapper.Commands.Auth
 
