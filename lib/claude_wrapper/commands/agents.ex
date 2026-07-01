@@ -39,7 +39,7 @@ defmodule ClaudeWrapper.Commands.Agents do
   """
   @spec list(Config.t(), keyword()) :: {:ok, [agent()]} | {:error, term()}
   def list(%Config{} = config, opts \\ []) do
-    args = Config.base_args(config) ++ ["agents"] ++ build_args(opts)
+    args = Config.base_args(config) ++ list_args(opts)
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, parse_agents(output)}
@@ -52,7 +52,7 @@ defmodule ClaudeWrapper.Commands.Agents do
   """
   @spec execute(Config.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def execute(%Config{} = config, opts \\ []) do
-    args = Config.base_args(config) ++ ["agents"] ++ build_args(opts)
+    args = Config.base_args(config) ++ list_args(opts)
 
     case System.cmd(config.binary, args, Config.cmd_opts(config)) do
       {output, 0} -> {:ok, String.trim(output)}
@@ -60,10 +60,12 @@ defmodule ClaudeWrapper.Commands.Agents do
     end
   end
 
-  defp build_args(opts) do
+  @doc false
+  @spec list_args(keyword()) :: [String.t()]
+  def list_args(opts) do
     case Keyword.get(opts, :setting_sources) do
-      nil -> []
-      sources -> ["--setting-sources", sources]
+      nil -> ["agents"]
+      sources -> ["agents", "--setting-sources", sources]
     end
   end
 
