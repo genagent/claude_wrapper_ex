@@ -507,7 +507,7 @@ defmodule ClaudeWrapper.IntegrationTest do
   end
 
   describe "command smokes (live, non-mutating)" do
-    alias ClaudeWrapper.Commands.{Mcp, Plugin}
+    alias ClaudeWrapper.Commands.{Doctor, Mcp, Plugin, Version}
 
     test "mcp list", %{config: config} do
       assert {:ok, output} = Mcp.list(config)
@@ -521,6 +521,14 @@ defmodule ClaudeWrapper.IntegrationTest do
     test "auth status" do
       assert {:ok, status} = ClaudeWrapper.auth_status()
       assert is_map(status)
+    end
+
+    test "doctor", %{config: config} do
+      assert {:ok, _output} = Doctor.execute(config)
+    end
+
+    test "version", %{config: config} do
+      assert {:ok, _version_info} = Version.execute(config)
     end
   end
 end
