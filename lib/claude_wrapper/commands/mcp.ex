@@ -2,7 +2,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   @moduledoc """
   MCP (Model Context Protocol) server management commands.
 
-  Wraps `claude mcp add|add-json|add-from-claude-desktop|remove|list|get|serve|reset-project-choices`.
+  Wraps `claude mcp add|add-json|add-from-claude-desktop|remove|list|get|serve|login|logout|reset-project-choices`.
 
   ## Usage
 
@@ -257,6 +257,51 @@ defmodule ClaudeWrapper.Commands.Mcp do
 
     ["mcp", "serve"] ++ flags
   end
+
+  @doc """
+  Authenticate with an MCP server (HTTP, SSE, or claude.ai connector).
+
+  Wraps `claude mcp login <name>`.
+
+  ## Options
+
+    * `:no_browser` - Print the authorization URL instead of opening a browser
+      (`--no-browser`, boolean), for SSH/headless sessions.
+  """
+  @spec login(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def login(%Config{} = config, name, opts \\ []) do
+    args = Config.base_args(config) ++ login_args(name, opts)
+
+    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, code} -> {:error, Error.command_failed(code, output)}
+    end
+  end
+
+  @doc false
+  @spec login_args(String.t(), keyword()) :: [String.t()]
+  def login_args(name, opts) do
+    ["mcp", "login"] ++ bool_flag(opts[:no_browser], "--no-browser") ++ [name]
+  end
+
+  @doc """
+  Clear stored OAuth credentials for an MCP server.
+
+  Wraps `claude mcp logout <name>`.
+  """
+  @spec logout(Config.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def logout(%Config{} = config, name) do
+    args = Config.base_args(config) ++ logout_args(name)
+
+    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, code} -> {:error, Error.command_failed(code, output)}
+    end
+  end
+
+  @doc false
+  @spec logout_args(String.t()) :: [String.t()]
+  def logout_args(name), do: ["mcp", "logout", name]
 
   @doc """
   Reset project choices for MCP servers.
