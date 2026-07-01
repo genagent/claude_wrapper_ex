@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.10.0...v0.11.0) (2026-07-01)
+
+
+### Features
+
+* **bundled:** opt-in bundled-binary install (cli_path: :bundled) ([#153](https://github.com/genagent/claude_wrapper_ex/issues/153)) ([403134f](https://github.com/genagent/claude_wrapper_ex/commit/403134fc65c9fce02815a67a962788f1b8c5b951))
+* **mcp:** wrap mcp login and mcp logout ([#163](https://github.com/genagent/claude_wrapper_ex/issues/163)) ([02d5284](https://github.com/genagent/claude_wrapper_ex/commit/02d52849692886e60ada6f4c9aa77623fe9ddbf9)), closes [#158](https://github.com/genagent/claude_wrapper_ex/issues/158)
+* **query:** add --name, --plugin-url, --safe-mode flags ([#162](https://github.com/genagent/claude_wrapper_ex/issues/162)) ([62c7b83](https://github.com/genagent/claude_wrapper_ex/commit/62c7b83c06dacd3358404a6b8398bdbc4c5e7ff0)), closes [#157](https://github.com/genagent/claude_wrapper_ex/issues/157)
+* wrap the ultrareview command ([#164](https://github.com/genagent/claude_wrapper_ex/issues/164)) ([02f2be9](https://github.com/genagent/claude_wrapper_ex/commit/02f2be9ea69dce85efca72fc19d2ae7a27096279)), closes [#159](https://github.com/genagent/claude_wrapper_ex/issues/159)
+
+
+### Bug Fixes
+
+* emit --debug instead of invalid --debug-filter flag ([#160](https://github.com/genagent/claude_wrapper_ex/issues/160)) ([a836ecd](https://github.com/genagent/claude_wrapper_ex/commit/a836ecde03a5dd1bb665b7c5b95028191b7b87c7)), closes [#156](https://github.com/genagent/claude_wrapper_ex/issues/156)
+
 ## [0.10.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.9.0...v0.10.0) (2026-06-23)
 
 
