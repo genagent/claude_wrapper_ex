@@ -1227,6 +1227,22 @@ defmodule ClaudeWrapperTest do
       assert {:list, 2} in Agents.__info__(:functions)
       assert {:execute, 1} in Agents.__info__(:functions)
       assert {:execute, 2} in Agents.__info__(:functions)
+
+      # @doc false builder is public for arg-composition testing.
+      assert {:list_args, 1} in Agents.__info__(:functions)
+    end
+
+    test "list_args defaults to just the subcommand" do
+      assert Agents.list_args([]) == ["agents"]
+    end
+
+    test "list_args emits --setting-sources with the value" do
+      assert Agents.list_args(setting_sources: "user,project") ==
+               ["agents", "--setting-sources", "user,project"]
+    end
+
+    test "list_args omits --setting-sources when unset" do
+      refute "--setting-sources" in Agents.list_args([])
     end
 
     test "parse_agents extracts agent names and models" do
