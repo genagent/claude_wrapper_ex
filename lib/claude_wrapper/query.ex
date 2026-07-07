@@ -624,6 +624,33 @@ defmodule ClaudeWrapper.Query do
 
   # --- Arg building ---
 
+  @doc """
+  The spawn-time flag subset of a query, for a long-lived
+  `ClaudeWrapper.DuplexSession`.
+
+  Reuses `build_args/1` (the single source of flag emission, so the
+  duplex and one-shot paths cannot drift), then removes the flags a
+  duplex session owns itself: the transport formats
+  (`--output-format` / `--input-format` / `--include-partial-messages`,
+  which the session fixes to its stream-json protocol) and the leading
+  `--print <prompt>` pair (in duplex the prompt is a per-turn
+  stream-json message, not an argv). Everything else -- model, system
+  prompt, permission mode, tool allow/deny lists, mcp config, effort,
+  turn/budget caps, session continuity, and so on -- is spawn-safe and
+  passes through.
+  """
+  @spec spawn_args(t()) :: [String.t()]
+  def spawn_args(%__MODULE__{} = q) do
+    %{q | output_format: nil, input_format: nil, include_partial_messages: false}
+    |> build_args()
+    |> drop_print_flag()
+  end
+
+  # build_args/1 always emits `--print <prompt>` first (via add_flag),
+  # so the prompt is guaranteed to be the leading pair.
+  defp drop_print_flag(["--print", _prompt | rest]), do: rest
+  defp drop_print_flag(args), do: args
+
   @doc false
   @spec build_args(t()) :: [String.t()]
   def build_args(%__MODULE__{} = q) do

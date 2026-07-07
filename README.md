@@ -90,6 +90,28 @@ ClaudeWrapper.DuplexSession.interrupt(pid)
 ClaudeWrapper.DuplexSession.close(pid)
 ```
 
+### Configuring the session with a `Query`
+
+Pass a `%ClaudeWrapper.Query{}` to configure the session's spawn-time
+knobs (model, system prompt, permission mode, tool allow/deny lists,
+mcp config, effort, turn/budget caps, session continuity, ...) with the
+same setters and `apply_opts/2` as the one-shot path. The query's
+prompt and transport-format flags are ignored: the session owns its
+stream-json transport and takes prompts per turn via `send/3`.
+
+```elixir
+query =
+  ClaudeWrapper.Query.new("")
+  |> ClaudeWrapper.Query.model("sonnet")
+  |> ClaudeWrapper.Query.allowed_tool("Read")
+  |> ClaudeWrapper.Query.max_turns(20)
+
+{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config, query: query)
+```
+
+`:extra_args` still works as an escape hatch for flags not yet on
+`Query`, and is applied after the query's flags.
+
 ### Permission callback
 
 When the CLI wants to run a tool, it routes the prompt back through
