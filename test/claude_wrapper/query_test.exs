@@ -1,6 +1,7 @@
 defmodule ClaudeWrapper.QueryTest do
   use ExUnit.Case, async: true
 
+  alias ClaudeWrapper.Error
   alias ClaudeWrapper.Query
 
   # True when `sub` appears as a contiguous run inside `list` (a flag
@@ -295,6 +296,109 @@ defmodule ClaudeWrapper.QueryTest do
       assert q.agents_json == "{}"
       assert q.fork_session
       assert q.strict_mcp_config
+    end
+  end
+
+  describe "handle_nonzero_exit/2 -- rail-stop caps" do
+    test "surfaces :max_turns_exceeded with parsed cap and run figures" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_turns",
+          "is_error" => true,
+          "result" => "Reached maximum number of turns (3)",
+          "session_id" => "sess-abc",
+          "num_turns" => 3,
+          "total_cost_usd" => 0.0512,
+          "duration_ms" => 1234
+        })
+
+      assert {:error, %Error{kind: :max_turns_exceeded} = error} =
+               Query.handle_nonzero_exit(1, stdout)
+
+      assert error.exit_code == 1
+      assert error.stdout == stdout
+
+      assert error.reason == %{
+               cap: 3,
+               cost_usd: 0.0512,
+               num_turns: 3,
+               session_id: "sess-abc"
+             }
+    end
+
+    test "surfaces :max_budget_exceeded with parsed cap and run figures" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_budget_usd",
+          "is_error" => true,
+          "result" => "Reached maximum budget ($5.00)",
+          "session_id" => "sess-def",
+          "num_turns" => 7,
+          "total_cost_usd" => 5.12,
+          "duration_ms" => 9999
+        })
+
+      assert {:error, %Error{kind: :max_budget_exceeded} = error} =
+               Query.handle_nonzero_exit(1, stdout)
+
+      assert error.reason == %{
+               cap: 5.0,
+               cost_usd: 5.12,
+               num_turns: 7,
+               session_id: "sess-def"
+             }
+    end
+
+    test "tolerates a missing cap in the result message" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_turns",
+          "is_error" => true,
+          "result" => "stopped",
+          "num_turns" => 2
+        })
+
+      assert {:error, %Error{kind: :max_turns_exceeded, reason: reason}} =
+               Query.handle_nonzero_exit(1, stdout)
+
+      assert reason.cap == nil
+      assert reason.cost_usd == nil
+      assert reason.num_turns == 2
+      assert reason.session_id == nil
+    end
+
+    test ":max_budget_exceeded is distinct from the client-side :budget_exceeded" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_budget_usd",
+          "result" => "Reached maximum budget ($1)"
+        })
+
+      assert {:error, %Error{kind: :max_budget_exceeded, reason: %{cap: 1.0}}} =
+               Query.handle_nonzero_exit(1, stdout)
+    end
+
+    test "a non-rail-stop error result keeps its is_error flag and returns :ok" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "success",
+          "is_error" => true,
+          "result" => "some other failure",
+          "num_turns" => 1
+        })
+
+      assert {:ok, %ClaudeWrapper.Result{is_error: true}} =
+               Query.handle_nonzero_exit(1, stdout)
+    end
+
+    test "non-JSON output falls back to a command failure" do
+      assert {:error, %Error{kind: kind}} = Query.handle_nonzero_exit(1, "boom: not json")
+      assert kind in [:command_failed, :auth]
     end
   end
 end
