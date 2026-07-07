@@ -175,19 +175,19 @@ defmodule ClaudeWrapper.Runner.ForcolaClaudeTest do
 
   # Watch for the marker to appear while a run is in flight; returns the
   # pids seen (or [] if never observed within the window).
-  defp watch(marker) do
-    Task.async(fn ->
-      Enum.reduce_while(1..60, [], fn _, _ ->
-        case find_pids(marker) do
-          [] ->
-            Process.sleep(80)
-            {:cont, []}
+  defp watch(marker), do: Task.async(fn -> poll_until_seen(marker, 60) end)
 
-          pids ->
-            {:halt, pids}
-        end
-      end)
-    end)
+  defp poll_until_seen(_marker, 0), do: []
+
+  defp poll_until_seen(marker, tries) do
+    case find_pids(marker) do
+      [] ->
+        Process.sleep(80)
+        poll_until_seen(marker, tries - 1)
+
+      pids ->
+        pids
+    end
   end
 
   # Accumulate the union of pids seen from a {a, b} sampler over the run.
