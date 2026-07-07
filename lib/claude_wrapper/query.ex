@@ -23,7 +23,7 @@ defmodule ClaudeWrapper.Query do
       |> Stream.run()
   """
 
-  alias ClaudeWrapper.{Auth, Command, Config, Error, Result, StreamEvent, Telemetry}
+  alias ClaudeWrapper.{Auth, Config, Error, Result, Runner, StreamEvent, Telemetry}
 
   @type permission_mode ::
           :default | :accept_edits | :bypass_permissions | :dont_ask | :plan | :auto
@@ -571,46 +571,19 @@ defmodule ClaudeWrapper.Query do
     base = Config.base_args(config)
     base = if "--verbose" in base, do: base, else: ["--verbose" | base]
     args = base ++ build_args(query)
-    shell_args = Command.shell_cmd_args(config.binary, args)
 
-    port_opts =
-      [:binary, :exit_status, {:line, 1_048_576}, {:args, shell_args}] ++
-        port_env_opts(config) ++
-        port_cd_opts(config)
-
-    Stream.resource(
-      fn ->
-        Port.open({:spawn_executable, "/bin/sh"}, port_opts)
-      end,
-      fn port ->
-        receive do
-          {^port, {:data, {:eol, line}}} ->
-            case StreamEvent.parse(line) do
-              {:ok, event} -> {[event], port}
-              {:error, _} -> {[], port}
-            end
-
-          {^port, {:data, {:noeol, _partial}}} ->
-            # Line exceeded buffer -- skip for now
-            {[], port}
-
-          {^port, {:exit_status, _code}} ->
-            {:halt, port}
-        after
-          # Safety timeout for hung processes
-          300_000 -> {:halt, port}
-        end
-      end,
-      fn port ->
-        send(port, {self(), :close})
-
-        receive do
-          {^port, :closed} -> :ok
-        after
-          5_000 -> :ok
-        end
+    config.binary
+    |> Runner.impl().stream_lines(args, stream_opts(config), nil)
+    |> Stream.flat_map(fn line ->
+      case StreamEvent.parse(line) do
+        {:ok, event} -> [event]
+        {:error, _} -> []
       end
-    )
+    end)
+  end
+
+  defp stream_opts(%Config{working_dir: dir, env: env}) do
+    [cd: dir, env: env]
   end
 
   @doc """
@@ -744,28 +717,16 @@ defmodule ClaudeWrapper.Query do
     end)
   end
 
-  defp run_cmd(binary, args, opts, nil) do
-    case System.cmd(binary, args, opts) do
-      {stdout, 0} -> {:ok, stdout}
-      {stdout, code} -> {:error, Error.command_failed(code, stdout)}
-    end
-  rescue
-    e in ErlangError -> {:error, Error.io(e)}
-  end
-
+  # Execute through the configured runner and normalize to this module's
+  # {:ok, stdout} | {:error, %Error{}} contract. A non-zero exit becomes
+  # :command_failed (do_execute re-inspects it for a JSON rail-stop
+  # result); a timeout becomes :timeout; anything else is :io.
   defp run_cmd(binary, args, opts, timeout) do
-    task = Task.async(fn -> System.cmd(binary, args, opts) end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task) do
+    case Runner.impl().run(binary, args, opts, timeout) do
       {:ok, {stdout, 0}} -> {:ok, stdout}
       {:ok, {stdout, code}} -> {:error, Error.command_failed(code, stdout)}
-      nil -> {:error, Error.timeout(timeout)}
+      {:error, :timeout} -> {:error, Error.timeout(timeout)}
+      {:error, reason} -> {:error, Error.io(reason)}
     end
   end
-
-  defp port_env_opts(%Config{env: []}), do: []
-  defp port_env_opts(%Config{env: env}), do: [{:env, env}]
-
-  defp port_cd_opts(%Config{working_dir: nil}), do: []
-  defp port_cd_opts(%Config{working_dir: dir}), do: [{:cd, String.to_charlist(dir)}]
 end
