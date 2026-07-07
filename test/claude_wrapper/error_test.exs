@@ -91,6 +91,16 @@ defmodule ClaudeWrapper.ErrorTest do
 
     test "derives a default for :max_turns_exceeded" do
       assert Error.message(Error.new(:max_turns_exceeded)) =~ "maximum number of turns"
+
+      assert Error.message(Error.new(:max_turns_exceeded, reason: %{cap: 3})) =~
+               "--max-turns cap of 3"
+    end
+
+    test "derives a default for :max_budget_exceeded" do
+      assert Error.message(Error.new(:max_budget_exceeded)) =~ "maximum budget"
+
+      assert Error.message(Error.new(:max_budget_exceeded, reason: %{cap: 5.0})) =~
+               "--max-budget-usd cap of $5.00"
     end
 
     test "derives a default for :not_found with and without a reason" do

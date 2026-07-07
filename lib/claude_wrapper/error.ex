@@ -28,7 +28,17 @@ defmodule ClaudeWrapper.Error do
     * `:json` -- the CLI output could not be decoded as JSON
       (`:reason`, optional `:stdout`)
     * `:max_turns_exceeded` -- the CLI stopped at its `--max-turns`
-      limit
+      limit. `:reason` is a `%{cap:, cost_usd:, num_turns:,
+      session_id:}` map (any field may be `nil`); `:cap` is the
+      configured turn limit and `:session_id` can resume the run
+    * `:max_budget_exceeded` -- the CLI stopped at its
+      `--max-budget-usd` spend cap (subtype `error_max_budget_usd`).
+      Distinct from `:budget_exceeded`, which is the client-side
+      `ClaudeWrapper.Budget` tracker. `:reason` is a `%{cap:,
+      cost_usd:, num_turns:, session_id:}` map (any field may be
+      `nil`); `:cap` is the reported cap, not the actual spend, since
+      claude checks the budget post-hoc and a run can overspend before
+      tripping
     * `:version_mismatch` -- the CLI is older than a required minimum
       (`:reason` is `%{found:, minimum:}`)
     * `:invalid_version` -- a version string could not be parsed
@@ -72,6 +82,7 @@ defmodule ClaudeWrapper.Error do
           | :timeout
           | :json
           | :max_turns_exceeded
+          | :max_budget_exceeded
           | :version_mismatch
           | :invalid_version
           | :budget_exceeded
@@ -165,8 +176,18 @@ defmodule ClaudeWrapper.Error do
   defp default_message(%{kind: :json}),
     do: "could not decode claude JSON output"
 
+  defp default_message(%{kind: :max_turns_exceeded, reason: %{cap: cap}}) when not is_nil(cap),
+    do: "claude hit the --max-turns cap of #{cap}"
+
   defp default_message(%{kind: :max_turns_exceeded}),
     do: "claude reached its maximum number of turns"
+
+  defp default_message(%{kind: :max_budget_exceeded, reason: %{cap: cap}}) when not is_nil(cap),
+    do:
+      "claude hit the --max-budget-usd cap of $#{:erlang.float_to_binary(cap * 1.0, decimals: 2)}"
+
+  defp default_message(%{kind: :max_budget_exceeded}),
+    do: "claude reached its maximum budget"
 
   defp default_message(%{kind: :version_mismatch, reason: %{found: found, minimum: min}}),
     do: "claude #{found} is older than the required minimum #{min}"

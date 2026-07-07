@@ -399,6 +399,23 @@ case ClaudeWrapper.query("...", max_turns: 1) do
 end
 ```
 
+The CLI's own rail-stop caps are surfaced as typed, recoverable errors
+distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`)
+and `:max_budget_exceeded` (`--max-budget-usd`, separate from the
+client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry a
+`:reason` map of `%{cap:, cost_usd:, num_turns:, session_id:}` so a
+capped run can be resumed:
+
+```elixir
+case ClaudeWrapper.query("...", max_budget_usd: 5.0) do
+  {:ok, result} ->
+    result
+
+  {:error, %ClaudeWrapper.Error{kind: :max_budget_exceeded, reason: %{session_id: sid}}} ->
+    {:resume, sid}
+end
+```
+
 ## Modules
 
 **Long-lived sessions (the headline feature)**
