@@ -1,7 +1,27 @@
+defmodule ClaudeWrapper.DuplexSessionTest.ArgsCaptureAdapter do
+  @moduledoc false
+  # Captures the spawn args DuplexSession assembles, without launching a
+  # process. Sends them to the configured `:test_pid`.
+  @behaviour ClaudeWrapper.DuplexSession.Adapter
+
+  @impl true
+  def open(opts) do
+    send(Keyword.fetch!(opts, :test_pid), {:captured_args, Keyword.fetch!(opts, :args)})
+    {:ok, make_ref()}
+  end
+
+  @impl true
+  def command(_handle, _iodata), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+end
+
 defmodule ClaudeWrapper.DuplexSessionTest do
   use ExUnit.Case, async: true
 
-  alias ClaudeWrapper.{Config, DuplexSession}
+  alias ClaudeWrapper.{Config, DuplexSession, Query}
+  alias ClaudeWrapper.DuplexSessionTest.ArgsCaptureAdapter
 
   # Helper: spawn a DuplexSession against `cat` so we can inject NDJSON
   # bytes via Port.command/2 and observe how the GenServer demuxes them.
@@ -734,5 +754,71 @@ defmodule ClaudeWrapper.DuplexSessionTest do
         Process.sleep(10)
         do_wait_until(fun, deadline)
     end
+  end
+
+  describe "start_link/1 with a :query" do
+    test "folds the query's spawn knobs into the args and keeps the transport flags" do
+      query =
+        Query.new("ignored prompt")
+        |> Query.model("sonnet")
+        |> Query.max_turns(3)
+        |> Query.allowed_tool("Read")
+
+      args = capture_args(query: query)
+
+      # Query knobs are present.
+      assert ["--model", "sonnet"] |> contiguous?(args)
+      assert ["--max-turns", "3"] |> contiguous?(args)
+      assert ["--allowed-tools", "Read"] |> contiguous?(args)
+
+      # The prompt is not spawned as an argv (it is a per-turn message).
+      refute "ignored prompt" in args
+
+      # The fixed duplex transport flags are still owned by the session.
+      assert ["--input-format", "stream-json"] |> contiguous?(args)
+      assert ["--output-format", "stream-json"] |> contiguous?(args)
+      assert "--include-partial-messages" in args
+    end
+
+    test "extra_args are appended after the query args" do
+      args =
+        capture_args(
+          query: Query.new("") |> Query.model("sonnet"),
+          extra_args: ["--permission-mode", "plan"]
+        )
+
+      model_idx = Enum.find_index(args, &(&1 == "sonnet"))
+      perm_idx = Enum.find_index(args, &(&1 == "plan"))
+
+      assert model_idx < perm_idx
+    end
+
+    test "without a :query the args are unchanged from the plain transport set" do
+      args = capture_args([])
+
+      assert ["--input-format", "stream-json"] |> contiguous?(args)
+      refute "--model" in args
+    end
+  end
+
+  defp capture_args(opts) do
+    config = Config.new(binary: System.find_executable("cat"))
+
+    {:ok, _pid} =
+      DuplexSession.start_link(
+        [config: config, adapter: ArgsCaptureAdapter, adapter_opts: [test_pid: self()]] ++ opts
+      )
+
+    assert_receive {:captured_args, args}
+    args
+  end
+
+  # True when `sub` appears as a contiguous run inside `list`.
+  defp contiguous?(sub, list) do
+    len = length(sub)
+
+    list
+    |> Enum.chunk_every(len, 1, :discard)
+    |> Enum.any?(&(&1 == sub))
   end
 end

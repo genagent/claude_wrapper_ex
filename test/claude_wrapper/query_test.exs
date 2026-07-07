@@ -1,7 +1,18 @@
 defmodule ClaudeWrapper.QueryTest do
   use ExUnit.Case, async: true
 
+  alias ClaudeWrapper.Error
   alias ClaudeWrapper.Query
+
+  # True when `sub` appears as a contiguous run inside `list` (a flag
+  # immediately followed by its value(s)).
+  defp subsequence?(sub, list) do
+    len = length(sub)
+
+    list
+    |> Enum.chunk_every(len, 1, :discard)
+    |> Enum.any?(&(&1 == sub))
+  end
 
   describe "apply_opts/2 -- scalar opts" do
     test "applies all scalar string/value opts" do
@@ -184,6 +195,72 @@ defmodule ClaudeWrapper.QueryTest do
     end
   end
 
+  describe "spawn_args/1" do
+    test "drops the prompt and the transport-format flags" do
+      args =
+        "hello there"
+        |> Query.new()
+        |> Query.apply_opts(
+          output_format: :stream_json,
+          input_format: :stream_json,
+          include_partial_messages: true
+        )
+        |> Query.spawn_args()
+
+      refute "hello there" in args
+      refute "--print" in args
+      refute "--output-format" in args
+      refute "--input-format" in args
+      refute "--include-partial-messages" in args
+    end
+
+    test "passes spawn-time knobs through" do
+      args =
+        ""
+        |> Query.new()
+        |> Query.apply_opts(
+          model: "sonnet",
+          system_prompt: "be terse",
+          permission_mode: :plan,
+          allowed_tools: ["Read", "Bash"],
+          disallowed_tools: ["WebFetch"],
+          mcp_config: ["/mcp.json"],
+          add_dir: ["/extra"],
+          effort: :high,
+          max_turns: 20,
+          max_budget_usd: 5.0,
+          json_schema: ~s({"type":"object"}),
+          session_id: "sess-1",
+          resume: "prior",
+          fallback_model: "haiku",
+          strict_mcp_config: true,
+          no_session_persistence: true
+        )
+        |> Query.spawn_args()
+
+      assert ["--model", "sonnet"] |> subsequence?(args)
+      assert ["--system-prompt", "be terse"] |> subsequence?(args)
+      assert ["--permission-mode", "plan"] |> subsequence?(args)
+      assert ["--allowed-tools", "Read", "Bash"] |> subsequence?(args)
+      assert ["--disallowed-tools", "WebFetch"] |> subsequence?(args)
+      assert ["--mcp-config", "/mcp.json"] |> subsequence?(args)
+      assert ["--add-dir", "/extra"] |> subsequence?(args)
+      assert ["--effort", "high"] |> subsequence?(args)
+      assert ["--max-turns", "20"] |> subsequence?(args)
+      assert ["--max-budget-usd", "5.0"] |> subsequence?(args)
+      assert ["--json-schema", ~s({"type":"object"})] |> subsequence?(args)
+      assert ["--session-id", "sess-1"] |> subsequence?(args)
+      assert ["--resume", "prior"] |> subsequence?(args)
+      assert ["--fallback-model", "haiku"] |> subsequence?(args)
+      assert "--strict-mcp-config" in args
+      assert "--no-session-persistence" in args
+    end
+
+    test "an empty query yields no flags" do
+      assert Query.spawn_args(Query.new("")) == []
+    end
+  end
+
   describe "regression coverage for #40" do
     test "all opts the issue called out as missing now apply" do
       missing = [
@@ -219,6 +296,109 @@ defmodule ClaudeWrapper.QueryTest do
       assert q.agents_json == "{}"
       assert q.fork_session
       assert q.strict_mcp_config
+    end
+  end
+
+  describe "handle_nonzero_exit/2 -- rail-stop caps" do
+    test "surfaces :max_turns_exceeded with parsed cap and run figures" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_turns",
+          "is_error" => true,
+          "result" => "Reached maximum number of turns (3)",
+          "session_id" => "sess-abc",
+          "num_turns" => 3,
+          "total_cost_usd" => 0.0512,
+          "duration_ms" => 1234
+        })
+
+      assert {:error, %Error{kind: :max_turns_exceeded} = error} =
+               Query.handle_nonzero_exit(1, stdout)
+
+      assert error.exit_code == 1
+      assert error.stdout == stdout
+
+      assert error.reason == %{
+               cap: 3,
+               cost_usd: 0.0512,
+               num_turns: 3,
+               session_id: "sess-abc"
+             }
+    end
+
+    test "surfaces :max_budget_exceeded with parsed cap and run figures" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_budget_usd",
+          "is_error" => true,
+          "result" => "Reached maximum budget ($5.00)",
+          "session_id" => "sess-def",
+          "num_turns" => 7,
+          "total_cost_usd" => 5.12,
+          "duration_ms" => 9999
+        })
+
+      assert {:error, %Error{kind: :max_budget_exceeded} = error} =
+               Query.handle_nonzero_exit(1, stdout)
+
+      assert error.reason == %{
+               cap: 5.0,
+               cost_usd: 5.12,
+               num_turns: 7,
+               session_id: "sess-def"
+             }
+    end
+
+    test "tolerates a missing cap in the result message" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_turns",
+          "is_error" => true,
+          "result" => "stopped",
+          "num_turns" => 2
+        })
+
+      assert {:error, %Error{kind: :max_turns_exceeded, reason: reason}} =
+               Query.handle_nonzero_exit(1, stdout)
+
+      assert reason.cap == nil
+      assert reason.cost_usd == nil
+      assert reason.num_turns == 2
+      assert reason.session_id == nil
+    end
+
+    test ":max_budget_exceeded is distinct from the client-side :budget_exceeded" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "error_max_budget_usd",
+          "result" => "Reached maximum budget ($1)"
+        })
+
+      assert {:error, %Error{kind: :max_budget_exceeded, reason: %{cap: 1.0}}} =
+               Query.handle_nonzero_exit(1, stdout)
+    end
+
+    test "a non-rail-stop error result keeps its is_error flag and returns :ok" do
+      stdout =
+        Jason.encode!(%{
+          "type" => "result",
+          "subtype" => "success",
+          "is_error" => true,
+          "result" => "some other failure",
+          "num_turns" => 1
+        })
+
+      assert {:ok, %ClaudeWrapper.Result{is_error: true}} =
+               Query.handle_nonzero_exit(1, stdout)
+    end
+
+    test "non-JSON output falls back to a command failure" do
+      assert {:error, %Error{kind: kind}} = Query.handle_nonzero_exit(1, "boom: not json")
+      assert kind in [:command_failed, :auth]
     end
   end
 end

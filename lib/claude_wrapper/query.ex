@@ -515,18 +515,32 @@ defmodule ClaudeWrapper.Query do
   end
 
   # A non-zero CLI exit that still emits valid JSON is not always a hard
-  # failure: max-turns is the one case the CLI reports this way and we
-  # surface it as a typed error; any other valid-JSON result keeps its
-  # `is_error` flag and returns `{:ok, %Result{}}`. When the output is not
-  # decodable JSON the exit is a genuine command failure -- classified as
-  # an auth error first when it looks auth-shaped, otherwise plain.
-  defp handle_nonzero_exit(code, stdout) do
+  # failure: the CLI reports its rail-stop caps (--max-turns and
+  # --max-budget-usd) this way, and we surface each as its own typed
+  # error carrying the run's cost/turn figures; any other valid-JSON
+  # result keeps its `is_error` flag and returns `{:ok, %Result{}}`.
+  # When the output is not decodable JSON the exit is a genuine command
+  # failure -- classified as an auth error first when it looks
+  # auth-shaped, otherwise plain.
+  @doc false
+  @spec handle_nonzero_exit(integer(), String.t()) ::
+          {:ok, Result.t()} | {:error, Error.t()}
+  def handle_nonzero_exit(code, stdout) do
     case parse_json_output(stdout) do
       {:ok, result} ->
-        if max_turns_result?(result) do
-          {:error, Error.new(:max_turns_exceeded, exit_code: code, stdout: stdout)}
-        else
-          {:ok, result}
+        case rail_stop_kind(result) do
+          nil ->
+            {:ok, result}
+
+          {kind, cap} ->
+            reason = %{
+              cap: cap,
+              cost_usd: result.cost_usd,
+              num_turns: result.num_turns,
+              session_id: result.session_id
+            }
+
+            {:error, Error.new(kind, reason: reason, exit_code: code, stdout: stdout)}
         end
 
       {:error, _} ->
@@ -534,8 +548,37 @@ defmodule ClaudeWrapper.Query do
     end
   end
 
-  defp max_turns_result?(%Result{extra: extra}) do
-    Map.get(extra, "subtype") == "error_max_turns"
+  # Classify a terminal `result` event by its rail-stop subtype,
+  # returning `{error_kind, parsed_cap}` or `nil`. The cap is pulled
+  # from the human message ("Reached maximum number of turns (N)" /
+  # "Reached maximum budget ($X)"); it may be `nil` if absent.
+  defp rail_stop_kind(%Result{extra: extra, result: message}) do
+    case Map.get(extra, "subtype") do
+      "error_max_turns" -> {:max_turns_exceeded, parse_cap(message, :int)}
+      "error_max_budget_usd" -> {:max_budget_exceeded, parse_cap(message, :float)}
+      _ -> nil
+    end
+  end
+
+  defp parse_cap(message, type) when is_binary(message) do
+    case Regex.run(~r/\(\$?([0-9]+(?:\.[0-9]+)?)\)/, message) do
+      [_, captured] -> cast_cap(captured, type)
+      nil -> nil
+    end
+  end
+
+  defp cast_cap(captured, :int) do
+    case Integer.parse(captured) do
+      {n, _} -> n
+      :error -> nil
+    end
+  end
+
+  defp cast_cap(captured, :float) do
+    case Float.parse(captured) do
+      {n, _} -> n
+      :error -> nil
+    end
   end
 
   # A non-zero exit with no parseable JSON: run the auth classifier over
@@ -596,6 +639,33 @@ defmodule ClaudeWrapper.Query do
   end
 
   # --- Arg building ---
+
+  @doc """
+  The spawn-time flag subset of a query, for a long-lived
+  `ClaudeWrapper.DuplexSession`.
+
+  Reuses `build_args/1` (the single source of flag emission, so the
+  duplex and one-shot paths cannot drift), then removes the flags a
+  duplex session owns itself: the transport formats
+  (`--output-format` / `--input-format` / `--include-partial-messages`,
+  which the session fixes to its stream-json protocol) and the leading
+  `--print <prompt>` pair (in duplex the prompt is a per-turn
+  stream-json message, not an argv). Everything else -- model, system
+  prompt, permission mode, tool allow/deny lists, mcp config, effort,
+  turn/budget caps, session continuity, and so on -- is spawn-safe and
+  passes through.
+  """
+  @spec spawn_args(t()) :: [String.t()]
+  def spawn_args(%__MODULE__{} = q) do
+    %{q | output_format: nil, input_format: nil, include_partial_messages: false}
+    |> build_args()
+    |> drop_print_flag()
+  end
+
+  # build_args/1 always emits `--print <prompt>` first (via add_flag),
+  # so the prompt is guaranteed to be the leading pair.
+  defp drop_print_flag(["--print", _prompt | rest]), do: rest
+  defp drop_print_flag(args), do: args
 
   @doc false
   @spec build_args(t()) :: [String.t()]

@@ -123,7 +123,7 @@ defmodule ClaudeWrapper.DuplexSession do
   use GenServer
   require Logger
 
-  alias ClaudeWrapper.{Config, Error, Result}
+  alias ClaudeWrapper.{Config, Error, Query, Result}
   alias ClaudeWrapper.DuplexSession.Adapter
 
   @type tool_input :: map()
@@ -157,6 +157,7 @@ defmodule ClaudeWrapper.DuplexSession do
 
   @type option ::
           {:config, Config.t()}
+          | {:query, Query.t()}
           | {:extra_args, [String.t()]}
           | {:on_permission, permission_handler()}
           | {:name, GenServer.name()}
@@ -212,11 +213,31 @@ defmodule ClaudeWrapper.DuplexSession do
   ## Options
 
     * `:config` -- (required) `%ClaudeWrapper.Config{}` struct.
-    * `:extra_args` -- extra CLI flags to append (e.g.
-      `["--permission-mode", "plan", "--max-turns", "1"]`).
+    * `:query` -- a `%ClaudeWrapper.Query{}` whose spawn-time knobs
+      (model, system prompt, permission mode, tool allow/deny lists,
+      mcp config, effort, turn/budget caps, session continuity, ...)
+      configure the session. Built with the same `Query` setters and
+      `apply_opts/2` as the one-shot path; the query's prompt and
+      transport-format flags are ignored (the session owns its
+      stream-json transport and takes prompts per turn via `send/3`).
+      See `ClaudeWrapper.Query.spawn_args/1`.
+    * `:extra_args` -- extra CLI flags to append, applied after the
+      `:query` flags (e.g. `["--permission-mode", "plan"]`). The
+      escape hatch for flags not yet on `Query`.
     * `:name` -- register the GenServer under a name.
 
   All other keyword options are passed through to `GenServer.start_link/3`.
+
+  ## Examples
+
+      query =
+        ClaudeWrapper.Query.new("")
+        |> ClaudeWrapper.Query.model("sonnet")
+        |> ClaudeWrapper.Query.allowed_tool("Read")
+        |> ClaudeWrapper.Query.max_turns(20)
+
+      {:ok, pid} =
+        ClaudeWrapper.DuplexSession.start_link(config: config, query: query)
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do
@@ -451,8 +472,17 @@ defmodule ClaudeWrapper.DuplexSession do
   def init(opts) do
     Process.flag(:trap_exit, true)
     config = Keyword.fetch!(opts, :config)
-    extra_args = Keyword.get(opts, :extra_args, [])
     on_permission = Keyword.get(opts, :on_permission, &__MODULE__.deny_all/2)
+
+    # A `%Query{}`'s spawn-time knobs come first; explicit `:extra_args`
+    # follow as the escape hatch (and win on any repeated flag).
+    query_args =
+      case Keyword.get(opts, :query) do
+        %Query{} = query -> Query.spawn_args(query)
+        nil -> []
+      end
+
+    extra_args = query_args ++ Keyword.get(opts, :extra_args, [])
 
     # Tests substitute a fake binary (e.g. `cat`) that does not understand
     # the duplex flag set; they pass `:args_override` to bypass defaults.

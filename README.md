@@ -90,6 +90,28 @@ ClaudeWrapper.DuplexSession.interrupt(pid)
 ClaudeWrapper.DuplexSession.close(pid)
 ```
 
+### Configuring the session with a `Query`
+
+Pass a `%ClaudeWrapper.Query{}` to configure the session's spawn-time
+knobs (model, system prompt, permission mode, tool allow/deny lists,
+mcp config, effort, turn/budget caps, session continuity, ...) with the
+same setters and `apply_opts/2` as the one-shot path. The query's
+prompt and transport-format flags are ignored: the session owns its
+stream-json transport and takes prompts per turn via `send/3`.
+
+```elixir
+query =
+  ClaudeWrapper.Query.new("")
+  |> ClaudeWrapper.Query.model("sonnet")
+  |> ClaudeWrapper.Query.allowed_tool("Read")
+  |> ClaudeWrapper.Query.max_turns(20)
+
+{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config, query: query)
+```
+
+`:extra_args` still works as an escape hatch for flags not yet on
+`Query`, and is applied after the query's flags.
+
 ### Permission callback
 
 When the CLI wants to run a tool, it routes the prompt back through
@@ -396,6 +418,23 @@ case ClaudeWrapper.query("...", max_turns: 1) do
   {:ok, result} -> result
   {:error, %ClaudeWrapper.Error{kind: :max_turns_exceeded}} -> :hit_limit
   {:error, %ClaudeWrapper.Error{kind: kind}} -> {:failed, kind}
+end
+```
+
+The CLI's own rail-stop caps are surfaced as typed, recoverable errors
+distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`)
+and `:max_budget_exceeded` (`--max-budget-usd`, separate from the
+client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry a
+`:reason` map of `%{cap:, cost_usd:, num_turns:, session_id:}` so a
+capped run can be resumed:
+
+```elixir
+case ClaudeWrapper.query("...", max_budget_usd: 5.0) do
+  {:ok, result} ->
+    result
+
+  {:error, %ClaudeWrapper.Error{kind: :max_budget_exceeded, reason: %{session_id: sid}}} ->
+    {:resume, sid}
 end
 ```
 
