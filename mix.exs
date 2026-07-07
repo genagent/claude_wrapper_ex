@@ -32,6 +32,11 @@ defmodule ClaudeWrapper.MixProject do
     [
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
+      # Optional: leak-free subprocess control (process-group kill on
+      # timeout / BEAM death). Enables Runner.Forcola and
+      # DuplexSession.Adapter.Forcola. See "Leak-free execution" in the
+      # README. POSIX-only; absent it, the default Port paths are used.
+      {:forcola, "~> 0.3", optional: true},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
@@ -75,9 +80,15 @@ defmodule ClaudeWrapper.MixProject do
           ClaudeWrapper.Test,
           ClaudeWrapper.Bundled
         ],
+        "Subprocess execution": [
+          ClaudeWrapper.Runner,
+          ClaudeWrapper.Runner.Port,
+          ClaudeWrapper.Runner.Forcola
+        ],
         "DuplexSession transport adapter": [
           ClaudeWrapper.DuplexSession.Adapter,
           ClaudeWrapper.DuplexSession.Adapter.Port,
+          ClaudeWrapper.DuplexSession.Adapter.Forcola,
           ClaudeWrapper.DuplexSession.Adapter.Test
         ],
         "Read-side introspection of ~/.claude": [

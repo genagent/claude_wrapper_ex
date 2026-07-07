@@ -7,7 +7,7 @@ defmodule ClaudeWrapper.Command do
   `ClaudeCommand` trait.
   """
 
-  alias ClaudeWrapper.Error
+  alias ClaudeWrapper.{Error, Runner}
 
   @type args :: [String.t()]
 
@@ -16,41 +16,20 @@ defmodule ClaudeWrapper.Command do
               {:ok, term()} | {:error, term()}
 
   @doc """
-  Run a command synchronously via System.cmd.
+  Run a command synchronously through the configured `ClaudeWrapper.Runner`.
 
-  Returns the parsed output on success.
+  Returns the parsed output on success. On timeout the default runner
+  abandons the OS process; `ClaudeWrapper.Runner.Forcola` kills it.
   """
   @spec run(module(), struct(), ClaudeWrapper.Config.t()) :: {:ok, term()} | {:error, term()}
   def run(mod, command, config) do
     all_args = ClaudeWrapper.Config.base_args(config) ++ mod.args(command)
     opts = ClaudeWrapper.Config.cmd_opts(config)
 
-    opts =
-      if config.timeout do
-        # System.cmd doesn't support timeout directly, we use Task
-        opts
-      else
-        opts
-      end
-
-    execute_cmd(mod, config.binary, all_args, opts, config.timeout)
-  end
-
-  defp execute_cmd(mod, binary, args, opts, nil) do
-    case System.cmd(binary, args, opts) do
-      {stdout, 0} -> mod.parse_output(stdout, 0)
-      {stdout, code} -> mod.parse_output(stdout, code)
-    end
-  rescue
-    e in ErlangError -> {:error, Error.io(e)}
-  end
-
-  defp execute_cmd(mod, binary, args, opts, timeout) do
-    task = Task.async(fn -> System.cmd(binary, args, opts) end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task) do
+    case Runner.impl().run(config.binary, all_args, opts, config.timeout) do
       {:ok, {stdout, code}} -> mod.parse_output(stdout, code)
-      nil -> {:error, Error.timeout(timeout)}
+      {:error, :timeout} -> {:error, Error.timeout(config.timeout)}
+      {:error, reason} -> {:error, Error.io(reason)}
     end
   end
 

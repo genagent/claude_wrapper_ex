@@ -49,7 +49,7 @@ unchanged for everyone else.
 config = ClaudeWrapper.Config.new(binary: :bundled)
 ```
 
-`Config.new/1` resolution is pure -- it does not touch the network.
+`ClaudeWrapper.Config.new/1` resolution is pure -- it does not touch the network.
 Install the pinned binary explicitly:
 
 ```bash
@@ -438,6 +438,35 @@ case ClaudeWrapper.query("...", max_budget_usd: 5.0) do
 end
 ```
 
+## Leak-free execution (optional)
+
+By default a timeout, a halted stream, a closed session, or BEAM death
+closes the Erlang port or shuts down a `Task`. That closes the pipes but
+sends no signal to the OS process, so `claude` -- and every stdio MCP
+server it spawned -- can keep running after the caller was told the turn
+failed (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)).
+
+Add [`forcola`](https://hex.pm/packages/forcola) and select its
+implementations to run every `claude` invocation under a process-group
+kill: on timeout, halt, close, or BEAM death the whole group (the CLI and
+its MCP servers) is terminated (SIGTERM, then SIGKILL). forcola is
+POSIX-only; without it the default `Port` paths are used unchanged.
+
+```elixir
+# mix.exs
+{:forcola, "~> 0.3"}
+
+# config/config.exs
+config :claude_wrapper,
+  runner: ClaudeWrapper.Runner.Forcola,           # one-shot + streaming
+  duplex_adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola  # DuplexSession
+```
+
+Both are opt-in and additive: `ClaudeWrapper.Runner.Forcola` and
+`ClaudeWrapper.DuplexSession.Adapter.Forcola` compile only when `forcola`
+is present. A `DuplexSession` can also select the adapter per session with
+`adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola`.
+
 ## Modules
 
 **Long-lived sessions (the headline feature)**
@@ -466,12 +495,21 @@ end
 | `ClaudeWrapper.Stream` | Lazy `Stream` combinators over a `DuplexSession` turn |
 | `ClaudeWrapper.Structured` | Typed structured-output tasks |
 
+**Subprocess execution (one-shot / streaming)**
+
+| Module | Description |
+|---|---|
+| `ClaudeWrapper.Runner` | Behaviour selecting how one-shot/streaming subprocesses run |
+| `ClaudeWrapper.Runner.Port` | Default: `System.cmd` + `/bin/sh` streaming port |
+| `ClaudeWrapper.Runner.Forcola` | Opt-in leak-free runner (process-group kill); needs `forcola` |
+
 **DuplexSession transport adapter**
 
 | Module | Description |
 |---|---|
 | `ClaudeWrapper.DuplexSession.Adapter` | Transport seam for `DuplexSession` |
 | `ClaudeWrapper.DuplexSession.Adapter.Port` | Default adapter: real `claude` subprocess over a Port |
+| `ClaudeWrapper.DuplexSession.Adapter.Forcola` | Opt-in leak-free adapter (process-group kill); needs `forcola` |
 | `ClaudeWrapper.DuplexSession.Adapter.Test` | Controllable in-process test double |
 
 **Shared infrastructure**

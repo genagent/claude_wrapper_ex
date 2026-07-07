@@ -489,7 +489,7 @@ defmodule ClaudeWrapper.DuplexSession do
     # Not part of the public surface.
     args = Keyword.get(opts, :args_override, build_args(extra_args))
 
-    adapter = Keyword.get(opts, :adapter, Adapter.Port)
+    adapter = Keyword.get(opts, :adapter, default_adapter())
     adapter_opts = Keyword.get(opts, :adapter_opts, [])
     open_opts = [config: config, args: args, owner: self()] ++ adapter_opts
 
@@ -506,6 +506,14 @@ defmodule ClaudeWrapper.DuplexSession do
       {:error, reason} ->
         {:stop, reason}
     end
+  end
+
+  # The transport to use when no explicit `:adapter` is given.
+  # `Adapter.Port` by default; set globally with
+  # `config :claude_wrapper, duplex_adapter: Adapter.Forcola` for
+  # leak-free (process-group-kill) sessions.
+  defp default_adapter do
+    Application.get_env(:claude_wrapper, :duplex_adapter, Adapter.Port)
   end
 
   @impl true
