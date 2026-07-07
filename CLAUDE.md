@@ -53,13 +53,35 @@ Binary resolution is opt-in: `Config.new(binary: :bundled)` resolves to
 or the `mix claude_wrapper.install` / `.uninstall` / `.path` tasks. The
 default stays PATH/`CLAUDE_CLI` discovery.
 
+### Subprocess execution (one-shot + streaming)
+
+```
+ClaudeWrapper.Runner          # behaviour: how one-shot/streaming subprocesses run
+ClaudeWrapper.Runner.Port     # default: System.cmd + /bin/sh streaming port
+ClaudeWrapper.Runner.Forcola  # opt-in leak-free (process-group kill); needs forcola
+```
+
+`Command.run` and `Query` (execute + stream) dispatch through
+`Runner.impl/0`, which reads `config :claude_wrapper, runner: ...`
+(default `Runner.Port`). `Runner.Forcola` compiles only when the optional
+`forcola` dep is present; it runs every `claude` under a Rust shim that
+process-group-kills the CLI (and its stdio MCP servers) on timeout, stream
+halt, or BEAM death. This is the fix for #185 (timeout abandoned the OS
+process instead of killing it). POSIX-only; opt-in keeps Windows on `Port`.
+
 ### DuplexSession transport adapter
 
 ```
-ClaudeWrapper.DuplexSession.Adapter        # open/command/close transport seam
-ClaudeWrapper.DuplexSession.Adapter.Port   # default: real claude subprocess over a Port
-ClaudeWrapper.DuplexSession.Adapter.Test   # per-session controllable double (ClaudeWrapper.Test)
+ClaudeWrapper.DuplexSession.Adapter          # open/command/close transport seam
+ClaudeWrapper.DuplexSession.Adapter.Port      # default: real claude subprocess over a Port
+ClaudeWrapper.DuplexSession.Adapter.Forcola   # opt-in leak-free (process-group kill); needs forcola
+ClaudeWrapper.DuplexSession.Adapter.Test      # per-session controllable double (ClaudeWrapper.Test)
 ```
+
+The default adapter is chosen from `config :claude_wrapper, duplex_adapter:
+...` (default `Adapter.Port`); an explicit `adapter:` option on
+`start_link/1` still wins. `Adapter.Forcola` wraps `Forcola.Duplex` in a
+translator GenServer whose pid is the transport handle.
 
 ### Read-side introspection of `~/.claude`
 
@@ -146,10 +168,14 @@ result flagged as an error.
 
 ## Design decisions
 
-- **stdlib only for process management**: a Port with manual `\n` line
-  splitting (we deliberately avoid `:line` mode because tool results can
-  exceed any fixed line cap). `System.cmd` for one-shots. No external
-  deps beyond `jason` and `telemetry`.
+- **stdlib only for process management (by default)**: a Port with manual
+  `\n` line splitting (we deliberately avoid `:line` mode because tool
+  results can exceed any fixed line cap). `System.cmd` for one-shots. The
+  only runtime deps are `jason` and `telemetry`; `forcola` is an
+  **optional** dep that, when present and selected, swaps the default
+  `Runner.Port`/`Adapter.Port` for process-group-killing variants (see
+  "Subprocess execution" above and #185). Absent it, the stdlib paths are
+  used unchanged.
 - **Structs over builders**: `Query` is a struct with pipe-friendly
   setter functions, plus `Query.apply_opts/2` to apply a keyword list.
 - **Config is separate from Query**: `Config` holds shared/reusable
