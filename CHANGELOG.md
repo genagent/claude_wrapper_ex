@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.11.0...v0.12.0) (2026-07-07)
+
+
+### Features
+
+* **duplex:** accept a %Query{} for typed spawn-time knobs ([#189](https://github.com/genagent/claude_wrapper_ex/issues/189)) ([e66a73a](https://github.com/genagent/claude_wrapper_ex/commit/e66a73afcc400fb221549fc0ed8c84e860c82d29))
+* **error:** detect --max-budget-usd cap and enrich rail-stop errors with cost/turn figures ([#188](https://github.com/genagent/claude_wrapper_ex/issues/188)) ([def7772](https://github.com/genagent/claude_wrapper_ex/commit/def77723b35b6a3357e430359f8358442b647668))
+* optional leak-free claude subprocess control via forcola ([#192](https://github.com/genagent/claude_wrapper_ex/issues/192)) ([49afb76](https://github.com/genagent/claude_wrapper_ex/commit/49afb76d6fa9ae3103fa1537f56e7ca17a5c8e9d))
+
 ## [0.11.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.10.0...v0.11.0) (2026-07-01)
 
 
