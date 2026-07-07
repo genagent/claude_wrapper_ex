@@ -1,6 +1,9 @@
 defmodule ClaudeWrapper.DuplexSession.Adapter.ForcolaTest do
   use ExUnit.Case, async: true
 
+  # Drives the real forcola shim; skipped when it is not resolvable.
+  @moduletag :forcola
+
   alias ClaudeWrapper.{Config, DuplexSession}
   alias ClaudeWrapper.DuplexSession.Adapter.Forcola
 

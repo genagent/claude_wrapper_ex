@@ -1,6 +1,9 @@
 defmodule ClaudeWrapper.Runner.ForcolaTest do
   use ExUnit.Case, async: true
 
+  # Drives the real forcola shim; skipped when it is not resolvable.
+  @moduletag :forcola
+
   alias ClaudeWrapper.Runner.Forcola
 
   # Whether an OS process is still alive (kill -0 succeeds).
@@ -92,7 +95,10 @@ defmodule ClaudeWrapper.Runner.ForcolaTest do
     end
   end
 
-  defp wait_for(fun, tries \\ 50) do
+  # Generous budgets: after an early halt the group-kill runs
+  # asynchronously (task shutdown -> port close -> shim SIGTERM ->
+  # confirm), which can lag under full-suite load.
+  defp wait_for(fun, tries \\ 300) do
     case fun.() do
       nil when tries > 0 ->
         Process.sleep(20)
@@ -103,7 +109,7 @@ defmodule ClaudeWrapper.Runner.ForcolaTest do
     end
   end
 
-  defp eventually(fun, tries \\ 50) do
+  defp eventually(fun, tries \\ 300) do
     cond do
       fun.() -> true
       tries > 0 -> Process.sleep(20) && eventually(fun, tries - 1)
