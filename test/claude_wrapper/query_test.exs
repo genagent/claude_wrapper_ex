@@ -3,6 +3,16 @@ defmodule ClaudeWrapper.QueryTest do
 
   alias ClaudeWrapper.Query
 
+  # True when `sub` appears as a contiguous run inside `list` (a flag
+  # immediately followed by its value(s)).
+  defp subsequence?(sub, list) do
+    len = length(sub)
+
+    list
+    |> Enum.chunk_every(len, 1, :discard)
+    |> Enum.any?(&(&1 == sub))
+  end
+
   describe "apply_opts/2 -- scalar opts" do
     test "applies all scalar string/value opts" do
       q =
@@ -181,6 +191,72 @@ defmodule ClaudeWrapper.QueryTest do
         |> Query.apply_opts(model: "haiku", model: "sonnet")
 
       assert q.model == "sonnet"
+    end
+  end
+
+  describe "spawn_args/1" do
+    test "drops the prompt and the transport-format flags" do
+      args =
+        "hello there"
+        |> Query.new()
+        |> Query.apply_opts(
+          output_format: :stream_json,
+          input_format: :stream_json,
+          include_partial_messages: true
+        )
+        |> Query.spawn_args()
+
+      refute "hello there" in args
+      refute "--print" in args
+      refute "--output-format" in args
+      refute "--input-format" in args
+      refute "--include-partial-messages" in args
+    end
+
+    test "passes spawn-time knobs through" do
+      args =
+        ""
+        |> Query.new()
+        |> Query.apply_opts(
+          model: "sonnet",
+          system_prompt: "be terse",
+          permission_mode: :plan,
+          allowed_tools: ["Read", "Bash"],
+          disallowed_tools: ["WebFetch"],
+          mcp_config: ["/mcp.json"],
+          add_dir: ["/extra"],
+          effort: :high,
+          max_turns: 20,
+          max_budget_usd: 5.0,
+          json_schema: ~s({"type":"object"}),
+          session_id: "sess-1",
+          resume: "prior",
+          fallback_model: "haiku",
+          strict_mcp_config: true,
+          no_session_persistence: true
+        )
+        |> Query.spawn_args()
+
+      assert ["--model", "sonnet"] |> subsequence?(args)
+      assert ["--system-prompt", "be terse"] |> subsequence?(args)
+      assert ["--permission-mode", "plan"] |> subsequence?(args)
+      assert ["--allowed-tools", "Read", "Bash"] |> subsequence?(args)
+      assert ["--disallowed-tools", "WebFetch"] |> subsequence?(args)
+      assert ["--mcp-config", "/mcp.json"] |> subsequence?(args)
+      assert ["--add-dir", "/extra"] |> subsequence?(args)
+      assert ["--effort", "high"] |> subsequence?(args)
+      assert ["--max-turns", "20"] |> subsequence?(args)
+      assert ["--max-budget-usd", "5.0"] |> subsequence?(args)
+      assert ["--json-schema", ~s({"type":"object"})] |> subsequence?(args)
+      assert ["--session-id", "sess-1"] |> subsequence?(args)
+      assert ["--resume", "prior"] |> subsequence?(args)
+      assert ["--fallback-model", "haiku"] |> subsequence?(args)
+      assert "--strict-mcp-config" in args
+      assert "--no-session-persistence" in args
+    end
+
+    test "an empty query yields no flags" do
+      assert Query.spawn_args(Query.new("")) == []
     end
   end
 
