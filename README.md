@@ -49,7 +49,7 @@ unchanged for everyone else.
 config = ClaudeWrapper.Config.new(binary: :bundled)
 ```
 
-`Config.new/1` resolution is pure -- it does not touch the network.
+`ClaudeWrapper.Config.new/1` resolution is pure -- it does not touch the network.
 Install the pinned binary explicitly:
 
 ```bash
