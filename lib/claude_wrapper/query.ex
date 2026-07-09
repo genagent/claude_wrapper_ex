@@ -31,6 +31,7 @@ defmodule ClaudeWrapper.Query do
   @type output_format :: :text | :json | :stream_json
   @type input_format :: :text | :stream_json
   @type effort :: :low | :medium | :high | :xhigh | :max
+  @type hermetic :: :full | :project
 
   @type t :: %__MODULE__{
           prompt: String.t(),
@@ -79,7 +80,8 @@ defmodule ClaudeWrapper.Query do
           bare: boolean(),
           disable_slash_commands: boolean(),
           include_hook_events: boolean(),
-          exclude_dynamic_system_prompt_sections: boolean()
+          exclude_dynamic_system_prompt_sections: boolean(),
+          hermetic: hermetic() | nil
         }
 
   defstruct [
@@ -106,6 +108,7 @@ defmodule ClaudeWrapper.Query do
     :betas,
     :name,
     :setting_sources,
+    :hermetic,
     allowed_tools: [],
     disallowed_tools: [],
     mcp_config: [],
@@ -355,6 +358,33 @@ defmodule ClaudeWrapper.Query do
   def exclude_dynamic_system_prompt_sections(%__MODULE__{} = q),
     do: %{q | exclude_dynamic_system_prompt_sections: true}
 
+  @doc """
+  Seal the ambient `~/.claude` config so a programmatic run's surface is
+  exactly what was provided explicitly.
+
+  A preset over three flags, expanded at flag-build time (never here), so
+  the seal is order-independent and an explicit `setting_sources/2` always
+  wins over the scope's default:
+
+    * `--setting-sources` (the ambient-config seal)
+    * `--strict-mcp-config` (only servers from `--mcp-config`)
+    * `--exclude-dynamic-system-prompt-sections` (reproducibility)
+
+  The scope sets the seal level:
+
+    * `:full` -> `--setting-sources ""` -- drops user + project + local
+      ambient config; only claude's built-in agents remain.
+    * `:project` -> `--setting-sources user` -- seals project + local
+      ambient config, keeps the user's global `~/.claude`.
+
+  Hermetic seals the promptspace WITHOUT changing auth: it never emits
+  `--bare` (which would force `ANTHROPIC_API_KEY` billing). OAuth /
+  keychain / subscription auth is untouched.
+  """
+  @spec hermetic(t(), hermetic()) :: t()
+  def hermetic(%__MODULE__{} = q, scope) when scope in [:full, :project],
+    do: %{q | hermetic: scope}
+
   # --- Bulk option application ---
 
   @doc """
@@ -447,6 +477,14 @@ defmodule ClaudeWrapper.Query do
     do: exclude_dynamic_system_prompt_sections(q)
 
   defp apply_opt({:exclude_dynamic_system_prompt_sections, _}, q), do: q
+
+  # Hermetic preset: `true` means the full seal; a scope atom is passed through.
+  defp apply_opt({:hermetic, true}, q), do: hermetic(q, :full)
+
+  defp apply_opt({:hermetic, scope}, q) when scope in [:full, :project],
+    do: hermetic(q, scope)
+
+  defp apply_opt({:hermetic, _}, q), do: q
 
   # List opts (or single value, where it makes sense).
   defp apply_opt({:allowed_tools, tools}, q) when is_list(tools),
@@ -670,6 +708,8 @@ defmodule ClaudeWrapper.Query do
   @doc false
   @spec build_args(t()) :: [String.t()]
   def build_args(%__MODULE__{} = q) do
+    q = resolve_hermetic(q)
+
     []
     |> add_flag("--print", q.prompt)
     |> add_opt("--model", q.model)
@@ -722,6 +762,25 @@ defmodule ClaudeWrapper.Query do
       q.exclude_dynamic_system_prompt_sections
     )
   end
+
+  # Expand the hermetic preset into its three underlying flags. Done here,
+  # at flag-build time, rather than at setter time so the seal is
+  # order-independent: an explicit `setting_sources` set by the caller
+  # always wins over the scope's default. Auth is never touched -- hermetic
+  # uses `--setting-sources`, never `--bare`.
+  defp resolve_hermetic(%__MODULE__{hermetic: nil} = q), do: q
+
+  defp resolve_hermetic(%__MODULE__{hermetic: scope} = q) do
+    %{
+      q
+      | setting_sources: q.setting_sources || hermetic_setting_sources(scope),
+        strict_mcp_config: true,
+        exclude_dynamic_system_prompt_sections: true
+    }
+  end
+
+  defp hermetic_setting_sources(:full), do: ""
+  defp hermetic_setting_sources(:project), do: "user"
 
   defp add_flag(args, flag, value), do: args ++ [flag, value]
   defp add_opt(args, _flag, nil), do: args

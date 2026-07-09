@@ -144,6 +144,10 @@ defmodule ClaudeWrapper do
     * `:session_id` - Session ID
     * `:continue_session` - Continue recent session (boolean)
     * `:resume` - Resume session ID
+    * `:hermetic` - Seal the ambient `~/.claude` config for a reproducible
+      surface: `true` or `:full` (drops user + project + local ambient),
+      `:project` (keeps the user's global config). Does not change auth.
+      See `ClaudeWrapper.Query.hermetic/2`.
   """
   @spec query(String.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def query(prompt, opts \\ []) do

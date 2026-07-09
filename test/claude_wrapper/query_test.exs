@@ -261,6 +261,80 @@ defmodule ClaudeWrapper.QueryTest do
     end
   end
 
+  describe "hermetic preset (#193)" do
+    test "hermetic: true defaults to the full seal" do
+      q = "p" |> Query.new() |> Query.apply_opts(hermetic: true)
+      assert q.hermetic == :full
+
+      args = Query.build_args(q)
+      assert ["--setting-sources", ""] |> subsequence?(args)
+      assert "--strict-mcp-config" in args
+      assert "--exclude-dynamic-system-prompt-sections" in args
+    end
+
+    test ":full drops every ambient layer" do
+      args =
+        "p" |> Query.new() |> Query.apply_opts(hermetic: :full) |> Query.build_args()
+
+      assert ["--setting-sources", ""] |> subsequence?(args)
+      assert "--strict-mcp-config" in args
+      assert "--exclude-dynamic-system-prompt-sections" in args
+    end
+
+    test ":project keeps the user's global config" do
+      args =
+        "p" |> Query.new() |> Query.apply_opts(hermetic: :project) |> Query.build_args()
+
+      assert ["--setting-sources", "user"] |> subsequence?(args)
+      assert "--strict-mcp-config" in args
+      assert "--exclude-dynamic-system-prompt-sections" in args
+    end
+
+    test "an explicit setting_sources wins over the scope default, order-independently" do
+      # setting_sources set before hermetic in the keyword list ...
+      before = [setting_sources: "user,project", hermetic: :full]
+      args_before = "p" |> Query.new() |> Query.apply_opts(before) |> Query.build_args()
+      assert ["--setting-sources", "user,project"] |> subsequence?(args_before)
+
+      # ... and after it. Same result either way.
+      after_ = [hermetic: :full, setting_sources: "user,project"]
+      args_after = "p" |> Query.new() |> Query.apply_opts(after_) |> Query.build_args()
+      assert ["--setting-sources", "user,project"] |> subsequence?(args_after)
+
+      # The two booleans are still forced regardless.
+      assert "--strict-mcp-config" in args_after
+      assert "--exclude-dynamic-system-prompt-sections" in args_after
+    end
+
+    test "hermetic never emits --bare (seals promptspace, not auth)" do
+      args = "p" |> Query.new() |> Query.apply_opts(hermetic: :full) |> Query.build_args()
+      refute "--bare" in args
+    end
+
+    test "an invalid scope is ignored, leaving no seal" do
+      q = "p" |> Query.new() |> Query.apply_opts(hermetic: :bogus)
+      assert q.hermetic == nil
+
+      args = Query.build_args(q)
+      refute "--setting-sources" in args
+      refute "--strict-mcp-config" in args
+      refute "--exclude-dynamic-system-prompt-sections" in args
+    end
+
+    test "no hermetic opt leaves the surface untouched" do
+      args = "p" |> Query.new() |> Query.build_args()
+      refute "--setting-sources" in args
+      refute "--strict-mcp-config" in args
+      refute "--exclude-dynamic-system-prompt-sections" in args
+    end
+
+    test "the seal carries through spawn_args (the duplex path)" do
+      args = "p" |> Query.new() |> Query.apply_opts(hermetic: :project) |> Query.spawn_args()
+      assert ["--setting-sources", "user"] |> subsequence?(args)
+      assert "--strict-mcp-config" in args
+    end
+  end
+
   describe "regression coverage for #40" do
     test "all opts the issue called out as missing now apply" do
       missing = [
