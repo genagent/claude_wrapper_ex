@@ -91,7 +91,7 @@ defmodule ClaudeWrapper.MixProject do
           ClaudeWrapper.DuplexSession.Adapter.Forcola,
           ClaudeWrapper.DuplexSession.Adapter.Test
         ],
-        "Read-side introspection of ~/.claude": [
+        "~/.claude introspection & agent authoring": [
           ClaudeWrapper.History,
           ClaudeWrapper.Settings,
           ClaudeWrapper.Agents,

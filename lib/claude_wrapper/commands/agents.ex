@@ -6,6 +6,8 @@ defmodule ClaudeWrapper.Commands.Agents do
   surface is `claude agents --json`, which "Print[s] active sessions as a JSON
   array and exit[s] ... does not require a TTY". This module uses `--json` and
   decodes that array, so it returns **active sessions** (not configured agents).
+  This is distinct from `ClaudeWrapper.Agents`, which reads and writes the
+  agent-definition files under `~/.claude` directly.
   Each element is the CLI's raw session map (string keys).
 
   ## Usage

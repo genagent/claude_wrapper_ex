@@ -166,6 +166,14 @@ defmodule ClaudeWrapper do
       surface: `true` or `:full` (drops user + project + local ambient),
       `:project` (keeps the user's global config). Does not change auth.
       See `ClaudeWrapper.Query.hermetic/2`.
+
+  The list above is the common subset. Any other option accepted by
+  `ClaudeWrapper.Query.apply_opts/2` also works here (for example `:effort`,
+  `:agent`, `:agents_json`, `:fallback_model`, `:output_format`,
+  `:allowed_tools`, `:disallowed_tools`, `:add_dir`, `:files`, `:mcp_config`,
+  `:plugin_dirs`, `:worktree`, `:fork_session`, `:setting_sources`,
+  `:json_schema`, `:betas`) -- see `ClaudeWrapper.Query.apply_opts/2` for the
+  authoritative full list.
   """
   @spec query(String.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def query(prompt, opts \\ []) do

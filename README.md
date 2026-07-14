@@ -29,7 +29,7 @@ host can use `claude` the same way an IDE backend would.
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.8"}
+    {:claude_wrapper, "~> 0.13"}
   ]
 end
 ```
@@ -284,7 +284,7 @@ implements its `Backend` behaviour. Use it alongside
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.8"},
+    {:claude_wrapper, "~> 0.13"},
     {:agent_workshop, "~> 0.1"}
   ]
 end

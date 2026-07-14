@@ -24,6 +24,7 @@ mix compile --warnings-as-errors
 mix credo --strict
 mix test
 mix dialyzer
+mix docs --warnings-as-errors
 ```
 
 - `mix test` runs the unit suite (integration tests are excluded).

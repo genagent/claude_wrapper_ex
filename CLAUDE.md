@@ -238,4 +238,4 @@ real `claude` binary and against real `~/.claude` data (for the read-side
 modules), so they are environment-dependent and excluded by default.
 
 Pre-commit checklist: `mix format`, `mix compile --warnings-as-errors`,
-`mix credo --strict`, `mix test`, `mix dialyzer`.
+`mix credo --strict`, `mix test`, `mix dialyzer`, `mix docs --warnings-as-errors`.

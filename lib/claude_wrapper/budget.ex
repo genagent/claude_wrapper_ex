@@ -18,7 +18,7 @@ defmodule ClaudeWrapper.Budget do
 
   It is self-contained: `ClaudeWrapper.Session` and
   `ClaudeWrapper.SessionServer` are not aware of it. Drive it yourself
-  from a multi-turn loop -- record each turn's `total_cost_usd`, then
+  from a multi-turn loop -- record each turn's `cost_usd`, then
   `check/1` before the next turn.
 
   ## Threshold semantics
@@ -46,7 +46,7 @@ defmodule ClaudeWrapper.Budget do
         )
 
       # In a multi-turn loop, after each turn:
-      :ok = ClaudeWrapper.Budget.record(budget, result.total_cost_usd)
+      :ok = ClaudeWrapper.Budget.record(budget, result.cost_usd)
 
       case ClaudeWrapper.Budget.check(budget) do
         :ok -> :keep_going
@@ -143,11 +143,15 @@ defmodule ClaudeWrapper.Budget do
 
   Fires `:on_warning` the first time the running total reaches
   `:warn_at_usd`, and `:on_exceeded` the first time it reaches
-  `:max_usd`. Non-positive and non-finite costs are ignored.
+  `:max_usd`. Non-positive and non-finite costs are ignored, and a `nil`
+  cost is a no-op (so recording a `%ClaudeWrapper.Result{}`'s `cost_usd`
+  directly is safe -- it is `nil` on an interrupted/cancelled turn).
 
   Returns `:ok`.
   """
-  @spec record(server(), number()) :: :ok
+  @spec record(server(), number() | nil) :: :ok
+  def record(_server, nil), do: :ok
+
   def record(server, cost) when is_number(cost) do
     GenServer.call(server, {:record, cost})
   end

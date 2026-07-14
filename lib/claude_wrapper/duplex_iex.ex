@@ -44,10 +44,15 @@ defmodule ClaudeWrapper.DuplexIEx do
 
   - Working dir defaults to `File.cwd!()` so the session sees your
     current project
-  - Permission mode defaults to `"bypassPermissions"` so tool calls
-    just work in the REPL without a permission callback. **This is
-    not safe** for prompts you do not control. For trustworthy use,
-    pass `permission_mode: "default"` and an `on_permission` callback
+  - With no `:on_permission` callback, the session is started with
+    `--dangerously-skip-permissions` so tool calls just work in the
+    REPL. **This is not safe** for prompts you do not control. For
+    trustworthy use, pass an `:on_permission` callback: its presence
+    automatically selects `--permission-mode default` so every tool
+    request is routed to your callback instead of being bypassed
+    (see `ensure_permission_mode/2`). There is no `permission_mode:`
+    option -- the callback is the only knob; to force a specific CLI
+    mode yourself, pass it via `extra_args: ["--permission-mode", ...]`
   - All `ClaudeWrapper.Config` options (`:binary`, `:env`, `:timeout`,
     etc.) are accepted and forwarded to `ClaudeWrapper.Config.new/1`
   - All `ClaudeWrapper.DuplexSession` options (`:on_permission`,

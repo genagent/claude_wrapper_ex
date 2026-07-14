@@ -73,6 +73,12 @@ defmodule ClaudeWrapper.Error do
       (`:reason` is the specific problem)
     * `:auth` -- an authentication failure, classified into `:reason`
       (see `t:ClaudeWrapper.Auth.auth_error_kind/0`)
+    * `:invalid_render` -- a `ClaudeWrapper.Structured` module's `render/1`
+      returned a value that was neither a `%ClaudeWrapper.Prompt{}` nor a
+      string (`:reason` is the offending return value)
+    * `:no_structured_output` -- a `ClaudeWrapper.Structured` run produced a
+      result with no structured output, i.e. no `--json-schema` took effect
+      (`:reason` is the `%ClaudeWrapper.Result{}`)
   """
 
   @type kind ::
