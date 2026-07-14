@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.13.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.13.0...v0.13.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **ci:** gate Hex publish behind the quality suite; add hex.audit ([#238](https://github.com/genagent/claude_wrapper_ex/issues/238)) ([3815f43](https://github.com/genagent/claude_wrapper_ex/commit/3815f43356f30c7f421e0f72ebc8c430da053bc2)), closes [#203](https://github.com/genagent/claude_wrapper_ex/issues/203)
+* harden the one-shot query path (dash-prefixed prompts, missing binary) ([#234](https://github.com/genagent/claude_wrapper_ex/issues/234)) ([01ccff4](https://github.com/genagent/claude_wrapper_ex/commit/01ccff4fbc2da8378e49b545938c49c67ac3ca7b))
+* harden the streaming path (argv quoting, &gt;1MB lines, end-of-stream stall) ([#236](https://github.com/genagent/claude_wrapper_ex/issues/236)) ([8dd0add](https://github.com/genagent/claude_wrapper_ex/commit/8dd0add1e5db8f7f658a8cbd3472c31ba859e383))
+* preserve http MCP servers on round-trip; fix `mcp add` argv order ([#237](https://github.com/genagent/claude_wrapper_ex/issues/237)) ([de7e862](https://github.com/genagent/claude_wrapper_ex/commit/de7e86289bf5cb0f77c40d921a4a6e176a6240b8))
+
 ## [0.13.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.12.0...v0.13.0) (2026-07-09)
 
 
