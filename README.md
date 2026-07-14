@@ -547,8 +547,8 @@ is present. A `DuplexSession` can also select the adapter per session with
 | Module | Description |
 |---|---|
 | `ClaudeWrapper.Commands.Auth` | Auth management (login modes, status, setup-token) |
-| `ClaudeWrapper.Commands.Agents` | List configured agents |
-| `ClaudeWrapper.Commands.Mcp` | MCP server management (add/list/get/remove/serve/login/logout) |
+| `ClaudeWrapper.Commands.Agents` | List active background agent sessions (`agents --json`) |
+| `ClaudeWrapper.Commands.Mcp` | MCP server management (add/add-json/add-from-desktop/list/get/remove/serve) |
 | `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update/tag/details/prune |
 | `ClaudeWrapper.Commands.Marketplace` | Marketplace add/remove/list/update |
 | `ClaudeWrapper.Commands.AutoMode` | auto-mode config/defaults/critique |

@@ -191,7 +191,17 @@ defmodule ClaudeWrapper.AuthTest do
     test "rate limit takes precedence over invalid credentials wording" do
       assert Auth.classify_failure(1, "", "Rate limit exceeded. Please wait.") == :rate_limit
       assert Auth.classify_failure(1, "", "HTTP 429 Too Many Requests") == :rate_limit
-      assert Auth.classify_failure(1, "", "quota exceeded for this account") == :rate_limit
+      assert Auth.classify_failure(1, "", "usage quota exceeded for this account") == :rate_limit
+    end
+
+    test "bare disk-quota / SSL-expired / stray HTTP codes no longer misclassify as auth (#208)" do
+      # EDQUOT "disk quota" must not read as a rate limit (only "usage quota" does).
+      refute Auth.classify_failure(1, "", "write failed: disk quota exceeded") == :rate_limit
+      # "SSL certificate expired" must not read as an expired credential.
+      refute Auth.classify_failure(1, "", "SSL certificate has expired") == :expired
+      # A bare 401/403 in arbitrary output must not read as invalid credentials.
+      refute Auth.classify_failure(1, "", "downstream returned 403 for /assets/401.png") ==
+               :invalid_credentials
     end
 
     test "provider error when bedrock/vertex appears alongside an auth signal" do
