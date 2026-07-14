@@ -21,6 +21,17 @@ defmodule ClaudeWrapper.Telemetry do
       emitted around `ClaudeWrapper.Session.send/3` (a single turn
       of a multi-turn session).
 
+    * `[:claude_wrapper, :duplex, :session, :start | :stop]` --
+      emitted around a `ClaudeWrapper.DuplexSession` process lifetime
+      (`:start` on a successful open, `:stop` on terminate).
+
+    * `[:claude_wrapper, :duplex, :turn, :start | :stop | :exception]` --
+      emitted around a single `ClaudeWrapper.DuplexSession.send/3` turn.
+      A turn spans several GenServer messages, so these are a manual
+      start/stop pair (like the stream lifecycle): `:start` on send,
+      `:stop` on the terminal `result`, `:exception` if the turn fails
+      before a result (e.g. the subprocess exits mid-turn).
+
   ## Measurements
 
   Automatically populated by `:telemetry.span/3`:
@@ -132,6 +143,78 @@ defmodule ClaudeWrapper.Telemetry do
       stop_metadata = Map.merge(start_metadata, session_turn_stop_metadata(result))
       {result, stop_metadata}
     end)
+  end
+
+  @doc """
+  Emit `[:claude_wrapper, :duplex, :session, :start]` and return the start
+  monotonic time, to pass to `duplex_session_stop/2`.
+  """
+  @spec duplex_session_start(metadata()) :: integer()
+  def duplex_session_start(metadata) do
+    monotonic = System.monotonic_time()
+
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :session, :start],
+      %{monotonic_time: monotonic, system_time: System.system_time()},
+      metadata
+    )
+
+    monotonic
+  end
+
+  @doc "Emit `[:claude_wrapper, :duplex, :session, :stop]` for a started session."
+  @spec duplex_session_stop(integer() | nil, metadata()) :: :ok
+  def duplex_session_stop(nil, _metadata), do: :ok
+
+  def duplex_session_stop(monotonic, metadata) do
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :session, :stop],
+      %{monotonic_time: System.monotonic_time(), duration: System.monotonic_time() - monotonic},
+      metadata
+    )
+  end
+
+  @doc """
+  Emit `[:claude_wrapper, :duplex, :turn, :start]` and return a span context
+  (`{monotonic, metadata}`) to pass to `duplex_turn_stop/2` or
+  `duplex_turn_exception/2`. A turn spans several GenServer messages, so it uses
+  this manual pair rather than `:telemetry.span/3`.
+  """
+  @spec duplex_turn_start(metadata()) :: {integer(), metadata()}
+  def duplex_turn_start(metadata) do
+    monotonic = System.monotonic_time()
+
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :turn, :start],
+      %{monotonic_time: monotonic, system_time: System.system_time()},
+      metadata
+    )
+
+    {monotonic, metadata}
+  end
+
+  @doc "Emit `[:claude_wrapper, :duplex, :turn, :stop]` for a started turn span."
+  @spec duplex_turn_stop({integer(), metadata()} | nil, metadata()) :: :ok
+  def duplex_turn_stop(nil, _extra), do: :ok
+
+  def duplex_turn_stop({monotonic, metadata}, extra) do
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :turn, :stop],
+      %{monotonic_time: System.monotonic_time(), duration: System.monotonic_time() - monotonic},
+      Map.merge(metadata, extra)
+    )
+  end
+
+  @doc "Emit `[:claude_wrapper, :duplex, :turn, :exception]` for a turn that failed before a result."
+  @spec duplex_turn_exception({integer(), metadata()} | nil, term()) :: :ok
+  def duplex_turn_exception(nil, _reason), do: :ok
+
+  def duplex_turn_exception({monotonic, metadata}, reason) do
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :turn, :exception],
+      %{monotonic_time: System.monotonic_time(), duration: System.monotonic_time() - monotonic},
+      Map.merge(metadata, %{kind: :error, reason: reason, cost_usd: nil, exit_code: nil})
+    )
   end
 
   # --- Metadata builders ---
