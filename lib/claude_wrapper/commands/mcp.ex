@@ -50,15 +50,12 @@ defmodule ClaudeWrapper.Commands.Mcp do
   List configured MCP servers.
 
   `claude mcp list` emits human-readable text (it has no JSON mode), so
-  this returns the raw, trimmed output rather than structured data.
-
-  ## Options
-
-    * `:scope` - Configuration scope (`:local`, `:user`, or `:project`).
+  this returns the raw, trimmed output rather than structured data. The
+  subcommand takes no `--scope` (it lists every scope).
   """
-  @spec list(Config.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def list(%Config{} = config, opts \\ []) do
-    args = Config.base_args(config) ++ ["mcp", "list"] ++ scope_args(opts[:scope])
+  @spec list(Config.t()) :: {:ok, String.t()} | {:error, term()}
+  def list(%Config{} = config) do
+    args = Config.base_args(config) ++ ["mcp", "list"]
 
     case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
@@ -70,15 +67,12 @@ defmodule ClaudeWrapper.Commands.Mcp do
   Get details for a specific MCP server.
 
   `claude mcp get` emits human-readable text (it has no JSON mode), so
-  this returns the raw, trimmed output rather than structured data.
-
-  ## Options
-
-    * `:scope` - Configuration scope (`:local`, `:user`, or `:project`).
+  this returns the raw, trimmed output rather than structured data. The
+  subcommand takes only the server name (no `--scope`).
   """
-  @spec get(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def get(%Config{} = config, name, opts \\ []) do
-    args = Config.base_args(config) ++ ["mcp", "get", name] ++ scope_args(opts[:scope])
+  @spec get(Config.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def get(%Config{} = config, name) do
+    args = Config.base_args(config) ++ ["mcp", "get", name]
 
     case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
@@ -185,19 +179,17 @@ defmodule ClaudeWrapper.Commands.Mcp do
   @doc """
   Import MCP servers from Claude Desktop (Mac and WSL only).
 
-  The installed CLI (`claude mcp add-from-claude-desktop`) takes no name
-  argument; `name` is accepted for forward compatibility and appended as a
-  positional only when non-nil.
+  `claude mcp add-from-claude-desktop` takes no name argument -- it imports
+  all Desktop servers -- so this accepts only options.
 
   ## Options
 
     * `:scope` - Configuration scope (`:local`, `:user`, or `:project`). Emits
       `--scope`.
   """
-  @spec add_from_desktop(Config.t(), String.t() | nil, keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def add_from_desktop(%Config{} = config, name \\ nil, opts \\ []) do
-    args = Config.base_args(config) ++ add_from_desktop_args(name, opts)
+  @spec add_from_desktop(Config.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def add_from_desktop(%Config{} = config, opts \\ []) do
+    args = Config.base_args(config) ++ add_from_desktop_args(opts)
 
     case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
@@ -206,11 +198,9 @@ defmodule ClaudeWrapper.Commands.Mcp do
   end
 
   @doc false
-  @spec add_from_desktop_args(String.t() | nil, keyword()) :: [String.t()]
-  def add_from_desktop_args(name, opts) do
-    positional = if name, do: [name], else: []
-
-    ["mcp", "add-from-claude-desktop"] ++ scope_args(opts[:scope]) ++ positional
+  @spec add_from_desktop_args(keyword()) :: [String.t()]
+  def add_from_desktop_args(opts) do
+    ["mcp", "add-from-claude-desktop"] ++ scope_args(opts[:scope])
   end
 
   @doc """
@@ -264,50 +254,11 @@ defmodule ClaudeWrapper.Commands.Mcp do
     ["mcp", "serve"] ++ flags
   end
 
-  @doc """
-  Authenticate with an MCP server (HTTP, SSE, or claude.ai connector).
-
-  Wraps `claude mcp login <name>`.
-
-  ## Options
-
-    * `:no_browser` - Print the authorization URL instead of opening a browser
-      (`--no-browser`, boolean), for SSH/headless sessions.
-  """
-  @spec login(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def login(%Config{} = config, name, opts \\ []) do
-    args = Config.base_args(config) ++ login_args(name, opts)
-
-    case Config.exec(config, args) do
-      {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, Error.command_failed(code, output)}
-    end
-  end
-
-  @doc false
-  @spec login_args(String.t(), keyword()) :: [String.t()]
-  def login_args(name, opts) do
-    ["mcp", "login"] ++ bool_flag(opts[:no_browser], "--no-browser") ++ [name]
-  end
-
-  @doc """
-  Clear stored OAuth credentials for an MCP server.
-
-  Wraps `claude mcp logout <name>`.
-  """
-  @spec logout(Config.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def logout(%Config{} = config, name) do
-    args = Config.base_args(config) ++ logout_args(name)
-
-    case Config.exec(config, args) do
-      {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, Error.command_failed(code, output)}
-    end
-  end
-
-  @doc false
-  @spec logout_args(String.t()) :: [String.t()]
-  def logout_args(name), do: ["mcp", "logout", name]
+  # `claude mcp login` / `logout` were removed from the CLI (2.1.x enumerates
+  # only add/add-from-claude-desktop/add-json/get/list/remove/reset-project-
+  # choices/serve); MCP OAuth now happens interactively via `/mcp`. The wrappers
+  # were guaranteed `:command_failed` against the current CLI, so they are dropped
+  # rather than kept as dead, misleading surface.
 
   @doc """
   Reset project choices for MCP servers.

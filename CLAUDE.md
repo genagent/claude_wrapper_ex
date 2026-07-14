@@ -99,9 +99,9 @@ ClaudeWrapper.Worktrees  # git worktree introspection
 ```
 ClaudeWrapper.Command                # Behaviour for CLI commands
 ClaudeWrapper.Commands.Auth          # auth login (email/mode/sso) / logout / status / setup-token
-ClaudeWrapper.Commands.Agents        # list configured agents
+ClaudeWrapper.Commands.Agents        # list active background agent sessions (agents --json)
 ClaudeWrapper.Commands.Doctor        # claude doctor
-ClaudeWrapper.Commands.Mcp           # mcp add / add-json / add-from-desktop / serve / login / logout / list / get / remove
+ClaudeWrapper.Commands.Mcp           # mcp add / add-json / add-from-desktop / serve / list / get / remove
 ClaudeWrapper.Commands.Plugin        # plugin install/uninstall/enable/disable/update/validate/tag/details/prune
 ClaudeWrapper.Commands.Marketplace   # marketplace add/remove/list/update
 ClaudeWrapper.Commands.AutoMode      # auto-mode config / defaults / critique

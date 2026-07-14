@@ -3,17 +3,17 @@ defmodule ClaudeWrapper.BundledTest do
 
   alias ClaudeWrapper.{Bundled, Config}
 
-  describe "path/0 and pinned_version/0 (pure)" do
+  describe "path/0 and minimum_version/0 (pure)" do
     test "path is an absolute priv/bin/claude under the app" do
       path = Bundled.path()
       assert Path.type(path) == :absolute
       assert String.ends_with?(path, Path.join(["priv", "bin", "claude"]))
     end
 
-    test "pinned_version is a concrete version string" do
+    test "minimum_version is a concrete version string" do
       # The CLI reports the version as the first token of --version output.
       assert {:ok, _} =
-               ClaudeWrapper.CliVersion.parse("#{Bundled.pinned_version()} (Claude Code)")
+               ClaudeWrapper.CliVersion.parse("#{Bundled.minimum_version()} (Claude Code)")
     end
 
     test "installed? is a boolean and installed_version is nil when absent" do
@@ -54,7 +54,7 @@ defmodule ClaudeWrapper.BundledTest do
       assert File.exists?(path)
 
       assert ClaudeWrapper.CliVersion.to_string(Bundled.installed_version()) ==
-               Bundled.pinned_version()
+               Bundled.minimum_version()
     end
   end
 end

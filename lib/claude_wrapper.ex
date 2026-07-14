@@ -222,12 +222,14 @@ defmodule ClaudeWrapper do
   end
 
   @doc """
-  List configured agents.
+  List active background agent sessions (`claude agents --json`).
 
-  Returns a list of agent maps with `:name` and `:model` keys.
+  Returns the decoded JSON array of active sessions (each a raw, string-keyed
+  map). See `ClaudeWrapper.Commands.Agents`.
 
   ## Options
 
+    * `:all` - include completed sessions (`--all`)
     * `:setting_sources` - comma-separated setting sources (e.g. `"user,project"`)
 
   """

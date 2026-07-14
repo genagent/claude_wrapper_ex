@@ -2,8 +2,8 @@ defmodule Mix.Tasks.ClaudeWrapper.Install do
   @shortdoc "Install the pinned bundled claude binary into priv/bin"
 
   @moduledoc """
-  Install the opt-in bundled `claude` CLI, pinned to
-  `ClaudeWrapper.Bundled.pinned_version/0`, into the package's `priv/bin/`.
+  Install the opt-in bundled `claude` CLI (current stable, verified `>=`
+  `ClaudeWrapper.Bundled.minimum_version/0`) into the package's `priv/bin/`.
 
       mix claude_wrapper.install
 
@@ -20,7 +20,9 @@ defmodule Mix.Tasks.ClaudeWrapper.Install do
 
     case ClaudeWrapper.Bundled.ensure() do
       {:ok, path} ->
-        Mix.shell().info("claude #{ClaudeWrapper.Bundled.pinned_version()} installed at #{path}")
+        Mix.shell().info(
+          "claude installed at #{path} (>= #{ClaudeWrapper.Bundled.minimum_version()})"
+        )
 
       {:error, error} ->
         Mix.raise("bundled install failed: #{Exception.message(error)}")

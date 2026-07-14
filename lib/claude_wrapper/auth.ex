@@ -293,21 +293,44 @@ defmodule ClaudeWrapper.Auth do
     mentions_provider? and mentions_auth_signal?
   end
 
+  # NOTE (#208): needles are unanchored `String.contains?`, and the classifier
+  # runs on a stderr_to_stdout blob, so bare tokens caught non-auth failures --
+  # `"quota"` matched EDQUOT "disk quota exceeded", `"expired"` matched "SSL
+  # certificate expired", bare `"401"`/`"403"`/`"429"` matched any output. Per the
+  # module's "prefer to miss over misclassify" contract, the highest-risk needles
+  # now require adjacent context; the broader word tokens (rate limit,
+  # unauthorized, invalid api key, ...) stay as-is.
   defp rate_limit?(combined) do
-    contains_any?(combined, ["rate limit", "too many requests", "429", "quota"])
+    contains_any?(combined, [
+      "rate limit",
+      "too many requests",
+      "http 429",
+      "status 429",
+      "usage limit",
+      "usage quota"
+    ])
   end
 
   defp expired?(combined) do
-    contains_any?(combined, ["expired", "session has expired", "token expired"])
+    contains_any?(combined, [
+      "session has expired",
+      "session expired",
+      "token expired",
+      "token has expired",
+      "credentials expired",
+      "api key expired"
+    ])
   end
 
   defp invalid_credentials?(combined) do
     contains_any?(combined, [
       "invalid api key",
       "invalid token",
-      "401",
+      "http 401",
+      "status 401",
       "unauthorized",
-      "403",
+      "http 403",
+      "status 403",
       "forbidden"
     ])
   end

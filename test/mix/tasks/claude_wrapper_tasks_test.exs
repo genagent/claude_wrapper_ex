@@ -91,7 +91,7 @@ defmodule Mix.Tasks.ClaudeWrapperTasksTest do
           Install.run([])
         end)
 
-      assert output =~ Bundled.pinned_version()
+      assert output =~ Bundled.minimum_version()
       assert Bundled.installed?()
     end
   end

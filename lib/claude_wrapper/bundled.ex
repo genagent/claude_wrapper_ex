@@ -1,7 +1,10 @@
 defmodule ClaudeWrapper.Bundled do
-  # The claude CLI version this release pins the bundled binary to. Bump
-  # in lockstep with upstream CLI releases we have validated against.
-  @pinned_version "2.0.0"
+  # The MINIMUM claude CLI version the bundled binary must satisfy -- a floor,
+  # not an exact pin. The upstream installer always fetches the current stable
+  # CLI (it takes no version argument), so an exact-match assertion failed on
+  # every healthy machine once the installer moved past this value; a floor
+  # accepts the installed CLI as long as it is at least this validated version.
+  @minimum_version "2.0.0"
 
   @moduledoc """
   Opt-in bundled-binary resolution for the `claude` CLI.
@@ -26,26 +29,26 @@ defmodule ClaudeWrapper.Bundled do
 
       mix claude_wrapper.install      # or: ClaudeWrapper.Bundled.ensure!()
 
-  `ensure/0` installs only when the binary is missing or its version does
-  not match `pinned_version/0`.
+  `ensure/0` installs only when the binary is missing or its version is
+  below `minimum_version/0`.
 
-  ## Version pin
+  ## Minimum version
 
-  The pinned version is `#{@pinned_version}`.
-  `install/0` verifies the freshly-installed binary reports that version;
-  it does not attempt to coerce an arbitrary version out of the upstream
-  installer.
+  The bundled binary must be at least `#{@minimum_version}`.
+  `install/0` fetches the current stable CLI and verifies it reports a
+  version `>=` this floor; it does not coerce an exact version out of the
+  upstream installer (which takes no version argument).
   """
 
   alias ClaudeWrapper.{CliVersion, Error}
 
-  # Anthropic's official installer (POSIX shell). Piped to `sh` with a
-  # temp HOME so it does not touch the user's real install.
+  # Anthropic's official installer (POSIX shell). Downloaded to a temp file
+  # and run with a temp HOME so it does not touch the user's real install.
   @install_script_url "https://claude.ai/install.sh"
 
-  @doc "The pinned CLI version the bundled binary is expected to be."
-  @spec pinned_version() :: String.t()
-  def pinned_version, do: @pinned_version
+  @doc "The minimum CLI version the bundled binary must satisfy (a floor)."
+  @spec minimum_version() :: String.t()
+  def minimum_version, do: @minimum_version
 
   @doc """
   Absolute path to the bundled binary, `priv/bin/claude`.
@@ -83,7 +86,7 @@ defmodule ClaudeWrapper.Bundled do
   end
 
   @doc """
-  Ensure a bundled binary matching `pinned_version/0` is installed.
+  Ensure a bundled binary satisfying `minimum_version/0` is installed.
 
   Installs when the binary is missing or reports a different version;
   otherwise a no-op. Returns `{:ok, path}` or `{:error, %Error{}}`.
@@ -139,7 +142,15 @@ defmodule ClaudeWrapper.Bundled do
 
   defp up_to_date? do
     case {installed?(), installed_version()} do
-      {true, %CliVersion{} = v} -> CliVersion.to_string(v) == @pinned_version
+      {true, %CliVersion{} = v} -> meets_minimum?(v)
+      _ -> false
+    end
+  end
+
+  # The installed CLI satisfies the floor (installed >= @minimum_version).
+  defp meets_minimum?(%CliVersion{} = installed) do
+    case CliVersion.parse(@minimum_version) do
+      {:ok, minimum} -> CliVersion.check_version(installed, minimum) == :ok
       _ -> false
     end
   end
@@ -156,12 +167,21 @@ defmodule ClaudeWrapper.Bundled do
 
   defp run_installer(tmp_home) do
     env = [{"HOME", tmp_home}]
-    cmd = "curl -fsSL #{@install_script_url} | sh"
+    script = Path.join(tmp_home, "install.sh")
 
-    case System.cmd("sh", ["-c", cmd], env: env, stderr_to_stdout: true) do
-      {_out, 0} ->
-        locate_installed(tmp_home)
-
+    # Download to a file FIRST, then run it -- do not `curl ... | sh`. A POSIX
+    # pipeline exits with `sh`'s status, so a curl-side failure (404 under -f,
+    # DNS/TLS error, mid-stream reset, curl missing) would exit 0 with sh having
+    # run on empty/partial stdin: fail-open, with curl's stderr discarded.
+    # Checking curl's own exit code makes a download failure a real error.
+    with {_out, 0} <-
+           System.cmd("curl", ["-fsSL", "-o", script, @install_script_url],
+             env: env,
+             stderr_to_stdout: true
+           ),
+         {_out, 0} <- System.cmd("sh", [script], env: env, stderr_to_stdout: true) do
+      locate_installed(tmp_home)
+    else
       {out, code} ->
         {:error,
          Error.new(:command_failed,
@@ -234,12 +254,12 @@ defmodule ClaudeWrapper.Bundled do
   defp check_pinned(version_output, _dest) do
     case CliVersion.parse(version_output) do
       {:ok, v} ->
-        if CliVersion.to_string(v) == @pinned_version do
+        if meets_minimum?(v) do
           :ok
         else
           {:error,
            Error.new(:version_mismatch,
-             reason: {:expected, @pinned_version, :got, CliVersion.to_string(v)}
+             reason: {:minimum, @minimum_version, :got, CliVersion.to_string(v)}
            )}
         end
 

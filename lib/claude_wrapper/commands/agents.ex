@@ -1,54 +1,60 @@
 defmodule ClaudeWrapper.Commands.Agents do
   @moduledoc """
-  `claude agents` command -- lists configured agents.
+  `claude agents` command -- lists active background agent sessions.
+
+  Bare `claude agents` is an interactive, TTY-oriented view; the scripting
+  surface is `claude agents --json`, which "Print[s] active sessions as a JSON
+  array and exit[s] ... does not require a TTY". This module uses `--json` and
+  decodes that array, so it returns **active sessions** (not configured agents).
+  Each element is the CLI's raw session map (string keys).
 
   ## Usage
 
       config = ClaudeWrapper.Config.new()
 
-      # Parsed list of agent names and models
-      {:ok, agents} = ClaudeWrapper.Commands.Agents.list(config)
+      # Active background sessions (decoded JSON array)
+      {:ok, sessions} = ClaudeWrapper.Commands.Agents.list(config)
 
-      # Raw CLI output
-      {:ok, output} = ClaudeWrapper.Commands.Agents.execute(config)
+      # Include completed sessions too
+      {:ok, sessions} = ClaudeWrapper.Commands.Agents.list(config, all: true)
 
-      # Restrict which setting sources are loaded
-      {:ok, agents} = ClaudeWrapper.Commands.Agents.list(config, setting_sources: "user,project")
+      # Raw --json output string
+      {:ok, json} = ClaudeWrapper.Commands.Agents.execute(config)
   """
 
   alias ClaudeWrapper.{Config, Error}
 
-  @type agent :: %{
-          name: String.t(),
-          model: String.t()
-        }
+  @typedoc "A background-agent session as reported by `claude agents --json` (raw, string-keyed)."
+  @type session :: map()
 
   @doc """
-  Run `claude agents` and return the parsed agent list.
+  Run `claude agents --json` and return the decoded array of active sessions.
 
   ## Options
 
+    * `:all` - include completed sessions, not just active ones (`--all`)
     * `:setting_sources` - comma-separated setting sources to load
       (e.g. `"user,project"`)
-
-  ## Examples
-
-      {:ok, agents} = ClaudeWrapper.Commands.Agents.list(config)
-      # => {:ok, [%{name: "Explore", model: "haiku"}, ...]}
-
   """
-  @spec list(Config.t(), keyword()) :: {:ok, [agent()]} | {:error, term()}
+  @spec list(Config.t(), keyword()) :: {:ok, [session()]} | {:error, term()}
   def list(%Config{} = config, opts \\ []) do
     args = Config.base_args(config) ++ list_args(opts)
 
     case Config.exec(config, args) do
-      {output, 0} -> {:ok, parse_agents(output)}
-      {output, code} -> {:error, Error.command_failed(code, output)}
+      {output, 0} ->
+        case Jason.decode(output) do
+          {:ok, sessions} when is_list(sessions) -> {:ok, sessions}
+          {:ok, _other} -> {:error, Error.json(:not_an_array, output)}
+          {:error, reason} -> {:error, Error.json(reason, output)}
+        end
+
+      {output, code} ->
+        {:error, Error.command_failed(code, output)}
     end
   end
 
   @doc """
-  Run `claude agents` and return the raw output string.
+  Run `claude agents --json` and return the raw output string.
   """
   @spec execute(Config.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def execute(%Config{} = config, opts \\ []) do
@@ -63,23 +69,12 @@ defmodule ClaudeWrapper.Commands.Agents do
   @doc false
   @spec list_args(keyword()) :: [String.t()]
   def list_args(opts) do
+    args = ["agents", "--json"]
+    args = if opts[:all], do: args ++ ["--all"], else: args
+
     case Keyword.get(opts, :setting_sources) do
-      nil -> ["agents"]
-      sources -> ["agents", "--setting-sources", sources]
+      nil -> args
+      sources -> args ++ ["--setting-sources", sources]
     end
-  end
-
-  defp parse_agents(output) do
-    output
-    |> String.split("\n")
-    |> Enum.reduce([], fn line, acc ->
-      line = String.trim(line)
-
-      case Regex.run(~r/^(.+?)\s+·\s+(.+)$/, line) do
-        [_, name, model] -> [%{name: String.trim(name), model: String.trim(model)} | acc]
-        _ -> acc
-      end
-    end)
-    |> Enum.reverse()
   end
 end

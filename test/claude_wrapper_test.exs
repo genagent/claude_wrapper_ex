@@ -918,37 +918,24 @@ defmodule ClaudeWrapperTest do
       Code.ensure_loaded!(Mcp)
       funcs = Mcp.__info__(:functions)
 
-      assert {:list, 2} in funcs
-      assert {:get, 3} in funcs
+      assert {:list, 1} in funcs
+      assert {:get, 2} in funcs
       assert {:add, 5} in funcs
       assert {:add_json, 4} in funcs
-      assert {:add_from_desktop, 3} in funcs
+      assert {:add_from_desktop, 2} in funcs
       assert {:remove, 3} in funcs
       assert {:serve, 2} in funcs
-      assert {:login, 3} in funcs
-      assert {:logout, 2} in funcs
       assert {:reset_project_choices, 1} in funcs
+
+      # login/logout are gone: the current CLI has no `mcp login`/`logout`.
+      refute {:login, 3} in funcs
+      refute {:logout, 2} in funcs
 
       # @doc false builders are public for arg-composition testing.
       assert {:add_args, 4} in funcs
       assert {:add_json_args, 3} in funcs
-      assert {:add_from_desktop_args, 2} in funcs
+      assert {:add_from_desktop_args, 1} in funcs
       assert {:serve_args, 1} in funcs
-      assert {:login_args, 2} in funcs
-      assert {:logout_args, 1} in funcs
-    end
-
-    test "login_args defaults to subcommand plus name" do
-      assert Mcp.login_args("sentry", []) == ["mcp", "login", "sentry"]
-    end
-
-    test "login_args emits --no-browser before the name" do
-      assert Mcp.login_args("sentry", no_browser: true) ==
-               ["mcp", "login", "--no-browser", "sentry"]
-    end
-
-    test "logout_args is subcommand plus name" do
-      assert Mcp.logout_args("sentry") == ["mcp", "logout", "sentry"]
     end
 
     test "add_args defaults to subcommand plus positionals" do
@@ -1106,20 +1093,12 @@ defmodule ClaudeWrapperTest do
     end
 
     test "add_from_desktop_args defaults to just the subcommand" do
-      assert Mcp.add_from_desktop_args(nil, []) == ["mcp", "add-from-claude-desktop"]
+      assert Mcp.add_from_desktop_args([]) == ["mcp", "add-from-claude-desktop"]
     end
 
-    test "add_from_desktop_args emits --scope" do
-      assert Mcp.add_from_desktop_args(nil, scope: :user) ==
+    test "add_from_desktop_args emits --scope (and takes no name -- the CLI has none)" do
+      assert Mcp.add_from_desktop_args(scope: :user) ==
                ["mcp", "add-from-claude-desktop", "--scope", "user"]
-    end
-
-    test "add_from_desktop_args appends a name positional when given" do
-      assert Mcp.add_from_desktop_args("srv", []) ==
-               ["mcp", "add-from-claude-desktop", "srv"]
-
-      assert Mcp.add_from_desktop_args("srv", scope: :project) ==
-               ["mcp", "add-from-claude-desktop", "--scope", "project", "srv"]
     end
 
     test "serve_args defaults to just the subcommand" do
@@ -1262,52 +1241,21 @@ defmodule ClaudeWrapperTest do
       assert {:list_args, 1} in Agents.__info__(:functions)
     end
 
-    test "list_args defaults to just the subcommand" do
-      assert Agents.list_args([]) == ["agents"]
+    test "list_args always requests --json (the TTY-safe scripting surface)" do
+      assert Agents.list_args([]) == ["agents", "--json"]
+    end
+
+    test "list_args emits --all when requested" do
+      assert Agents.list_args(all: true) == ["agents", "--json", "--all"]
     end
 
     test "list_args emits --setting-sources with the value" do
       assert Agents.list_args(setting_sources: "user,project") ==
-               ["agents", "--setting-sources", "user,project"]
+               ["agents", "--json", "--setting-sources", "user,project"]
     end
 
     test "list_args omits --setting-sources when unset" do
       refute "--setting-sources" in Agents.list_args([])
-    end
-
-    test "parse_agents extracts agent names and models" do
-      output = """
-      5 active agents
-
-      Built-in agents:
-        claude-code-guide · haiku
-        Explore · haiku
-        general-purpose · inherit
-        Plan · inherit
-        statusline-setup · sonnet
-      """
-
-      # Call list via execute and parse manually to test parsing
-      # (list calls System.cmd which we can't mock easily here)
-      agents =
-        output
-        |> String.split("\n")
-        |> Enum.reduce([], fn line, acc ->
-          line = String.trim(line)
-
-          case Regex.run(~r/^(.+?)\s+·\s+(.+)$/, line) do
-            [_, name, model] -> [%{name: String.trim(name), model: String.trim(model)} | acc]
-            _ -> acc
-          end
-        end)
-        |> Enum.reverse()
-
-      assert length(agents) == 5
-      assert %{name: "claude-code-guide", model: "haiku"} in agents
-      assert %{name: "Explore", model: "haiku"} in agents
-      assert %{name: "general-purpose", model: "inherit"} in agents
-      assert %{name: "Plan", model: "inherit"} in agents
-      assert %{name: "statusline-setup", model: "sonnet"} in agents
     end
   end
 
