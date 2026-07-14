@@ -6,7 +6,7 @@ defmodule ClaudeWrapper.RunnerConfigTest do
   # async: false -- the raw/2 and stream tests swap the global `:runner`.
   use ExUnit.Case, async: false
 
-  alias ClaudeWrapper.{Config, Error, Query}
+  alias ClaudeWrapper.{Config, Error, Query, Result}
 
   defmodule TimeoutRunner do
     @behaviour ClaudeWrapper.Runner
@@ -20,6 +20,56 @@ defmodule ClaudeWrapper.RunnerConfigTest do
     @behaviour ClaudeWrapper.Runner
     @impl true
     def run(_binary, _args, _opts, _timeout), do: {:ok, {"out\n", 0}}
+    @impl true
+    def stream_lines(_binary, _args, _opts, _timeout), do: []
+  end
+
+  # Leading noise + a decoy system/init line before the terminal result line, to
+  # exercise extract_json's noise-skipping and last-JSON-line selection (#232).
+  defmodule NoisyJsonRunner do
+    @behaviour ClaudeWrapper.Runner
+    @impl true
+    def run(_binary, _args, _opts, _timeout) do
+      stdout =
+        [
+          "[warning] npm notice",
+          Jason.encode!(%{"type" => "system", "subtype" => "init", "session_id" => "s1"}),
+          Jason.encode!(%{
+            "type" => "result",
+            "subtype" => "success",
+            "result" => "ok",
+            "num_turns" => 1
+          })
+        ]
+        |> Enum.join("\n")
+
+      {:ok, {stdout, 0}}
+    end
+
+    @impl true
+    def stream_lines(_binary, _args, _opts, _timeout), do: []
+  end
+
+  defmodule NoJsonRunner do
+    @behaviour ClaudeWrapper.Runner
+    @impl true
+    def run(_binary, _args, _opts, _timeout), do: {:ok, {"warning: something\nstill not json", 0}}
+    @impl true
+    def stream_lines(_binary, _args, _opts, _timeout), do: []
+  end
+
+  defmodule EmptyRunner do
+    @behaviour ClaudeWrapper.Runner
+    @impl true
+    def run(_binary, _args, _opts, _timeout), do: {:ok, {"", 0}}
+    @impl true
+    def stream_lines(_binary, _args, _opts, _timeout), do: []
+  end
+
+  defmodule IoErrorRunner do
+    @behaviour ClaudeWrapper.Runner
+    @impl true
+    def run(_binary, _args, _opts, _timeout), do: {:error, :closed}
     @impl true
     def stream_lines(_binary, _args, _opts, _timeout), do: []
   end
@@ -108,6 +158,35 @@ defmodule ClaudeWrapper.RunnerConfigTest do
 
       assert last.type == "error"
       assert last.data["error"] == "stream_truncated"
+    end
+  end
+
+  describe "Query.execute/2 offline via Runner override (#232)" do
+    defp execute(runner) do
+      Application.put_env(:claude_wrapper, :runner, runner)
+      "hi" |> Query.new() |> Query.execute(Config.new())
+    end
+
+    test "skips leading noise and selects the last JSON line" do
+      # proves extract_json both skips the warning line AND picks the terminal
+      # result over the earlier system/init decoy.
+      assert {:ok, %Result{result: "ok", num_turns: 1}} = execute(NoisyJsonRunner)
+    end
+
+    test "maps non-JSON stdout to an Error.json" do
+      assert {:error, %Error{kind: :json}} = execute(NoJsonRunner)
+    end
+
+    test "maps empty stdout to an Error.json" do
+      assert {:error, %Error{kind: :json}} = execute(EmptyRunner)
+    end
+
+    test "maps a runner timeout to Error.timeout" do
+      assert {:error, %Error{kind: :timeout}} = execute(TimeoutRunner)
+    end
+
+    test "maps a generic runner error to Error.io" do
+      assert {:error, %Error{kind: :io}} = execute(IoErrorRunner)
     end
   end
 end

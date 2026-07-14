@@ -170,6 +170,26 @@ defmodule ClaudeWrapper.StreamTest do
       assert {:error, %ClaudeWrapper.Error{kind: :turn_in_flight}} = List.last(events)
     end
 
+    test "an abnormal turn-process exit surfaces a terminal :duplex_closed (no hang, #233)" do
+      pid = start_with_fake_claude()
+      # start_link linked this session to the test process; unlink so the brutal
+      # kill below does not also take down the test.
+      Process.unlink(pid)
+
+      # Once the stream has subscribed, the turn's send/3 is a GenServer.call in
+      # flight; brutally killing the session makes that call exit abnormally, so
+      # the stream's monitored turn process goes DOWN non-:normal -- the branch
+      # under test (and cleanup/1's unsubscribe then hits a dead session).
+      spawn(fn ->
+        wait_for_subscriber(pid)
+        Process.exit(pid, :kill)
+      end)
+
+      events = pid |> CWStream.stream("hi") |> Enum.to_list()
+
+      assert [{:error, %ClaudeWrapper.Error{kind: :duplex_closed}}] = events
+    end
+
     # The occupying turn registers a pending_turn but no subscriber; wait
     # for the pending turn to be in flight before the stream sends.
     defp wait_for_subscriber_free(pid, deadline \\ nil) do
