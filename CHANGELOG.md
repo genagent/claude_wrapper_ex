@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/genagent/claude_wrapper_ex/compare/v0.13.1...v0.13.2) (2026-07-14)
+
+
+### Bug Fixes
+
+* support variadic --betas and give actionable enum-option errors ([#240](https://github.com/genagent/claude_wrapper_ex/issues/240)) ([f8e6811](https://github.com/genagent/claude_wrapper_ex/commit/f8e68118d9b150220a87c12efaaabcb1f3fd16c9))
+
 ## [0.13.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.13.0...v0.13.1) (2026-07-14)
 
 
