@@ -1,7 +1,7 @@
 defmodule ClaudeWrapper.MixProject do
   use Mix.Project
 
-  @version "0.13.0"
+  @version "0.13.1"
   @source_url "https://github.com/genagent/claude_wrapper_ex"
 
   def project do
