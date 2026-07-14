@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.14.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.13.2...v0.14.0) (2026-07-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* removed Commands.Mcp.login/3 and logout/2; Commands.Mcp list/get/add_from_desktop lost their scope/name arguments (arity changes); Commands.Agents now returns active sessions (not %{name, model}); renamed Bundled.pinned_version/0 to minimum_version/0.
+
+### Features
+
+* expose missing CLI flags, retry rate limits, codepoint-safe truncation ([#247](https://github.com/genagent/claude_wrapper_ex/issues/247)) ([ad20e3d](https://github.com/genagent/claude_wrapper_ex/commit/ad20e3d1cddc083dd158d822c714d9fff2d888f8))
+* instrument DuplexSession with telemetry ([#215](https://github.com/genagent/claude_wrapper_ex/issues/215)) ([#245](https://github.com/genagent/claude_wrapper_ex/issues/245)) ([c554d37](https://github.com/genagent/claude_wrapper_ex/commit/c554d372c7637de74c600ea6d2ebb03b6cbdb2e3))
+
+
+### Bug Fixes
+
+* honor config.timeout across surfaces; observable stream truncation; reap duplex owner; harden :defer ([#242](https://github.com/genagent/claude_wrapper_ex/issues/242)) ([c0adcd9](https://github.com/genagent/claude_wrapper_ex/commit/c0adcd952889ed76e25ce59ee5a2e0758ec95d23))
+* prune/repair CLI-contract drift (mcp, agents, bundled install, auth classifier) ([#244](https://github.com/genagent/claude_wrapper_ex/issues/244)) ([8bf2458](https://github.com/genagent/claude_wrapper_ex/commit/8bf2458c52b24dad850897158573e201dd77f802))
+
 ## [0.13.2](https://github.com/genagent/claude_wrapper_ex/compare/v0.13.1...v0.13.2) (2026-07-14)
 
 
