@@ -293,7 +293,7 @@ defmodule ClaudeWrapper.Query do
   @spec worktree(t(), String.t()) :: t()
   def worktree(%__MODULE__{} = q, name) when is_binary(name), do: %{q | worktree: name}
 
-  @doc "Enable brief mode."
+  @doc "Enable the SendUserMessage tool for agent-to-user communication (`--brief`)."
   @spec brief(t()) :: t()
   def brief(%__MODULE__{} = q), do: %{q | brief: true}
 

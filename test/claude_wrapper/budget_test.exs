@@ -25,6 +25,12 @@ defmodule ClaudeWrapper.BudgetTest do
       assert Budget.total(b) == 0.0
     end
 
+    test "a nil cost is a no-op (recording result.cost_usd directly is safe)" do
+      b = start_budget()
+      assert :ok = Budget.record(b, nil)
+      assert Budget.total(b) == 0.0
+    end
+
     test "accepts integer costs" do
       b = start_budget()
       assert :ok = Budget.record(b, 1)
