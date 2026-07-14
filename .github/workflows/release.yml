@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+# Queue release runs; never cancel a publish mid-flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -29,7 +34,11 @@ jobs:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     steps:
+      # Check out the released tag, not the triggering sha (release-please tags
+      # the release-PR merge commit, which may not be the commit that fired this).
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - uses: erlef/setup-beam@v1
         with:
@@ -38,6 +47,30 @@ jobs:
 
       - name: Install dependencies
         run: mix deps.get
+
+      # Gate the publish on CI's quality suite. release.yml and ci.yml are
+      # separate workflows, so a `needs:` cannot link them and main has no
+      # required-status-check protection -- without this, a red main (failing
+      # tests, a credo/format/warning regression) publishes to Hex regardless
+      # (`mix hex.publish` compiles without --warnings-as-errors and runs no
+      # tests). #203.
+      - name: Audit deps for retirements/advisories
+        run: mix hex.audit
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Credo
+        run: mix credo --strict
+
+      - name: Run tests
+        run: mix test
+
+      - name: Build docs
+        run: mix docs
 
       - name: Publish
         env:
