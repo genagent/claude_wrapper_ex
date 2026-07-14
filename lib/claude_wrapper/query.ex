@@ -700,18 +700,25 @@ defmodule ClaudeWrapper.Query do
     |> drop_print_flag()
   end
 
-  # build_args/1 always emits `--print <prompt>` first (via add_flag),
-  # so the prompt is guaranteed to be the leading pair.
-  defp drop_print_flag(["--print", _prompt | rest]), do: rest
-  defp drop_print_flag(args), do: args
+  # build_args/1 emits a bare leading `--print` and the prompt last (after a
+  # `--` separator). A duplex session sends prompts per-turn over stdin, so strip
+  # both the leading flag and the trailing `-- <prompt>`.
+  defp drop_print_flag(["--print" | rest]), do: drop_trailing_prompt(rest)
+  defp drop_print_flag(args), do: drop_trailing_prompt(args)
+
+  defp drop_trailing_prompt(args) do
+    case Enum.reverse(args) do
+      [_prompt, "--" | rev_rest] -> Enum.reverse(rev_rest)
+      _ -> args
+    end
+  end
 
   @doc false
   @spec build_args(t()) :: [String.t()]
   def build_args(%__MODULE__{} = q) do
     q = resolve_hermetic(q)
 
-    []
-    |> add_flag("--print", q.prompt)
+    ["--print"]
     |> add_opt("--model", q.model)
     |> add_opt("--system-prompt", q.system_prompt)
     |> add_opt("--append-system-prompt", q.append_system_prompt)
@@ -761,6 +768,7 @@ defmodule ClaudeWrapper.Query do
       "--exclude-dynamic-system-prompt-sections",
       q.exclude_dynamic_system_prompt_sections
     )
+    |> append_prompt(q.prompt)
   end
 
   # Expand the hermetic preset into its three underlying flags. Done here,
@@ -782,7 +790,13 @@ defmodule ClaudeWrapper.Query do
   defp hermetic_setting_sources(:full), do: ""
   defp hermetic_setting_sources(:project), do: "user"
 
-  defp add_flag(args, flag, value), do: args ++ [flag, value]
+  # The prompt is a positional argument, emitted LAST after a `--`
+  # end-of-options separator so a prompt beginning with `-`/`--` (a diff line, a
+  # markdown bullet, a negative number, pasted patch text) is taken literally by
+  # the CLI's option parser instead of being parsed as a flag.
+  defp append_prompt(args, nil), do: args
+  defp append_prompt(args, prompt), do: args ++ ["--", prompt]
+
   defp add_opt(args, _flag, nil), do: args
   defp add_opt(args, flag, value), do: args ++ [flag, value]
   defp add_bool(args, _flag, false), do: args
@@ -848,14 +862,25 @@ defmodule ClaudeWrapper.Query do
 
   # Execute through the configured runner and normalize to this module's
   # {:ok, stdout} | {:error, %Error{}} contract. A non-zero exit becomes
-  # :command_failed (do_execute re-inspects it for a JSON rail-stop
-  # result); a timeout becomes :timeout; anything else is :io.
+  # :command_failed (do_execute re-inspects it for a JSON rail-stop result); a
+  # timeout becomes :timeout; a missing/unlaunchable binary becomes the typed
+  # :binary_not_found; anything else is :io.
   defp run_cmd(binary, args, opts, timeout) do
     case Runner.impl().run(binary, args, opts, timeout) do
-      {:ok, {stdout, 0}} -> {:ok, stdout}
-      {:ok, {stdout, code}} -> {:error, Error.command_failed(code, stdout)}
-      {:error, :timeout} -> {:error, Error.timeout(timeout)}
-      {:error, reason} -> {:error, Error.io(reason)}
+      {:ok, {stdout, 0}} ->
+        {:ok, stdout}
+
+      {:ok, {stdout, code}} ->
+        {:error, Error.command_failed(code, stdout)}
+
+      {:error, :timeout} ->
+        {:error, Error.timeout(timeout)}
+
+      {:error, {:binary_not_found, _reason}} ->
+        {:error, Error.new(:binary_not_found, reason: binary)}
+
+      {:error, reason} ->
+        {:error, Error.io(reason)}
     end
   end
 end
