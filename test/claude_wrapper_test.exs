@@ -700,6 +700,35 @@ defmodule ClaudeWrapperTest do
       assert McpConfig.get_server(roundtripped, "remote").url == "https://example.com"
     end
 
+    test "preserves an http server (url + headers) through to_json/from_map (#199)" do
+      config =
+        McpConfig.new()
+        |> McpConfig.add_http("sentry", "https://mcp.sentry.dev/mcp",
+          headers: %{"Authorization" => "Bearer abc"}
+        )
+
+      json = McpConfig.to_json(config)
+      {:ok, data} = Jason.decode(json)
+
+      assert data["mcpServers"]["sentry"]["type"] == "http"
+      assert data["mcpServers"]["sentry"]["url"] == "https://mcp.sentry.dev/mcp"
+      assert data["mcpServers"]["sentry"]["headers"] == %{"Authorization" => "Bearer abc"}
+
+      rt = McpConfig.from_map(data)
+      assert McpConfig.get_server(rt, "sentry").url == "https://mcp.sentry.dev/mcp"
+      assert McpConfig.get_server(rt, "sentry").headers == %{"Authorization" => "Bearer abc"}
+    end
+
+    test "a read-modify-write does not drop an http server's url (#199)" do
+      # Simulates reading a project .mcp.json with an http server and writing it
+      # back; previously the url was silently rewritten away to {"type":"http"}.
+      data = %{"mcpServers" => %{"x" => %{"type" => "http", "url" => "https://x.example"}}}
+      json = data |> McpConfig.from_map() |> McpConfig.to_json()
+      {:ok, out} = Jason.decode(json)
+
+      assert out["mcpServers"]["x"]["url"] == "https://x.example"
+    end
+
     test "write! and read roundtrip" do
       path = Path.join(System.tmp_dir!(), "test_mcp_#{:rand.uniform(100_000)}.json")
 
@@ -931,26 +960,27 @@ defmodule ClaudeWrapperTest do
                ["mcp", "add", "srv", "my-command", "--some-flag", "arg1"]
     end
 
-    test "add_args emits --transport before the positionals" do
+    test "add_args emits the positionals before the flags (#202)" do
       assert Mcp.add_args("sentry", "https://mcp.sentry.dev/mcp", [], transport: :http) ==
-               ["mcp", "add", "--transport", "http", "sentry", "https://mcp.sentry.dev/mcp"]
+               ["mcp", "add", "sentry", "https://mcp.sentry.dev/mcp", "--transport", "http"]
 
       assert Mcp.add_args("s", "u", [], transport: :sse) ==
-               ["mcp", "add", "--transport", "sse", "s", "u"]
+               ["mcp", "add", "s", "u", "--transport", "sse"]
 
       assert Mcp.add_args("s", "u", [], transport: :stdio) ==
-               ["mcp", "add", "--transport", "stdio", "s", "u"]
+               ["mcp", "add", "s", "u", "--transport", "stdio"]
     end
 
-    test "add_args emits env as repeated -e KEY=value (map and keyword)" do
+    test "add_args emits env as repeated -e KEY=value, after the positionals (#202)" do
+      # name/commandOrUrl must precede the variadic -e or the CLI swallows them.
       assert Mcp.add_args("s", "npx", [], env: %{"API_KEY" => "xxx"}) ==
-               ["mcp", "add", "-e", "API_KEY=xxx", "s", "npx"]
+               ["mcp", "add", "s", "npx", "-e", "API_KEY=xxx"]
 
       assert Mcp.add_args("s", "npx", [], env: [API_KEY: "xxx"]) ==
-               ["mcp", "add", "-e", "API_KEY=xxx", "s", "npx"]
+               ["mcp", "add", "s", "npx", "-e", "API_KEY=xxx"]
     end
 
-    test "add_args emits one --header per header (list)" do
+    test "add_args emits one --header per header, after the positionals (#202)" do
       args =
         Mcp.add_args("c", "https://app.corridor.dev/api/mcp", [],
           transport: :http,
@@ -960,14 +990,14 @@ defmodule ClaudeWrapperTest do
       assert args == [
                "mcp",
                "add",
+               "c",
+               "https://app.corridor.dev/api/mcp",
                "--transport",
                "http",
                "--header",
                "Authorization: Bearer abc",
                "--header",
-               "X-Custom: value",
-               "c",
-               "https://app.corridor.dev/api/mcp"
+               "X-Custom: value"
              ]
 
       assert Enum.count(args, &(&1 == "--header")) == 2
@@ -975,7 +1005,7 @@ defmodule ClaudeWrapperTest do
 
     test "add_args accepts headers as a map rendered Key: Value" do
       assert Mcp.add_args("s", "u", [], header: %{"X-Api-Key" => "abc123"}) ==
-               ["mcp", "add", "--header", "X-Api-Key: abc123", "s", "u"]
+               ["mcp", "add", "s", "u", "--header", "X-Api-Key: abc123"]
     end
 
     test "add_args emits server_args after a -- separator" do
@@ -992,7 +1022,7 @@ defmodule ClaudeWrapperTest do
 
     test "add_args emits --callback-port with a stringified value" do
       assert Mcp.add_args("s", "https://example.com/mcp", [], callback_port: 8080) ==
-               ["mcp", "add", "--callback-port", "8080", "s", "https://example.com/mcp"]
+               ["mcp", "add", "s", "https://example.com/mcp", "--callback-port", "8080"]
     end
 
     test "add_args emits --client-id and --client-secret together" do
@@ -1003,11 +1033,11 @@ defmodule ClaudeWrapperTest do
                [
                  "mcp",
                  "add",
+                 "s",
+                 "https://example.com/mcp",
                  "--client-id",
                  "my-app-id",
-                 "--client-secret",
-                 "s",
-                 "https://example.com/mcp"
+                 "--client-secret"
                ]
     end
 
@@ -1030,6 +1060,8 @@ defmodule ClaudeWrapperTest do
       assert args == [
                "mcp",
                "add",
+               "srv",
+               "https://example.com/mcp",
                "--transport",
                "http",
                "--scope",
@@ -1040,9 +1072,7 @@ defmodule ClaudeWrapperTest do
                "9000",
                "--client-id",
                "cid",
-               "--client-secret",
-               "srv",
-               "https://example.com/mcp"
+               "--client-secret"
              ]
     end
 
