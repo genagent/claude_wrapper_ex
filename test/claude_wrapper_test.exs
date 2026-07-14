@@ -351,12 +351,12 @@ defmodule ClaudeWrapperTest do
   describe "named worktree (#84)" do
     test "worktree/1 emits the bare flag" do
       assert Query.new("p") |> Query.worktree() |> Query.build_args() ==
-               ["--print", "p", "--worktree"]
+               ["--print", "--worktree", "--", "p"]
     end
 
     test "worktree/2 emits --worktree <name>" do
       assert Query.new("p") |> Query.worktree("feature-x") |> Query.build_args() ==
-               ["--print", "p", "--worktree", "feature-x"]
+               ["--print", "--worktree", "feature-x", "--", "p"]
     end
 
     test "apply_opts accepts a name, true, or false" do

@@ -261,6 +261,21 @@ defmodule ClaudeWrapper.QueryTest do
     end
   end
 
+  describe "build_args/1 prompt handling (#197)" do
+    test "emits a bare --print and the prompt last, after a -- separator" do
+      args = Query.build_args(Query.new("do the thing"))
+
+      assert "--print" in args
+      assert Enum.take(args, -2) == ["--", "do the thing"]
+    end
+
+    test "a dash-prefixed prompt goes after -- so the CLI does not parse it as a flag" do
+      args = Query.build_args(Query.new("--version is what I want summarized"))
+
+      assert Enum.take(args, -2) == ["--", "--version is what I want summarized"]
+    end
+  end
+
   describe "hermetic preset (#193)" do
     test "hermetic: true defaults to the full seal" do
       q = "p" |> Query.new() |> Query.apply_opts(hermetic: true)

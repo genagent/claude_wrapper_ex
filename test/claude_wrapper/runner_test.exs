@@ -32,8 +32,16 @@ defmodule ClaudeWrapper.RunnerTest do
       assert {:error, :timeout} = Port.run("sleep", ["10"], [], 200)
     end
 
-    test "a missing binary returns an io error" do
-      assert {:error, {:io, _}} = Port.run("definitely-not-a-real-binary-xyz", [], [], nil)
+    test "a missing binary returns a :binary_not_found signal (no-timeout path)" do
+      assert {:error, {:binary_not_found, :enoent}} =
+               Port.run("definitely-not-a-real-binary-xyz", [], [], nil)
+    end
+
+    test "a missing binary on the timeout path returns :binary_not_found (does not crash)" do
+      # Regression (#200): the raise happens inside the linked Task, so it must
+      # come back as a value rather than crashing this process.
+      assert {:error, {:binary_not_found, :enoent}} =
+               Port.run("definitely-not-a-real-binary-xyz", [], [], 1_000)
     end
   end
 

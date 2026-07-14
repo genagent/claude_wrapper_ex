@@ -24,19 +24,39 @@ defmodule ClaudeWrapper.Runner.Port do
     {stdout, code} = System.cmd(binary, args, opts)
     {:ok, {stdout, code}}
   rescue
-    e in ErlangError -> {:error, {:io, e}}
+    e in ErlangError -> {:error, launch_error(e)}
   end
 
   def run(binary, args, opts, timeout) do
-    task = Task.async(fn -> System.cmd(binary, args, opts) end)
+    # Rescue INSIDE the task: a missing/unlaunchable binary raises here, and
+    # `Task.async` links, so an un-rescued raise crashes the *caller* (the outer
+    # rescue below could not catch that linked exit -- the previous code did, so
+    # a missing binary on the timeout path crashed the job). Wrap the outcome so
+    # both success and failure come back through `Task.yield`.
+    task =
+      Task.async(fn ->
+        try do
+          {:ok, System.cmd(binary, args, opts)}
+        rescue
+          e in ErlangError -> {:error, launch_error(e)}
+        end
+      end)
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
-      {:ok, {stdout, code}} -> {:ok, {stdout, code}}
+      {:ok, {:ok, {stdout, code}}} -> {:ok, {stdout, code}}
+      {:ok, {:error, reason}} -> {:error, reason}
       nil -> {:error, :timeout}
     end
-  rescue
-    e in ErlangError -> {:error, {:io, e}}
   end
+
+  # A missing or non-executable binary fails the OS spawn with `:enoent` /
+  # `:eacces`; surface it as the typed `:binary_not_found` signal (run_cmd turns
+  # it into a `%Error{kind: :binary_not_found}`) rather than a generic `:io`,
+  # which the classifier would retry to exhaustion.
+  defp launch_error(%ErlangError{original: reason}) when reason in [:enoent, :eacces],
+    do: {:binary_not_found, reason}
+
+  defp launch_error(e), do: {:io, e}
 
   @impl true
   def stream_lines(binary, args, opts, timeout) do
