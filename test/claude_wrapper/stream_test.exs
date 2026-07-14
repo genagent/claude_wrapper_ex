@@ -161,7 +161,13 @@ defmodule ClaudeWrapper.StreamTest do
 
       events = pid |> CWStream.stream("second") |> Enum.to_list()
 
-      assert [{:error, %ClaudeWrapper.Error{kind: :turn_in_flight}}] = events
+      # The concurrent "occupy" turn is driven through `cat`, which echoes its
+      # user message; depending on scheduling that echo can land in this stream
+      # before the rejection (a fake-harness artifact -- real claude does not
+      # echo another turn's message into a new subscriber). What this test pins
+      # is that the send is rejected *terminally*: Enum.to_list returned (no
+      # hang) and turn_in_flight is the final event.
+      assert {:error, %ClaudeWrapper.Error{kind: :turn_in_flight}} = List.last(events)
     end
 
     # The occupying turn registers a pending_turn but no subscriber; wait
