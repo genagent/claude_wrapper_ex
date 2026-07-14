@@ -47,12 +47,23 @@ defmodule ClaudeWrapper.Command do
     ["-c", shell_cmd]
   end
 
+  # A conservative allowlist of shell-safe characters. Anything else -- and the
+  # empty string -- gets single-quoted below.
+  @safe_arg ~r/\A[A-Za-z0-9_@%+=:,.\/-]+\z/
+
   @doc false
+  # Single-quote every argument except strictly-safe tokens (kept bare for
+  # readable debug output). The old denylist missed metacharacters like
+  # `> < * ? [ ] { } ~` and left the empty string unquoted, so on the /bin/sh
+  # streaming path a space-free redirection token could truncate a file and an
+  # empty arg (e.g. hermetic's `--setting-sources ""`) vanished under
+  # word-splitting -- diverging from the execve-based one-shot path. An
+  # allowlist closes the whole class at once.
   def shell_escape(arg) do
-    if String.contains?(arg, ["'", " ", "\"", "\\", "(", ")", "$", "`", "!", "&", "|", ";", "\n"]) do
-      "'" <> String.replace(arg, "'", "'\\''") <> "'"
-    else
+    if Regex.match?(@safe_arg, arg) do
       arg
+    else
+      "'" <> String.replace(arg, "'", "'\\''") <> "'"
     end
   end
 end
