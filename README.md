@@ -302,6 +302,8 @@ shape with `:start`, `:stop`, and `:exception` suffixes:
 | `[:claude_wrapper, :exec, _]` | `Query.execute/2` (one-shot query) |
 | `[:claude_wrapper, :stream, _]` | `Query.stream/2` (NDJSON streaming) |
 | `[:claude_wrapper, :session, :turn, _]` | `Session.send/3` (single turn) |
+| `[:claude_wrapper, :duplex, :session, _]` | `DuplexSession` process lifetime (open/terminate) |
+| `[:claude_wrapper, :duplex, :turn, _]` | `DuplexSession.send/3` (single long-lived-session turn) |
 
 Stop metadata adds `:cost_usd`, `:exit_code`, and the usual
 `:duration`. Subscribe with:
@@ -522,7 +524,7 @@ is present. A `DuplexSession` can also select the adapter per session with
 | `ClaudeWrapper.StreamEvent` | NDJSON streaming event (`partial_message/1`) |
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |
-| `ClaudeWrapper.Telemetry` | `:telemetry` spans for exec/stream/session |
+| `ClaudeWrapper.Telemetry` | `:telemetry` spans for exec/stream/session/duplex |
 | `ClaudeWrapper.Budget` | Client-side USD budget tracker |
 | `ClaudeWrapper.ToolPattern` | Typed, validated tool-spec builder |
 | `ClaudeWrapper.CliVersion` | Parse/compare the CLI version |

@@ -1,7 +1,7 @@
 defmodule ClaudeWrapper.TelemetryTest do
   use ExUnit.Case, async: false
 
-  alias ClaudeWrapper.{Query, Result, StreamEvent, Telemetry}
+  alias ClaudeWrapper.{Config, DuplexSession, Query, Result, StreamEvent, Telemetry}
 
   @doc false
   def forward_event(event, measurements, metadata, test_pid) do
@@ -21,7 +21,12 @@ defmodule ClaudeWrapper.TelemetryTest do
       [:claude_wrapper, :stream, :exception],
       [:claude_wrapper, :session, :turn, :start],
       [:claude_wrapper, :session, :turn, :stop],
-      [:claude_wrapper, :session, :turn, :exception]
+      [:claude_wrapper, :session, :turn, :exception],
+      [:claude_wrapper, :duplex, :session, :start],
+      [:claude_wrapper, :duplex, :session, :stop],
+      [:claude_wrapper, :duplex, :turn, :start],
+      [:claude_wrapper, :duplex, :turn, :stop],
+      [:claude_wrapper, :duplex, :turn, :exception]
     ]
 
     :telemetry.attach_many(
@@ -211,6 +216,93 @@ defmodule ClaudeWrapper.TelemetryTest do
       assert_receive {:telemetry, [:claude_wrapper, :stream, :exception], _, meta}
       assert meta.kind == :error
       assert %RuntimeError{message: "boom"} = meta.reason
+    end
+  end
+
+  describe "duplex telemetry helpers (#215)" do
+    test "session start/stop emit with a duration and merged metadata" do
+      mono = Telemetry.duplex_session_start(%{command: :duplex_session})
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :session, :start], _, meta}
+      assert meta.command == :duplex_session
+
+      :ok = Telemetry.duplex_session_stop(mono, %{command: :duplex_session, session_id: "s1"})
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :session, :stop], meas, stop_meta}
+      assert is_integer(meas.duration)
+      assert stop_meta.session_id == "s1"
+    end
+
+    test "turn start/stop emit; stop metadata overrides start" do
+      span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: "s1"})
+
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :start], _,
+                      %{command: :duplex_turn}}
+
+      :ok = Telemetry.duplex_turn_stop(span, %{cost_usd: 0.05, exit_code: 0, session_id: "s2"})
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :stop], meas, meta}
+      assert is_integer(meas.duration)
+      assert meta.cost_usd == 0.05
+      # the stop payload wins over the start metadata's session_id
+      assert meta.session_id == "s2"
+    end
+
+    test "turn exception carries the reason and a nil cost" do
+      span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: "s1"})
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :start], _, _}
+
+      :ok = Telemetry.duplex_turn_exception(span, {:port_exit, 1})
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :exception], _, meta}
+      assert meta.reason == {:port_exit, 1}
+      assert meta.cost_usd == nil
+    end
+
+    test "stop/exception are no-ops with a nil span context" do
+      assert :ok = Telemetry.duplex_session_stop(nil, %{})
+      assert :ok = Telemetry.duplex_turn_stop(nil, %{})
+      assert :ok = Telemetry.duplex_turn_exception(nil, :whatever)
+      refute_receive {:telemetry, [:claude_wrapper, :duplex, _, _], _, _}
+    end
+  end
+
+  describe "DuplexSession emits the duplex events at its real boundaries (#215)" do
+    # Same cat-loopback fake claude as DuplexSessionTest: inject NDJSON via the
+    # port, which echoes it back for the session to dispatch.
+    defp start_fake_duplex do
+      config = Config.new(binary: System.find_executable("cat"))
+      {:ok, pid} = DuplexSession.start_link(config: config, args_override: [])
+      pid
+    end
+
+    defp inject(pid, term) do
+      state = :sys.get_state(pid)
+      Port.command(state.port, [Jason.encode!(term), ?\n])
+    end
+
+    test "session :start on open, :stop on stop" do
+      pid = start_fake_duplex()
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :session, :start], _, _}
+
+      DuplexSession.stop(pid)
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :session, :stop], _, _}
+    end
+
+    test "turn :start on send, :stop on the terminal result (with cost/session)" do
+      pid = start_fake_duplex()
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :session, :start], _, _}
+
+      # send/3 blocks until the result, so drive it from a separate process.
+      spawn(fn -> DuplexSession.send(pid, "hi") end)
+
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :start], _,
+                      %{command: :duplex_turn}},
+                     1_000
+
+      inject(pid, %{type: "result", subtype: "success", total_cost_usd: 0.05, session_id: "s-1"})
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :stop], meas, meta}, 1_000
+      assert is_integer(meas.duration)
+      assert meta.cost_usd == 0.05
+      assert meta.session_id == "s-1"
+
+      DuplexSession.stop(pid)
     end
   end
 end

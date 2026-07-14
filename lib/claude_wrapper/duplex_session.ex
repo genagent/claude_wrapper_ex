@@ -123,7 +123,7 @@ defmodule ClaudeWrapper.DuplexSession do
   use GenServer
   require Logger
 
-  alias ClaudeWrapper.{Config, Error, Query, Result}
+  alias ClaudeWrapper.{Config, Error, Query, Result, Telemetry}
   alias ClaudeWrapper.DuplexSession.Adapter
 
   @type tool_input :: map()
@@ -196,7 +196,9 @@ defmodule ClaudeWrapper.DuplexSession do
           exit_status: exit_status(),
           exit_waiters: %{reference() => pid()},
           owner_ref: reference() | nil,
-          deferred_permissions: MapSet.t(String.t())
+          deferred_permissions: MapSet.t(String.t()),
+          turn_span: {integer(), map()} | nil,
+          session_monotonic: integer() | nil
         }
 
   defstruct [
@@ -206,6 +208,8 @@ defmodule ClaudeWrapper.DuplexSession do
     :session_id,
     :on_permission,
     :owner_ref,
+    :turn_span,
+    :session_monotonic,
     buffer: <<>>,
     pending_turn: nil,
     pending_control: %{},
@@ -515,13 +519,16 @@ defmodule ClaudeWrapper.DuplexSession do
 
     case adapter.open(open_opts) do
       {:ok, handle} ->
+        session_monotonic = Telemetry.duplex_session_start(%{command: :duplex_session})
+
         {:ok,
          %__MODULE__{
            port: handle,
            adapter: adapter,
            config: config,
            on_permission: on_permission,
-           owner_ref: owner_ref
+           owner_ref: owner_ref,
+           session_monotonic: session_monotonic
          }}
 
       {:error, reason} ->
@@ -547,7 +554,8 @@ defmodule ClaudeWrapper.DuplexSession do
     }
 
     state.adapter.command(port, [Jason.encode!(msg), ?\n])
-    {:noreply, %{state | pending_turn: {from, []}}}
+    span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: state.session_id})
+    {:noreply, %{state | pending_turn: {from, []}, turn_span: span}}
   end
 
   def handle_call({:send, _prompt}, _from, %{pending_turn: nil, port: nil} = state) do
@@ -655,8 +663,14 @@ defmodule ClaudeWrapper.DuplexSession do
   @impl true
   def terminate(reason, %{port: port} = state) do
     if not is_nil(port), do: state.adapter.close(port)
-    fail_pending(state, :terminated)
+    state = fail_pending(state, :terminated)
     notify_exit_waiters(state, final_exit_status(state, reason))
+
+    Telemetry.duplex_session_stop(state.session_monotonic, %{
+      command: :duplex_session,
+      session_id: state.session_id
+    })
+
     :ok
   end
 
@@ -800,9 +814,17 @@ defmodule ClaudeWrapper.DuplexSession do
     result = Result.from_json(msg)
     broadcast(state, {:result, result})
     GenServer.reply(from, {:ok, result})
+
+    Telemetry.duplex_turn_stop(state.turn_span, %{
+      command: :duplex_turn,
+      session_id: result.session_id || state.session_id,
+      cost_usd: result.cost_usd,
+      exit_code: 0
+    })
+
     # The turn is over; any still-tracked deferred permission ids are moot, so a
     # late respond_to_permission/3 for this turn becomes a documented no-op.
-    %{state | pending_turn: nil, deferred_permissions: MapSet.new()}
+    %{state | pending_turn: nil, turn_span: nil, deferred_permissions: MapSet.new()}
   end
 
   defp dispatch(%{"type" => "result"} = msg, state) do
@@ -880,7 +902,8 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defp fail_pending_turn(%{pending_turn: {from, _}} = state, reason) do
     GenServer.reply(from, {:error, fail_reason_to_error(reason)})
-    %{state | pending_turn: nil}
+    Telemetry.duplex_turn_exception(state.turn_span, reason)
+    %{state | pending_turn: nil, turn_span: nil}
   end
 
   defp fail_pending_control(%{pending_control: pending} = state, _reason)
