@@ -142,7 +142,13 @@ defmodule ClaudeWrapper.Commands.Mcp do
         list -> ["--" | Enum.map(list, &to_string/1)]
       end
 
-    ["mcp", "add"] ++ flags ++ [name, command_or_url] ++ command_args ++ server_args
+    # Positionals FIRST, before the option flags: the CLI's `-e/--env` and
+    # `-H/--header` are variadic (`<env...>`), so when emitted before the
+    # positionals they greedily swallow `name`/`commandOrUrl` and the CLI aborts
+    # with "missing required argument" (#202). Fixed single-value/boolean flags
+    # are order-insensitive, so placing every flag after the positionals is safe;
+    # the `--` server_args separator still terminates option parsing last.
+    ["mcp", "add", name, command_or_url] ++ command_args ++ flags ++ server_args
   end
 
   @doc """

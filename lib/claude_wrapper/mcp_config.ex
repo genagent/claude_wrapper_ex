@@ -35,7 +35,8 @@ defmodule ClaudeWrapper.McpConfig do
           command: String.t() | nil,
           args: [String.t()],
           env: %{String.t() => String.t()},
-          url: String.t() | nil
+          url: String.t() | nil,
+          headers: %{String.t() => String.t()}
         }
 
   @type t :: %__MODULE__{
@@ -75,13 +76,35 @@ defmodule ClaudeWrapper.McpConfig do
   ## Options
 
     * `:env` - Map of environment variables
+    * `:headers` - Map of HTTP headers (e.g. `%{"Authorization" => "Bearer ..."}`)
   """
   @spec add_sse(t(), String.t(), String.t(), keyword()) :: t()
   def add_sse(%__MODULE__{} = config, name, url, opts \\ []) do
     server = %{
       type: "sse",
       url: url,
-      env: opts[:env] || %{}
+      env: opts[:env] || %{},
+      headers: opts[:headers] || %{}
+    }
+
+    %{config | servers: Map.put(config.servers, name, server)}
+  end
+
+  @doc """
+  Add an HTTP-based MCP server (the CLI's primary remote transport).
+
+  ## Options
+
+    * `:env` - Map of environment variables
+    * `:headers` - Map of HTTP headers (e.g. `%{"Authorization" => "Bearer ..."}`)
+  """
+  @spec add_http(t(), String.t(), String.t(), keyword()) :: t()
+  def add_http(%__MODULE__{} = config, name, url, opts \\ []) do
+    server = %{
+      type: "http",
+      url: url,
+      env: opts[:env] || %{},
+      headers: opts[:headers] || %{}
     }
 
     %{config | servers: Map.put(config.servers, name, server)}
@@ -167,7 +190,8 @@ defmodule ClaudeWrapper.McpConfig do
           command: def_map["command"],
           args: def_map["args"] || [],
           env: def_map["env"] || %{},
-          url: def_map["url"]
+          url: def_map["url"],
+          headers: def_map["headers"] || %{}
         }
 
         {name, server}
@@ -189,11 +213,37 @@ defmodule ClaudeWrapper.McpConfig do
 
   defp encode_server(%{type: "sse"} = server) do
     %{"type" => "sse", "url" => server.url}
-    |> maybe_add_env(server.env)
+    |> maybe_add_env(server[:env] || %{})
+    |> maybe_add_headers(server[:headers] || %{})
   end
 
-  defp encode_server(%{type: type}), do: %{"type" => type}
+  defp encode_server(%{type: "http"} = server) do
+    %{"type" => "http", "url" => server.url}
+    |> maybe_add_env(server[:env] || %{})
+    |> maybe_add_headers(server[:headers] || %{})
+  end
+
+  # Preserve the connection fields the reader parsed for any other/future type,
+  # rather than dropping url/command/args/env/headers -- a read-modify-write must
+  # not silently discard a server's details (#199).
+  defp encode_server(%{type: type} = server) do
+    %{"type" => type}
+    |> maybe_put("command", server[:command])
+    |> maybe_put("url", server[:url])
+    |> maybe_add_args(server[:args] || [])
+    |> maybe_add_env(server[:env] || %{})
+    |> maybe_add_headers(server[:headers] || %{})
+  end
 
   defp maybe_add_env(map, env) when env == %{}, do: map
   defp maybe_add_env(map, env), do: Map.put(map, "env", env)
+
+  defp maybe_add_headers(map, headers) when headers == %{}, do: map
+  defp maybe_add_headers(map, headers), do: Map.put(map, "headers", headers)
+
+  defp maybe_add_args(map, []), do: map
+  defp maybe_add_args(map, args), do: Map.put(map, "args", args)
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
