@@ -56,5 +56,28 @@ defmodule ClaudeWrapper.RunnerTest do
 
       assert lines == ["a", "b", "c"]
     end
+
+    test "reassembles a line longer than the port buffer instead of dropping it (#198)" do
+      big = String.duplicate("A", 1_100_000)
+
+      lines =
+        "sh"
+        |> Port.stream_lines(["-c", "head -c 1100000 /dev/zero | tr '\\0' A; echo"], [], nil)
+        |> Enum.to_list()
+
+      assert lines == [big]
+    end
+
+    test "a naturally-completing stream returns promptly, not after a 5s stall (#201)" do
+      {micros, lines} =
+        :timer.tc(fn ->
+          "printf" |> Port.stream_lines(["a\nb\n"], [], nil) |> Enum.to_list()
+        end)
+
+      assert lines == ["a", "b"]
+
+      assert micros < 2_000_000,
+             "stream took #{div(micros, 1000)}ms (the 5s close stall regressed)"
+    end
   end
 end

@@ -68,31 +68,43 @@ defmodule ClaudeWrapper.Runner.Port do
         env_opts(opts) ++ cd_opts(opts)
 
     Stream.resource(
-      fn -> Port.open({:spawn_executable, "/bin/sh"}, port_opts) end,
-      fn port -> next_line(port, idle_timeout) end,
-      fn port -> close(port) end
+      fn -> {Port.open({:spawn_executable, "/bin/sh"}, port_opts), [], :open} end,
+      fn {port, buffer, _status} -> next_line(port, buffer, idle_timeout) end,
+      fn {port, _buffer, status} -> close(port, status) end
     )
   end
 
-  defp next_line(port, idle_timeout) do
+  # Reassemble lines longer than the port's line buffer: the port delivers an
+  # over-long line as one or more `{:noeol, fragment}` followed by `{:eol, rest}`.
+  # Carry the fragments in an iolist buffer and flush the whole line on `:eol`,
+  # rather than dropping fragments (which silently lost any NDJSON event > 1 MB).
+  defp next_line(port, buffer, idle_timeout) do
     receive do
-      {^port, {:data, {:eol, line}}} -> {[line], port}
-      # A line longer than the buffer cap: skip its fragment, as before.
-      {^port, {:data, {:noeol, _partial}}} -> {[], port}
-      {^port, {:exit_status, _code}} -> {:halt, port}
+      {^port, {:data, {:eol, line}}} ->
+        {[IO.iodata_to_binary([buffer, line])], {port, [], :open}}
+
+      {^port, {:data, {:noeol, fragment}}} ->
+        {[], {port, [buffer, fragment], :open}}
+
+      {^port, {:exit_status, _code}} ->
+        {:halt, {port, buffer, :exited}}
     after
-      idle_timeout -> {:halt, port}
+      idle_timeout -> {:halt, {port, buffer, :open}}
     end
   end
 
-  defp close(port) do
-    send(port, {self(), :close})
+  # On normal completion the port has already terminated (we received
+  # `:exit_status`), so there is nothing to close -- and the old code then waited
+  # for a `:closed` reply that never arrives, stalling *every* stream for the
+  # full 5s receive timeout. Only a still-open port (idle timeout, or a consumer
+  # that stopped early) needs an explicit close.
+  defp close(_port, :exited), do: :ok
 
-    receive do
-      {^port, :closed} -> :ok
-    after
-      5_000 -> :ok
-    end
+  defp close(port, :open) do
+    Port.close(port)
+    :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   defp env_opts(opts) do
