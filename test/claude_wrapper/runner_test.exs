@@ -79,5 +79,43 @@ defmodule ClaudeWrapper.RunnerTest do
       assert micros < 2_000_000,
              "stream took #{div(micros, 1000)}ms (the 5s close stall regressed)"
     end
+
+    test "an idle producer halts at the idle timeout instead of hanging (#217)" do
+      {micros, lines} =
+        :timer.tc(fn ->
+          "sh"
+          |> Port.stream_lines(["-c", "echo first; sleep 10"], [], 200)
+          |> Enum.to_list()
+        end)
+
+      assert lines == ["first"]
+      # halts on the 200ms idle bound, not the 10s sleep
+      assert micros < 2_000_000
+    end
+
+    test "propagates :env to the spawned process (#217)" do
+      lines =
+        "sh"
+        |> Port.stream_lines(["-c", "echo $CW_TEST"], [env: [{~c"CW_TEST", ~c"hello217"}]], nil)
+        |> Enum.to_list()
+
+      assert lines == ["hello217"]
+    end
+
+    test "propagates :cd to the spawned process (#217)" do
+      # A unique leaf dir: `pwd` may resolve a parent symlink (/var -> /private/var
+      # on macOS), so compare on the unique basename rather than the full path.
+      dir = Path.join(System.tmp_dir!(), "cw_cd_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      lines =
+        "sh"
+        |> Port.stream_lines(["-c", "pwd"], [cd: dir], nil)
+        |> Enum.to_list()
+
+      assert [pwd] = lines
+      assert String.ends_with?(pwd, Path.basename(dir))
+    end
   end
 end

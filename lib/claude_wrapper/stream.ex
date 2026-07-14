@@ -232,7 +232,15 @@ defmodule ClaudeWrapper.Stream do
   end
 
   defp cleanup(%{session: session, pid: pid, ref: ref}) do
-    DuplexSession.unsubscribe(session)
+    # The session may already be dead (an abnormal close is exactly the case the
+    # :duplex_closed terminal covers); swallow the exit so the Stream.resource
+    # after-callback still completes cleanly instead of crashing the consumer.
+    try do
+      DuplexSession.unsubscribe(session)
+    catch
+      :exit, _ -> :ok
+    end
+
     Process.demonitor(ref, [:flush])
     if Process.alive?(pid), do: Process.exit(pid, :kill)
     :ok

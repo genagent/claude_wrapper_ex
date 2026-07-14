@@ -24,6 +24,57 @@ defmodule ClaudeWrapper.CommandTest do
     test "escapes an embedded single quote" do
       assert Command.shell_escape("it's") == ~S('it'\''s')
     end
+
+    test "single-quotes every shell-significant character" do
+      for c <- [
+            "<",
+            ">",
+            "*",
+            "?",
+            "[",
+            "]",
+            "\t",
+            ";",
+            "|",
+            "&",
+            "$",
+            "`",
+            " ",
+            "\"",
+            "\\",
+            "\n"
+          ] do
+        assert Command.shell_escape("x" <> c <> "y") == "'x" <> c <> "y'"
+      end
+
+      # the bare single quote is the one char needing the '\'' dance
+      assert Command.shell_escape("'") == ~S(''\''')
+    end
+  end
+
+  describe "shell_escape/1 /bin/sh round-trip (#217)" do
+    test "an adversarial argv survives /bin/sh verbatim (no split, glob, or substitution)" do
+      argv = [
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "a b",
+        "a>b",
+        "glob_*.txt",
+        "it's",
+        "a;rm -rf x",
+        "$HOME",
+        "`id`"
+      ]
+
+      fmt = String.duplicate("%s\\n", length(argv))
+      ["-c", shell_cmd] = Command.shell_cmd_args("printf", [fmt | argv])
+
+      {out, 0} = System.cmd("/bin/sh", ["-c", shell_cmd])
+
+      received = out |> String.split("\n", trim: false) |> Enum.take(length(argv))
+      assert received == argv
+    end
   end
 
   describe "shell_cmd_args/2 (#196)" do
