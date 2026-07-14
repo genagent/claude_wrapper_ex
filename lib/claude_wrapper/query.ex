@@ -38,6 +38,10 @@ defmodule ClaudeWrapper.Query do
           model: String.t() | nil,
           system_prompt: String.t() | nil,
           append_system_prompt: String.t() | nil,
+          system_prompt_file: String.t() | nil,
+          append_system_prompt_file: String.t() | nil,
+          permission_prompt_tool: String.t() | nil,
+          max_thinking_tokens: pos_integer() | nil,
           output_format: output_format() | nil,
           max_budget_usd: float() | nil,
           permission_mode: permission_mode() | nil,
@@ -89,6 +93,10 @@ defmodule ClaudeWrapper.Query do
     :model,
     :system_prompt,
     :append_system_prompt,
+    :system_prompt_file,
+    :append_system_prompt_file,
+    :permission_prompt_tool,
+    :max_thinking_tokens,
     :output_format,
     :max_budget_usd,
     :permission_mode,
@@ -156,6 +164,23 @@ defmodule ClaudeWrapper.Query do
   @doc "Append to the system prompt."
   @spec append_system_prompt(t(), String.t()) :: t()
   def append_system_prompt(%__MODULE__{} = q, prompt), do: %{q | append_system_prompt: prompt}
+
+  @doc "Set the system prompt from a file (`--system-prompt-file`), avoiding ARG_MAX limits from inlining a large prompt as argv. Verified against claude CLI 2.1.170 (hidden from --help)."
+  @spec system_prompt_file(t(), String.t()) :: t()
+  def system_prompt_file(%__MODULE__{} = q, path), do: %{q | system_prompt_file: path}
+
+  @doc "Append to the system prompt from a file (`--append-system-prompt-file`). Verified against claude CLI 2.1.170 (hidden from --help)."
+  @spec append_system_prompt_file(t(), String.t()) :: t()
+  def append_system_prompt_file(%__MODULE__{} = q, path),
+    do: %{q | append_system_prompt_file: path}
+
+  @doc "Delegate permission decisions to a custom MCP tool (`--permission-prompt-tool <tool>`) for programmatic headless gating. Verified against claude CLI 2.1.170 (hidden from --help)."
+  @spec permission_prompt_tool(t(), String.t()) :: t()
+  def permission_prompt_tool(%__MODULE__{} = q, tool), do: %{q | permission_prompt_tool: tool}
+
+  @doc "Cap the thinking-token budget (`--max-thinking-tokens`), a finer control than `--effort`. Verified against claude CLI 2.1.170 (hidden from --help)."
+  @spec max_thinking_tokens(t(), pos_integer()) :: t()
+  def max_thinking_tokens(%__MODULE__{} = q, n), do: %{q | max_thinking_tokens: n}
 
   @doc "Set output format."
   @spec output_format(t(), output_format()) :: t()
@@ -426,6 +451,10 @@ defmodule ClaudeWrapper.Query do
   defp apply_opt({:model, v}, q), do: model(q, v)
   defp apply_opt({:system_prompt, v}, q), do: system_prompt(q, v)
   defp apply_opt({:append_system_prompt, v}, q), do: append_system_prompt(q, v)
+  defp apply_opt({:system_prompt_file, v}, q), do: system_prompt_file(q, v)
+  defp apply_opt({:append_system_prompt_file, v}, q), do: append_system_prompt_file(q, v)
+  defp apply_opt({:permission_prompt_tool, v}, q), do: permission_prompt_tool(q, v)
+  defp apply_opt({:max_thinking_tokens, v}, q), do: max_thinking_tokens(q, v)
   defp apply_opt({:max_turns, v}, q), do: max_turns(q, v)
   defp apply_opt({:max_budget_usd, v}, q), do: max_budget_usd(q, v)
   defp apply_opt({:permission_mode, v}, q), do: permission_mode(q, v)
@@ -767,6 +796,10 @@ defmodule ClaudeWrapper.Query do
     |> add_opt("--model", q.model)
     |> add_opt("--system-prompt", q.system_prompt)
     |> add_opt("--append-system-prompt", q.append_system_prompt)
+    |> add_opt("--system-prompt-file", q.system_prompt_file)
+    |> add_opt("--append-system-prompt-file", q.append_system_prompt_file)
+    |> add_opt("--permission-prompt-tool", q.permission_prompt_tool)
+    |> add_opt("--max-thinking-tokens", q.max_thinking_tokens && to_string(q.max_thinking_tokens))
     |> add_opt("--output-format", format_output_format(q.output_format))
     |> add_opt("--max-budget-usd", q.max_budget_usd && to_string(q.max_budget_usd))
     |> add_opt("--permission-mode", format_permission_mode(q.permission_mode))

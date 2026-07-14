@@ -237,6 +237,29 @@ defmodule ClaudeWrapper.DuplexIExTest do
       assert output =~ "…"
     end
 
+    test "truncates long multibyte tool results without splitting a codepoint (#221)" do
+      # Each "é" is 2 bytes; 200 of them is 400 bytes, so a byte-offset
+      # truncation at 199 would land mid-codepoint and emit invalid UTF-8.
+      long_text = String.duplicate("é", 200)
+
+      event =
+        {:user,
+         %{
+           "message" => %{
+             "content" => [
+               %{
+                 "type" => "tool_result",
+                 "content" => [%{"type" => "text", "text" => long_text}]
+               }
+             ]
+           }
+         }}
+
+      output = capture_io(fn -> DuplexIEx.handle_event(event) end)
+      assert String.valid?(output)
+      assert output =~ "…"
+    end
+
     test "ignores unknown events" do
       assert capture_io(fn ->
                DuplexIEx.handle_event({:other, %{}})

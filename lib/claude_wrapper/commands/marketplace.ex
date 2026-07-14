@@ -76,15 +76,26 @@ defmodule ClaudeWrapper.Commands.Marketplace do
 
   @doc """
   Remove a configured marketplace by name.
+
+  ## Options
+
+    * `:scope` - Scope to remove from (`:user`, `:project`, or `:local`).
+      Omit to remove from all scopes.
   """
-  @spec remove(Config.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def remove(%Config{} = config, name) do
-    args = Config.base_args(config) ++ ["plugin", "marketplace", "remove", name]
+  @spec remove(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def remove(%Config{} = config, name, opts \\ []) do
+    args = Config.base_args(config) ++ remove_args(name, opts)
 
     case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
+  end
+
+  @doc false
+  @spec remove_args(String.t(), keyword()) :: [String.t()]
+  def remove_args(name, opts) do
+    ["plugin", "marketplace", "remove", name] ++ scope_args(opts[:scope])
   end
 
   @doc """
