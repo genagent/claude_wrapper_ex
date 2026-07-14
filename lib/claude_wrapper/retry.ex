@@ -51,7 +51,10 @@ defmodule ClaudeWrapper.Retry do
     * `:multiplier` - Backoff multiplier (default: 2)
     * `:jitter` - Add random jitter to delays (default: true)
     * `:retry_on` - Function that receives the error and returns whether to retry.
-      Defaults to retrying on timeouts and non-zero exits.
+      The default retries `:timeout` errors, plain non-zero `:command_failed`
+      exits, and rate limits (`:auth` errors with reason `:rate_limit`). Other
+      auth failures and rail-stop errors (`:max_turns_exceeded`,
+      `:max_budget_exceeded`) are not retried.
   """
   @spec execute(Query.t(), Config.t(), opts()) :: {:ok, Result.t()} | {:error, term()}
   def execute(%Query{} = query, %Config{} = config, opts \\ []) do
@@ -116,11 +119,18 @@ defmodule ClaudeWrapper.Retry do
     end
   end
 
-  defp default_retry_on({:error, %Error{kind: :timeout}}), do: true
+  @doc false
+  # The default `:retry_on` predicate. Public (@doc false) so it is unit-testable
+  # without a paid claude call.
+  def default_retry_on({:error, %Error{kind: :timeout}}), do: true
 
-  defp default_retry_on({:error, %Error{kind: :command_failed, exit_code: code}})
-       when code != 0,
-       do: true
+  def default_retry_on({:error, %Error{kind: :command_failed, exit_code: code}})
+      when code != 0,
+      do: true
 
-  defp default_retry_on(_), do: false
+  # Recognized rate limits are reclassified to :auth/:rate_limit by query.ex; a
+  # bounded backoff-retry is appropriate (other :auth reasons re-fail identically).
+  def default_retry_on({:error, %Error{kind: :auth, reason: :rate_limit}}), do: true
+
+  def default_retry_on(_), do: false
 end

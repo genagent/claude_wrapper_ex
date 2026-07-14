@@ -764,6 +764,20 @@ defmodule ClaudeWrapperTest do
         assert delay <= 4000
       end
     end
+
+    test "default_retry_on retries timeouts, plain command failures, and rate limits" do
+      assert Retry.default_retry_on({:error, %Error{kind: :timeout}})
+      assert Retry.default_retry_on({:error, %Error{kind: :command_failed, exit_code: 1}})
+      assert Retry.default_retry_on({:error, %Error{kind: :auth, reason: :rate_limit}})
+    end
+
+    test "default_retry_on does not retry other auth failures or rail stops" do
+      refute Retry.default_retry_on({:error, %Error{kind: :auth, reason: :not_authenticated}})
+      refute Retry.default_retry_on({:error, %Error{kind: :auth, reason: :expired}})
+      refute Retry.default_retry_on({:error, %Error{kind: :max_turns_exceeded}})
+      refute Retry.default_retry_on({:error, %Error{kind: :max_budget_exceeded}})
+      refute Retry.default_retry_on({:error, %Error{kind: :command_failed, exit_code: 0}})
+    end
   end
 
   describe "SessionServer" do
@@ -824,10 +838,40 @@ defmodule ClaudeWrapperTest do
       assert {:enable, 3} in Plugin.__info__(:functions)
       assert {:disable, 3} in Plugin.__info__(:functions)
       assert {:update, 3} in Plugin.__info__(:functions)
-      assert {:validate, 2} in Plugin.__info__(:functions)
+      assert {:validate, 3} in Plugin.__info__(:functions)
       assert {:tag, 2} in Plugin.__info__(:functions)
       assert {:details, 2} in Plugin.__info__(:functions)
       assert {:prune, 2} in Plugin.__info__(:functions)
+      assert {:install_args, 2} in Plugin.__info__(:functions)
+      assert {:validate_args, 2} in Plugin.__info__(:functions)
+    end
+
+    test "install_args threads scope and repeatable config pairs" do
+      assert Plugin.install_args("p", []) == ["plugin", "install", "p"]
+
+      assert Plugin.install_args("p", scope: :project, config: ["a=1", "b=2"]) ==
+               [
+                 "plugin",
+                 "install",
+                 "p",
+                 "--scope",
+                 "project",
+                 "--config",
+                 "a=1",
+                 "--config",
+                 "b=2"
+               ]
+    end
+
+    test "validate_args emits --strict only when set" do
+      assert Plugin.validate_args("./m", []) == ["plugin", "validate", "./m"]
+
+      assert Plugin.validate_args("./m", strict: true) == [
+               "plugin",
+               "validate",
+               "./m",
+               "--strict"
+             ]
     end
 
     test "tag_args defaults to just the subcommand" do
@@ -1266,10 +1310,18 @@ defmodule ClaudeWrapperTest do
       Code.ensure_loaded!(Marketplace)
       assert {:list, 1} in Marketplace.__info__(:functions)
       assert {:add, 3} in Marketplace.__info__(:functions)
-      assert {:remove, 2} in Marketplace.__info__(:functions)
+      assert {:remove, 3} in Marketplace.__info__(:functions)
       assert {:update, 2} in Marketplace.__info__(:functions)
       assert {:add_args, 2} in Marketplace.__info__(:functions)
       assert {:update_args, 1} in Marketplace.__info__(:functions)
+      assert {:remove_args, 2} in Marketplace.__info__(:functions)
+    end
+
+    test "remove_args emits --scope only when set" do
+      assert Marketplace.remove_args("m", []) == ["plugin", "marketplace", "remove", "m"]
+
+      assert Marketplace.remove_args("m", scope: :local) ==
+               ["plugin", "marketplace", "remove", "m", "--scope", "local"]
     end
 
     test "add_args defaults to source with no flags" do

@@ -531,4 +531,33 @@ defmodule ClaudeWrapper.QueryTest do
       assert kind in [:command_failed, :auth]
     end
   end
+
+  describe "build_args/1 file + tool + thinking flags (#222)" do
+    test "the hidden one-shot flags round-trip through apply_opts + build_args" do
+      q =
+        Query.new("p")
+        |> Query.apply_opts(
+          system_prompt_file: "/sp.txt",
+          append_system_prompt_file: "/asp.txt",
+          permission_prompt_tool: "mcp__x__approve",
+          max_thinking_tokens: 4096
+        )
+
+      args = Query.build_args(q)
+
+      assert subsequence?(["--system-prompt-file", "/sp.txt"], args)
+      assert subsequence?(["--append-system-prompt-file", "/asp.txt"], args)
+      assert subsequence?(["--permission-prompt-tool", "mcp__x__approve"], args)
+      # the integer budget is stringified
+      assert subsequence?(["--max-thinking-tokens", "4096"], args)
+
+      # spawn-safe: they flow through spawn_args unchanged (not transport/print flags)
+      assert subsequence?(["--system-prompt-file", "/sp.txt"], Query.spawn_args(q))
+    end
+
+    test "the direct setter sets max_thinking_tokens" do
+      assert Query.new("p") |> Query.max_thinking_tokens(4096) |> Map.get(:max_thinking_tokens) ==
+               4096
+    end
+  end
 end

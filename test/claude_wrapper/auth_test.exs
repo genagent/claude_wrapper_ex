@@ -7,7 +7,7 @@ defmodule ClaudeWrapper.AuthTest do
   describe "detect/0" do
     test "reads the real process env and returns a summary" do
       assert %Summary{strategy: strategy} = Auth.detect()
-      assert strategy in [:bedrock, :vertex, :api_key, :oauth_token, :subscription]
+      assert strategy in [:bedrock, :vertex, :api_key, :auth_token, :oauth_token, :subscription]
     end
   end
 
@@ -17,9 +17,33 @@ defmodule ClaudeWrapper.AuthTest do
 
       assert s.strategy == :subscription
       refute s.has_anthropic_api_key
+      refute s.has_auth_token
       refute s.has_oauth_token
       refute s.bedrock_enabled
       refute s.vertex_enabled
+    end
+
+    test "ANTHROPIC_AUTH_TOKEN alone picks :auth_token" do
+      s = Auth.detect_from(%{"ANTHROPIC_AUTH_TOKEN" => "sk-ant-..."})
+
+      assert s.strategy == :auth_token
+      assert s.has_auth_token
+      refute s.has_anthropic_api_key
+    end
+
+    test "ANTHROPIC_API_KEY takes precedence over ANTHROPIC_AUTH_TOKEN" do
+      s = Auth.detect_from(%{"ANTHROPIC_API_KEY" => "sk-abc", "ANTHROPIC_AUTH_TOKEN" => "tok"})
+
+      assert s.strategy == :api_key
+      assert s.has_anthropic_api_key
+      assert s.has_auth_token
+    end
+
+    test "ANTHROPIC_AUTH_TOKEN takes precedence over CLAUDE_CODE_OAUTH_TOKEN" do
+      s =
+        Auth.detect_from(%{"ANTHROPIC_AUTH_TOKEN" => "tok", "CLAUDE_CODE_OAUTH_TOKEN" => "oauth"})
+
+      assert s.strategy == :auth_token
     end
 
     test "api key takes precedence over oauth token" do

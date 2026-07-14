@@ -354,7 +354,9 @@ defmodule ClaudeWrapper.DuplexIEx do
   end
 
   defp truncate(s, max) when byte_size(s) <= max, do: s
-  defp truncate(s, max), do: binary_part(s, 0, max - 1) <> "…"
+  # String.slice (grapheme-based) rather than binary_part (byte-based), so a
+  # multibyte codepoint is never split into invalid UTF-8.
+  defp truncate(s, max), do: String.slice(s, 0, max - 1) <> "…"
 
   defp plural(1), do: ""
   defp plural(_), do: "s"

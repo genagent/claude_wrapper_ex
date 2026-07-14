@@ -70,16 +70,23 @@ defmodule ClaudeWrapper.Commands.Plugin do
   ## Options
 
     * `:scope` - Installation scope (`:user`, `:project`, or `:local`). Default: `:user`.
+    * `:config` - Manifest `userConfig` values set at install time, as a list of
+      `"key=value"` strings. Each entry emits a repeated `--config key=value`.
   """
   @spec install(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def install(%Config{} = config, plugin, opts \\ []) do
-    args = Config.base_args(config) ++ ["plugin", "install", plugin]
-    args = args ++ scope_args(opts[:scope])
+    args = Config.base_args(config) ++ install_args(plugin, opts)
 
     case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
+  end
+
+  @doc false
+  @spec install_args(String.t(), keyword()) :: [String.t()]
+  def install_args(plugin, opts) do
+    ["plugin", "install", plugin] ++ scope_args(opts[:scope]) ++ config_args(opts[:config])
   end
 
   @doc """
@@ -175,15 +182,26 @@ defmodule ClaudeWrapper.Commands.Plugin do
 
   @doc """
   Validate a plugin or marketplace manifest at the given path.
+
+  ## Options
+
+    * `:strict` - Treat warnings as errors and exit non-zero (`--strict`,
+      boolean). Intended for CI / programmatic validation.
   """
-  @spec validate(Config.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def validate(%Config{} = config, path) do
-    args = Config.base_args(config) ++ ["plugin", "validate", path]
+  @spec validate(Config.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def validate(%Config{} = config, path, opts \\ []) do
+    args = Config.base_args(config) ++ validate_args(path, opts)
 
     case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
+  end
+
+  @doc false
+  @spec validate_args(String.t(), keyword()) :: [String.t()]
+  def validate_args(path, opts) do
+    ["plugin", "validate", path] ++ bool_flag(opts[:strict], "--strict")
   end
 
   @doc """
@@ -278,6 +296,11 @@ defmodule ClaudeWrapper.Commands.Plugin do
 
   defp bool_flag(true, flag), do: [flag]
   defp bool_flag(_falsy, _flag), do: []
+
+  defp config_args(nil), do: []
+
+  defp config_args(pairs) when is_list(pairs),
+    do: Enum.flat_map(pairs, fn kv -> ["--config", kv] end)
 
   defp value_flag(nil, _flag), do: []
   defp value_flag(value, flag), do: [flag, value]

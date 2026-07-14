@@ -14,6 +14,7 @@ defmodule ClaudeWrapper.Auth.Summary do
   @enforce_keys [
     :strategy,
     :has_anthropic_api_key,
+    :has_auth_token,
     :has_oauth_token,
     :bedrock_enabled,
     :vertex_enabled
@@ -21,6 +22,7 @@ defmodule ClaudeWrapper.Auth.Summary do
   defstruct [
     :strategy,
     :has_anthropic_api_key,
+    :has_auth_token,
     :has_oauth_token,
     :bedrock_enabled,
     :vertex_enabled
@@ -29,6 +31,7 @@ defmodule ClaudeWrapper.Auth.Summary do
   @type t :: %__MODULE__{
           strategy: Auth.strategy(),
           has_anthropic_api_key: boolean(),
+          has_auth_token: boolean(),
           has_oauth_token: boolean(),
           bedrock_enabled: boolean(),
           vertex_enabled: boolean()
@@ -62,8 +65,14 @@ defmodule ClaudeWrapper.Auth do
     1. `CLAUDE_CODE_USE_BEDROCK` truthy -> `:bedrock`
     2. `CLAUDE_CODE_USE_VERTEX` truthy -> `:vertex`
     3. `ANTHROPIC_API_KEY` non-empty -> `:api_key`
-    4. `CLAUDE_CODE_OAUTH_TOKEN` non-empty -> `:oauth_token`
-    5. Otherwise -> `:subscription`
+    4. `ANTHROPIC_AUTH_TOKEN` non-empty -> `:auth_token`
+    5. `CLAUDE_CODE_OAUTH_TOKEN` non-empty -> `:oauth_token`
+    6. Otherwise -> `:subscription`
+
+  `ANTHROPIC_API_KEY` is ordered ahead of `ANTHROPIC_AUTH_TOKEN` because the
+  direct-API key is the more common path; both are env-pinned header
+  credentials, so their relative order only affects the reported label, not
+  liveness.
 
   Cloud-provider strategies (Bedrock, Vertex) take precedence because
   they redirect ALL traffic regardless of API key presence.
@@ -110,6 +119,10 @@ defmodule ClaudeWrapper.Auth do
     * `:vertex` -- `CLAUDE_CODE_USE_VERTEX` is truthy. Requests route to
       Google Vertex; GCP credentials are resolved separately.
     * `:api_key` -- `ANTHROPIC_API_KEY` is set. Direct API access.
+    * `:auth_token` -- `ANTHROPIC_AUTH_TOKEN` is set. A custom Bearer token
+      sent as `Authorization: Bearer` (typically alongside `ANTHROPIC_BASE_URL`
+      for a gateway / custom endpoint), distinct from `ANTHROPIC_API_KEY`,
+      which is sent as `x-api-key`.
     * `:oauth_token` -- `CLAUDE_CODE_OAUTH_TOKEN` is set (typically from
       `claude setup-token`).
     * `:subscription` -- no auth env var set. The CLI looks for stored
@@ -119,7 +132,7 @@ defmodule ClaudeWrapper.Auth do
 
   See the module docs for precedence rules.
   """
-  @type strategy :: :bedrock | :vertex | :api_key | :oauth_token | :subscription
+  @type strategy :: :bedrock | :vertex | :api_key | :auth_token | :oauth_token | :subscription
 
   @typedoc """
   Best-effort classification of an auth-related CLI failure.
@@ -167,6 +180,7 @@ defmodule ClaudeWrapper.Auth do
     bedrock_enabled = truthy?(Map.get(env, "CLAUDE_CODE_USE_BEDROCK"))
     vertex_enabled = truthy?(Map.get(env, "CLAUDE_CODE_USE_VERTEX"))
     has_anthropic_api_key = set?(Map.get(env, "ANTHROPIC_API_KEY"))
+    has_auth_token = set?(Map.get(env, "ANTHROPIC_AUTH_TOKEN"))
     has_oauth_token = set?(Map.get(env, "CLAUDE_CODE_OAUTH_TOKEN"))
 
     strategy =
@@ -174,6 +188,7 @@ defmodule ClaudeWrapper.Auth do
         bedrock_enabled -> :bedrock
         vertex_enabled -> :vertex
         has_anthropic_api_key -> :api_key
+        has_auth_token -> :auth_token
         has_oauth_token -> :oauth_token
         true -> :subscription
       end
@@ -181,6 +196,7 @@ defmodule ClaudeWrapper.Auth do
     %Summary{
       strategy: strategy,
       has_anthropic_api_key: has_anthropic_api_key,
+      has_auth_token: has_auth_token,
       has_oauth_token: has_oauth_token,
       bedrock_enabled: bedrock_enabled,
       vertex_enabled: vertex_enabled
