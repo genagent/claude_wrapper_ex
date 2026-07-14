@@ -60,7 +60,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def list(%Config{} = config, opts \\ []) do
     args = Config.base_args(config) ++ ["mcp", "list"] ++ scope_args(opts[:scope])
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -80,7 +80,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def get(%Config{} = config, name, opts \\ []) do
     args = Config.base_args(config) ++ ["mcp", "get", name] ++ scope_args(opts[:scope])
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -117,7 +117,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def add(%Config{} = config, name, command_or_url, command_args \\ [], opts \\ []) do
     args = Config.base_args(config) ++ add_args(name, command_or_url, command_args, opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -166,7 +166,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def add_json(%Config{} = config, name, json, opts \\ []) do
     args = Config.base_args(config) ++ add_json_args(name, json, opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -199,7 +199,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def add_from_desktop(%Config{} = config, name \\ nil, opts \\ []) do
     args = Config.base_args(config) ++ add_from_desktop_args(name, opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -226,7 +226,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
     args = Config.base_args(config) ++ ["mcp", "remove", name]
     args = args ++ scope_args(opts[:scope])
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -248,7 +248,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def serve(%Config{} = config, opts \\ []) do
     args = Config.base_args(config) ++ serve_args(opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -278,7 +278,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def login(%Config{} = config, name, opts \\ []) do
     args = Config.base_args(config) ++ login_args(name, opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -299,7 +299,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def logout(%Config{} = config, name) do
     args = Config.base_args(config) ++ logout_args(name)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -316,7 +316,7 @@ defmodule ClaudeWrapper.Commands.Mcp do
   def reset_project_choices(%Config{} = config) do
     args = Config.base_args(config) ++ ["mcp", "reset-project-choices"]
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end

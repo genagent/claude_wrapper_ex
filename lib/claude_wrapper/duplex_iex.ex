@@ -90,8 +90,13 @@ defmodule ClaudeWrapper.DuplexIEx do
       |> Keyword.put(:config, config)
       |> Keyword.put(:extra_args, extra_args)
 
-    case DuplexSession.start_link(duplex_opts) do
+    # `owner: self()` is the IEx evaluator: the session monitors it and stops
+    # (reaping the claude subprocess) if the REPL is abandoned or the evaluator
+    # crashes. We then unlink so a session crash does not, in turn, take down the
+    # evaluator (which would discard the user's REPL bindings).
+    case DuplexSession.start_link(Keyword.put(duplex_opts, :owner, self())) do
       {:ok, pid} ->
+        Process.unlink(pid)
         printer = spawn_printer(pid)
         Process.put(@session_key, pid)
         Process.put(@printer_key, printer)

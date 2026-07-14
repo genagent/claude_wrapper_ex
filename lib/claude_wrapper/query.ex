@@ -645,6 +645,15 @@ defmodule ClaudeWrapper.Query do
   Uses a Port with `:line` mode to read NDJSON output line-by-line.
   The port is opened when the stream is consumed and closed when
   the stream terminates.
+
+  A clean run ends with a terminal `%StreamEvent{type: "result"}`. If the stream
+  halts without one -- an idle timeout (`Config.timeout` is *not* a whole-run
+  bound here; only the per-frame idle deadline applies), a non-zero exit, or a
+  spawn failure -- the stream ends with a terminal
+  `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` so the
+  truncation is observable. Note the default runner orphans a stalled
+  subprocess; use the `ClaudeWrapper.Runner.Forcola` runner for leak-free
+  termination.
   """
   @spec stream(t(), Config.t()) :: Enumerable.t()
   def stream(%__MODULE__{} = query, %Config{} = config) do
@@ -661,12 +670,42 @@ defmodule ClaudeWrapper.Query do
 
     config.binary
     |> Runner.impl().stream_lines(args, stream_opts(config), nil)
-    |> Stream.flat_map(fn line ->
-      case StreamEvent.parse(line) do
-        {:ok, event} -> [event]
-        {:error, _} -> []
-      end
-    end)
+    |> Stream.transform(
+      fn -> false end,
+      fn line, saw_result? ->
+        case StreamEvent.parse(line) do
+          {:ok, %StreamEvent{type: "result"} = event} -> {[event], true}
+          {:ok, event} -> {[event], saw_result?}
+          {:error, _} -> {[], saw_result?}
+        end
+      end,
+      # A clean stream-json run ends with a terminal `result` event. If the
+      # stream halts without one -- an idle timeout, a non-zero/failed exit, or a
+      # spawn failure -- the default runner ends the Stream silently, so a caller
+      # cannot tell a truncated run from a clean one. Append an explicit terminal
+      # `error` event so the truncation is observable (the Forcola runner already
+      # raises on non-clean termination; this aligns the default path).
+      fn
+        true -> {[], true}
+        false -> {[truncation_event()], false}
+      end,
+      fn _acc -> :ok end
+    )
+  end
+
+  defp truncation_event do
+    %StreamEvent{
+      type: "error",
+      data: %{
+        "error" => "stream_truncated",
+        "message" =>
+          "the stream ended without a terminal `result` event (idle timeout, " <>
+            "non-zero exit, or spawn failure); the run may be incomplete. The " <>
+            "default runner also orphans a stalled subprocess -- use the Forcola " <>
+            "runner for leak-free termination."
+      },
+      raw: nil
+    }
   end
 
   defp stream_opts(%Config{working_dir: dir, env: env}) do

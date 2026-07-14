@@ -50,7 +50,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
     args = Config.base_args(config) ++ ["plugin", "list", "--json"]
     args = if opts[:available], do: args ++ ["--available"], else: args
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} ->
         case Jason.decode(output) do
           {:ok, data} -> {:ok, data}
@@ -76,7 +76,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
     args = Config.base_args(config) ++ ["plugin", "install", plugin]
     args = args ++ scope_args(opts[:scope])
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -98,7 +98,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
   def uninstall(%Config{} = config, plugin, opts \\ []) do
     args = Config.base_args(config) ++ uninstall_args(plugin, opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -128,7 +128,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
     args = Config.base_args(config) ++ ["plugin", "enable", plugin]
     args = args ++ scope_args(opts[:scope])
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -149,7 +149,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
     args = args ++ scope_args(opts[:scope])
     args = if opts[:all], do: args ++ ["--all"], else: args
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -167,7 +167,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
     args = Config.base_args(config) ++ ["plugin", "update", plugin]
     args = args ++ scope_args(opts[:scope])
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -180,7 +180,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
   def validate(%Config{} = config, path) do
     args = Config.base_args(config) ++ ["plugin", "validate", path]
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -207,7 +207,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
   def tag(%Config{} = config, opts \\ []) do
     args = Config.base_args(config) ++ tag_args(opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -237,7 +237,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
   def details(%Config{} = config, plugin) do
     args = Config.base_args(config) ++ ["plugin", "details", plugin]
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -259,7 +259,7 @@ defmodule ClaudeWrapper.Commands.Plugin do
   def prune(%Config{} = config, opts \\ []) do
     args = Config.base_args(config) ++ prune_args(opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end

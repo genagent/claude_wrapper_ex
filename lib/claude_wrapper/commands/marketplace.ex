@@ -37,7 +37,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
   def list(%Config{} = config) do
     args = Config.base_args(config) ++ ["plugin", "marketplace", "list", "--json"]
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} ->
         case Jason.decode(output) do
           {:ok, data} -> {:ok, data}
@@ -61,7 +61,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
   def add(%Config{} = config, source, opts \\ []) do
     args = Config.base_args(config) ++ add_args(source, opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -81,7 +81,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
   def remove(%Config{} = config, name) do
     args = Config.base_args(config) ++ ["plugin", "marketplace", "remove", name]
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -96,7 +96,7 @@ defmodule ClaudeWrapper.Commands.Marketplace do
   def update(%Config{} = config, name \\ nil) do
     args = Config.base_args(config) ++ update_args(name)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end

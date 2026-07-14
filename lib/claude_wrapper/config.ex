@@ -40,7 +40,10 @@ defmodule ClaudeWrapper.Config do
       with `mix claude_wrapper.install`.
     * `:working_dir` - Working directory for the subprocess
     * `:env` - List of `{key, value}` environment variable tuples
-    * `:timeout` - Command timeout in milliseconds
+    * `:timeout` - Command timeout in milliseconds (default `nil`: unbounded).
+      Applies to `query/2`, `Command.run/3`, `raw/2`, and the CLI subcommand
+      wrappers (via `exec/2`). Streaming (`ClaudeWrapper.stream/2`) is bounded
+      only by its per-frame idle deadline, not this whole-run value.
     * `:verbose` - Enable verbose output
     * `:debug` - Enable debug output
   """
@@ -101,5 +104,30 @@ defmodule ClaudeWrapper.Config do
     opts = if config.working_dir, do: [{:cd, config.working_dir} | opts], else: opts
     opts = if config.env != [], do: [{:env, config.env} | opts], else: opts
     opts
+  end
+
+  @doc """
+  Run a claude subcommand, bounded by `config.timeout`.
+
+  `System.cmd/3` has no timeout, so the CLI subcommand wrappers used it directly
+  and a wedged subcommand blocked the calling process forever, silently
+  discarding the configured `:timeout`. This runs the command in a `Task` and
+  bounds it with `Task.yield/2` + `Task.shutdown/1` (mirroring the one-shot
+  `Runner.Port` path), returning `System.cmd/3`'s `{output, exit_code}` on
+  completion. On timeout it kills the task and synthesizes `{message, 124}` (124
+  is the conventional timeout exit code), so a caller's existing `{_, code}`
+  clause surfaces it as a `command_failed` instead of hanging. A `nil` timeout
+  (the default) is unbounded, exactly as before. A spawn failure (missing
+  binary) still crashes the caller via the task link, as the direct call did.
+  """
+  @spec exec(t(), [String.t()]) :: {String.t(), non_neg_integer()}
+  def exec(%__MODULE__{} = config, args) do
+    opts = cmd_opts(config)
+    task = Task.async(fn -> System.cmd(config.binary, args, opts) end)
+
+    case Task.yield(task, config.timeout || :infinity) || Task.shutdown(task) do
+      {:ok, {output, code}} -> {output, code}
+      nil -> {"claude command timed out after #{config.timeout}ms", 124}
+    end
   end
 end

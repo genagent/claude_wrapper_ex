@@ -148,6 +148,12 @@ defmodule ClaudeWrapper.DuplexSession do
       UI: handler broadcasts the request to a LiveView, which
       surfaces approve/deny and answers asynchronously).
 
+  A **2-arity** handler that returns `:defer` cannot be answered (nothing can
+  learn the `request_id`), so it is logged and treated as a **deny** rather than
+  wedging the turn -- use the 3-arity form to defer. If a turn ever does hang
+  (a genuinely unresponsive CLI), `interrupt/1` is the reset path: it aborts the
+  in-flight turn so the session accepts `send/3` again.
+
   Arity is detected at call time so existing 2-arity callbacks keep
   working unchanged.
   """
@@ -188,7 +194,9 @@ defmodule ClaudeWrapper.DuplexSession do
           subscribers: %{pid() => reference()},
           on_permission: permission_handler(),
           exit_status: exit_status(),
-          exit_waiters: %{reference() => pid()}
+          exit_waiters: %{reference() => pid()},
+          owner_ref: reference() | nil,
+          deferred_permissions: MapSet.t(String.t())
         }
 
   defstruct [
@@ -197,12 +205,14 @@ defmodule ClaudeWrapper.DuplexSession do
     :config,
     :session_id,
     :on_permission,
+    :owner_ref,
     buffer: <<>>,
     pending_turn: nil,
     pending_control: %{},
     subscribers: %{},
     exit_status: :running,
-    exit_waiters: %{}
+    exit_waiters: %{},
+    deferred_permissions: MapSet.new()
   ]
 
   # --- Public API ------------------------------------------------------
@@ -493,6 +503,16 @@ defmodule ClaudeWrapper.DuplexSession do
     adapter_opts = Keyword.get(opts, :adapter_opts, [])
     open_opts = [config: config, args: args, owner: self()] ++ adapter_opts
 
+    # An optional lifecycle owner (e.g. the IEx evaluator driving DuplexIEx):
+    # monitor it and stop when it dies, so an abandoned session reaps its claude
+    # subprocess instead of orphaning it. Distinct from the adapter's `owner`
+    # above (the GenServer, which receives the port's stdio messages).
+    owner_ref =
+      case Keyword.get(opts, :owner) do
+        owner when is_pid(owner) -> Process.monitor(owner)
+        _ -> nil
+      end
+
     case adapter.open(open_opts) do
       {:ok, handle} ->
         {:ok,
@@ -500,7 +520,8 @@ defmodule ClaudeWrapper.DuplexSession do
            port: handle,
            adapter: adapter,
            config: config,
-           on_permission: on_permission
+           on_permission: on_permission,
+           owner_ref: owner_ref
          }}
 
       {:error, reason} ->
@@ -561,9 +582,22 @@ defmodule ClaudeWrapper.DuplexSession do
     {:reply, :ok, drop_subscriber(state, pid)}
   end
 
+  def handle_call({:respond_to_permission, _request_id, :defer}, _from, state) do
+    {:reply, {:error, Error.new(:cannot_defer_again)}, state}
+  end
+
   def handle_call({:respond_to_permission, request_id, decision}, _from, state) do
-    write_permission_response(state, request_id, decision)
-    {:reply, :ok, state}
+    if MapSet.member?(state.deferred_permissions, request_id) do
+      write_permission_response(state, request_id, decision)
+
+      {:reply, :ok,
+       %{state | deferred_permissions: MapSet.delete(state.deferred_permissions, request_id)}}
+    else
+      # A genuine no-op for a request_id the session has no record of: never
+      # deferred, or already answered / resolved by an interrupt. Previously this
+      # wrote a stray control_response unconditionally, contradicting the docs.
+      {:reply, :ok, state}
+    end
   end
 
   def handle_call(:interrupt, _from, %{port: nil} = state) do
@@ -600,6 +634,13 @@ defmodule ClaudeWrapper.DuplexSession do
     state = fail_pending(state, {:port_exit, reason})
     status = derive_exit_status({:port_exit, reason})
     {:stop, :normal, %{state | port: nil, exit_status: status}}
+  end
+
+  # The lifecycle owner (e.g. an abandoned IEx evaluator) died: stop so
+  # `terminate/2` closes the transport and reaps the claude subprocess, rather
+  # than leaving it running ownerless until BEAM exit.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{owner_ref: ref} = state) do
+    {:stop, :normal, state}
   end
 
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
@@ -698,11 +739,30 @@ defmodule ClaudeWrapper.DuplexSession do
       end
 
     case decision do
-      :defer -> :ok
-      _ -> write_permission_response(state, id, default_allow_input(decision, input))
-    end
+      :defer ->
+        if handler_arity(state.on_permission) == 3 do
+          # 3-arity handler deferred: track the id so respond_to_permission/3 can
+          # answer it later, and so an unknown/duplicate id is a genuine no-op.
+          %{state | deferred_permissions: MapSet.put(state.deferred_permissions, id)}
+        else
+          # A 2-arity handler never receives the request_id, so no process can
+          # answer -- the turn would wedge permanently with `alive?/1` still true.
+          # Deny so the turn resolves, and tell the host to use the 3-arity form.
+          Logger.warning(
+            "DuplexSession: a 2-arity on_permission returned :defer for " <>
+              "#{inspect(tool_name)}, but a 2-arity handler cannot receive the " <>
+              "request_id needed to answer it later -- the turn would wedge. " <>
+              "Denying. Use a 3-arity (tool_name, input, request_id) handler to defer."
+          )
 
-    state
+          write_permission_response(state, id, {:deny, "2-arity on_permission cannot defer"})
+          state
+        end
+
+      _ ->
+        write_permission_response(state, id, default_allow_input(decision, input))
+        state
+    end
   end
 
   # Reply to an outbound control_request we sent (e.g. interrupt).
@@ -740,7 +800,9 @@ defmodule ClaudeWrapper.DuplexSession do
     result = Result.from_json(msg)
     broadcast(state, {:result, result})
     GenServer.reply(from, {:ok, result})
-    %{state | pending_turn: nil}
+    # The turn is over; any still-tracked deferred permission ids are moot, so a
+    # late respond_to_permission/3 for this turn becomes a documented no-op.
+    %{state | pending_turn: nil, deferred_permissions: MapSet.new()}
   end
 
   defp dispatch(%{"type" => "result"} = msg, state) do
@@ -776,6 +838,11 @@ defmodule ClaudeWrapper.DuplexSession do
       {:arity, 3} -> handler.(tool_name, input, request_id)
       {:arity, 2} -> handler.(tool_name, input)
     end
+  end
+
+  defp handler_arity(handler) do
+    {:arity, arity} = :erlang.fun_info(handler, :arity)
+    arity
   end
 
   defp accumulate(%{pending_turn: {from, events}} = state, msg) do
