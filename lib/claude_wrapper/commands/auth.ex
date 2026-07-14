@@ -25,7 +25,7 @@ defmodule ClaudeWrapper.Commands.Auth do
   def status(%Config{} = config) do
     args = Config.base_args(config) ++ ["auth", "status", "--json"]
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} ->
         case Jason.decode(output) do
           {:ok, data} ->
@@ -107,7 +107,7 @@ defmodule ClaudeWrapper.Commands.Auth do
   def login(%Config{} = config, opts \\ []) do
     args = Config.base_args(config) ++ login_args(opts)
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end
@@ -139,7 +139,7 @@ defmodule ClaudeWrapper.Commands.Auth do
   def logout(%Config{} = config) do
     args = Config.base_args(config) ++ ["auth", "logout"]
 
-    case System.cmd(config.binary, args, Config.cmd_opts(config)) do
+    case Config.exec(config, args) do
       {output, 0} -> {:ok, String.trim(output)}
       {output, code} -> {:error, Error.command_failed(code, output)}
     end

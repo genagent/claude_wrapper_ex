@@ -108,14 +108,32 @@ defmodule ClaudeWrapper do
   def raw(args, opts \\ []) when is_list(args) do
     config = Config.new(opts)
     all_args = Config.base_args(config) ++ args
-    cmd_opts = Config.cmd_opts(config)
 
-    case System.cmd(config.binary, all_args, cmd_opts) do
-      {output, 0} -> {:ok, String.trim(output)}
-      {output, code} -> {:error, Error.command_failed(code, output)}
+    # Route through the configured Runner (not System.cmd directly) so raw/2
+    # honors `config.timeout` AND the leak-free Forcola runner's process-group
+    # kill -- the one API explicitly framed as "run an arbitrary CLI command"
+    # should not be the one that silently bypasses both.
+    case ClaudeWrapper.Runner.impl().run(
+           config.binary,
+           all_args,
+           Config.cmd_opts(config),
+           config.timeout
+         ) do
+      {:ok, {output, 0}} ->
+        {:ok, String.trim(output)}
+
+      {:ok, {output, code}} ->
+        {:error, Error.command_failed(code, output)}
+
+      {:error, :timeout} ->
+        {:error, Error.timeout(config.timeout)}
+
+      {:error, {:binary_not_found, _reason}} ->
+        {:error, Error.new(:binary_not_found, reason: config.binary)}
+
+      {:error, reason} ->
+        {:error, Error.io(reason)}
     end
-  rescue
-    e in ErlangError -> {:error, Error.io(e)}
   end
 
   @doc """
@@ -160,8 +178,13 @@ defmodule ClaudeWrapper do
   @doc """
   Execute a query and return a lazy stream of `%StreamEvent{}` structs.
 
-  The subprocess starts when the stream is consumed. Accepts the same
-  options as `query/2`.
+  The subprocess starts when the stream is consumed. Accepts the same options as
+  `query/2`, except `:timeout`: streaming is bounded only by a per-frame idle
+  deadline, not a whole-run timeout. A truncated run (idle timeout, non-zero
+  exit, spawn failure) ends with a terminal
+  `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` rather
+  than a silent stop; see `ClaudeWrapper.Query.stream/2` for details and the
+  Forcola-runner note.
   """
   @spec stream(String.t(), keyword()) :: Enumerable.t()
   def stream(prompt, opts \\ []) do

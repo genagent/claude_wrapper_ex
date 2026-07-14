@@ -15,7 +15,7 @@ defmodule ClaudeWrapper.Commands.Version do
   """
   @spec execute(Config.t()) :: {:ok, version_info()} | {:error, term()}
   def execute(%Config{} = config) do
-    case System.cmd(config.binary, ["--version"], Config.cmd_opts(config)) do
+    case Config.exec(config, ["--version"]) do
       {output, 0} ->
         raw = String.trim(output)
         {:ok, %{version: raw, raw: raw}}

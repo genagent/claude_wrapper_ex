@@ -326,33 +326,83 @@ defmodule ClaudeWrapper.DuplexSessionTest do
       end
     end
 
-    test "defer callback does not crash; respond_to_permission/3 finishes the cycle" do
+    test "a 3-arity :defer tracks the request_id; respond_to_permission/3 answers and clears it" do
       pid = start_with_fake_claude()
+      parent = self()
 
       :sys.replace_state(pid, fn state ->
-        %{state | on_permission: fn _tool, _input -> :defer end}
+        %{state | on_permission: fn _tool, _input, _id -> send(parent, :asked) && :defer end}
       end)
 
       try do
         inject(pid, %{
           type: "control_request",
           request_id: "deferred-1",
-          request: %{
-            subtype: "can_use_tool",
-            tool_name: "Bash",
-            input: %{}
-          }
+          request: %{subtype: "can_use_tool", tool_name: "Bash", input: %{}}
         })
 
-        # If defer crashed the GenServer, this call would error.
-        assert :ok = DuplexSession.respond_to_permission(pid, "deferred-1", :allow)
+        assert_receive :asked, 1_000
+        assert MapSet.member?(:sys.get_state(pid).deferred_permissions, "deferred-1")
 
-        # Calling respond_to_permission with :defer is rejected.
+        # Answering a tracked id succeeds and clears it.
+        assert :ok = DuplexSession.respond_to_permission(pid, "deferred-1", :allow)
+        refute MapSet.member?(:sys.get_state(pid).deferred_permissions, "deferred-1")
+
+        # Answering with :defer is rejected.
         assert {:error, %ClaudeWrapper.Error{kind: :cannot_defer_again}} =
                  DuplexSession.respond_to_permission(pid, "deferred-1", :defer)
       after
         DuplexSession.stop(pid)
       end
+    end
+
+    test "a 2-arity on_permission returning :defer is denied, not tracked (no wedged turn)" do
+      pid = start_with_fake_claude()
+      parent = self()
+
+      :sys.replace_state(pid, fn state ->
+        %{state | on_permission: fn _tool, _input -> send(parent, :asked) && :defer end}
+      end)
+
+      try do
+        inject(pid, %{
+          type: "control_request",
+          request_id: "two-arity-defer",
+          request: %{subtype: "can_use_tool", tool_name: "Bash", input: %{}}
+        })
+
+        assert_receive :asked, 1_000
+        # A 2-arity handler cannot be answered later, so :defer is downgraded to
+        # a deny and the id is NOT tracked -- the turn resolves rather than wedging.
+        refute MapSet.member?(:sys.get_state(pid).deferred_permissions, "two-arity-defer")
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "respond_to_permission/3 is a no-op for an unknown request_id" do
+      pid = start_with_fake_claude()
+
+      try do
+        assert :ok = DuplexSession.respond_to_permission(pid, "never-deferred", :allow)
+        assert MapSet.size(:sys.get_state(pid).deferred_permissions) == 0
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "the session stops (reaping its subprocess) when its :owner dies (#210)" do
+      config = Config.new(binary: System.find_executable("cat"))
+      owner = spawn(fn -> Process.sleep(:infinity) end)
+
+      {:ok, pid} =
+        DuplexSession.start_link(config: config, args_override: [], owner: owner)
+
+      ref = Process.monitor(pid)
+      Process.exit(owner, :kill)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+      refute Process.alive?(pid)
     end
 
     test "3-arity callback receives request_id" do
