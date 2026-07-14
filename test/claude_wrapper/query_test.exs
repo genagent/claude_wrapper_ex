@@ -276,6 +276,47 @@ defmodule ClaudeWrapper.QueryTest do
     end
   end
 
+  describe "build_args/1 enum + betas handling (#219, #220)" do
+    test "emits the exact CLI value for each permission_mode / effort atom" do
+      permission_modes = [
+        {:default, "default"},
+        {:accept_edits, "acceptEdits"},
+        {:bypass_permissions, "bypassPermissions"},
+        {:dont_ask, "dontAsk"},
+        {:plan, "plan"},
+        {:auto, "auto"}
+      ]
+
+      for {atom, cli} <- permission_modes do
+        args = "p" |> Query.new() |> Query.apply_opts(permission_mode: atom) |> Query.build_args()
+        assert ["--permission-mode", cli] |> subsequence?(args)
+      end
+
+      for {atom, cli} <- [low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max"] do
+        args = "p" |> Query.new() |> Query.apply_opts(effort: atom) |> Query.build_args()
+        assert ["--effort", cli] |> subsequence?(args)
+      end
+    end
+
+    test "an out-of-vocabulary enum atom raises an actionable error (not FunctionClauseError)" do
+      assert_raise ArgumentError, ~r/invalid permission_mode :yolo; expected one of/, fn ->
+        "p" |> Query.new() |> Query.apply_opts(permission_mode: :yolo) |> Query.build_args()
+      end
+
+      assert_raise ArgumentError, ~r/invalid effort :extreme/, fn ->
+        "p" |> Query.new() |> Query.apply_opts(effort: :extreme) |> Query.build_args()
+      end
+    end
+
+    test "--betas accepts a variadic list and a single string (#219)" do
+      list_args = "p" |> Query.new() |> Query.betas(["beta-a", "beta-b"]) |> Query.build_args()
+      assert ["--betas", "beta-a", "beta-b"] |> subsequence?(list_args)
+
+      string_args = "p" |> Query.new() |> Query.betas("beta-a") |> Query.build_args()
+      assert ["--betas", "beta-a"] |> subsequence?(string_args)
+    end
+  end
+
   describe "hermetic preset (#193)" do
     test "hermetic: true defaults to the full seal" do
       q = "p" |> Query.new() |> Query.apply_opts(hermetic: true)

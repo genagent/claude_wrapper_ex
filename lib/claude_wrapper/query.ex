@@ -68,7 +68,7 @@ defmodule ClaudeWrapper.Query do
           brief: boolean(),
           debug_filter: String.t() | nil,
           debug_file: String.t() | nil,
-          betas: String.t() | nil,
+          betas: String.t() | [String.t()] | nil,
           plugin_dirs: [String.t()],
           plugin_urls: [String.t()],
           name: String.t() | nil,
@@ -305,8 +305,14 @@ defmodule ClaudeWrapper.Query do
   @spec debug_file(t(), String.t()) :: t()
   def debug_file(%__MODULE__{} = q, path), do: %{q | debug_file: path}
 
-  @doc "Set beta feature headers."
-  @spec betas(t(), String.t()) :: t()
+  @doc """
+  Set beta feature header(s).
+
+  Accepts a single string or a list -- the CLI's `--betas` is variadic, so a
+  list emits one `--betas` flag followed by every value (a single string is
+  still accepted, unchanged).
+  """
+  @spec betas(t(), String.t() | [String.t()]) :: t()
   def betas(%__MODULE__{} = q, betas), do: %{q | betas: betas}
 
   @doc "Add a plugin directory."
@@ -752,7 +758,7 @@ defmodule ClaudeWrapper.Query do
     |> add_bool("--brief", q.brief)
     |> add_opt("--debug", q.debug_filter)
     |> add_opt("--debug-file", q.debug_file)
-    |> add_opt("--betas", q.betas)
+    |> add_betas(q.betas)
     |> add_list("--plugin-dir", q.plugin_dirs)
     |> add_list("--plugin-url", q.plugin_urls)
     |> add_opt("--name", q.name)
@@ -816,10 +822,19 @@ defmodule ClaudeWrapper.Query do
   defp add_worktree(args, true), do: args ++ ["--worktree"]
   defp add_worktree(args, name) when is_binary(name), do: args ++ ["--worktree", name]
 
+  # --betas is variadic (<betas...>): a list emits one flag followed by every
+  # value; a bare string stays a single flag+value (backward compatible).
+  defp add_betas(args, nil), do: args
+  defp add_betas(args, betas) when is_list(betas), do: add_variadic(args, "--betas", betas)
+  defp add_betas(args, beta) when is_binary(beta), do: add_opt(args, "--betas", beta)
+
   defp format_output_format(nil), do: nil
   defp format_output_format(:text), do: "text"
   defp format_output_format(:json), do: "json"
   defp format_output_format(:stream_json), do: "stream-json"
+
+  defp format_output_format(other),
+    do: invalid_enum!(:output_format, other, [:text, :json, :stream_json])
 
   defp format_permission_mode(nil), do: nil
   defp format_permission_mode(:default), do: "default"
@@ -829,6 +844,14 @@ defmodule ClaudeWrapper.Query do
   defp format_permission_mode(:plan), do: "plan"
   defp format_permission_mode(:auto), do: "auto"
 
+  defp format_permission_mode(other),
+    do:
+      invalid_enum!(
+        :permission_mode,
+        other,
+        [:default, :accept_edits, :bypass_permissions, :dont_ask, :plan, :auto]
+      )
+
   defp format_effort(nil), do: nil
   defp format_effort(:low), do: "low"
   defp format_effort(:medium), do: "medium"
@@ -836,9 +859,21 @@ defmodule ClaudeWrapper.Query do
   defp format_effort(:xhigh), do: "xhigh"
   defp format_effort(:max), do: "max"
 
+  defp format_effort(other),
+    do: invalid_enum!(:effort, other, [:low, :medium, :high, :xhigh, :max])
+
   defp format_input_format(nil), do: nil
   defp format_input_format(:text), do: "text"
   defp format_input_format(:stream_json), do: "stream-json"
+  defp format_input_format(other), do: invalid_enum!(:input_format, other, [:text, :stream_json])
+
+  # One actionable error for an out-of-vocabulary enum option, rather than a
+  # FunctionClauseError raised deep in build_args naming only the private
+  # format_* helper (#220).
+  defp invalid_enum!(option, value, allowed) do
+    raise ArgumentError,
+          "invalid #{option} #{inspect(value)}; expected one of #{inspect(allowed)}"
+  end
 
   defp parse_json_output(stdout) do
     json_line = extract_json(stdout)
