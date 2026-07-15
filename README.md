@@ -3,190 +3,46 @@
 [![CI](https://github.com/genagent/claude_wrapper_ex/actions/workflows/ci.yml/badge.svg)](https://github.com/genagent/claude_wrapper_ex/actions/workflows/ci.yml)
 [![Hex.pm](https://img.shields.io/hexpm/v/claude_wrapper.svg)](https://hex.pm/packages/claude_wrapper)
 [![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/claude_wrapper)
+[![License](https://img.shields.io/hexpm/l/claude_wrapper.svg)](https://github.com/genagent/claude_wrapper_ex/blob/main/LICENSE)
 
-Elixir wrapper for the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code).
+Drive the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) from Elixir: typed results and errors, streaming, tool-permission callbacks, and long-lived sessions — over the same `claude` binary you already run in a terminal.
 
-`claude_wrapper` gives you two ways to drive `claude` from Elixir:
+`claude_wrapper` owns exactly the seam between Elixir and the `claude` process: spawning it, framing its NDJSON, and turning its output into typed `%ClaudeWrapper.Result{}` / `%ClaudeWrapper.Error{}`. It takes no position on what you do with a result. It offers **two ways to drive `claude`**, and you pick by the lifecycle of your host:
 
-1. **`DuplexSession`** -- a `GenServer` that holds **one** `claude`
-   subprocess open for the lifetime of a conversation, streams partial
-   tokens as they arrive, lets you interrupt mid-turn, and routes
-   tool-permission prompts back to your code. This is the right fit
-   for chat UIs, agent runtimes, Phoenix-backed interfaces, and any
-   long-running OTP process.
-2. **One-shot `Query`** -- a single subprocess per turn, simple
-   request/response. The right fit for `mix` tasks, escripts, batch
-   jobs, and anything else that runs and exits.
+- **One-shot** (`ClaudeWrapper.query/2`, `Query`, `Session`) — a fresh subprocess per turn, simple request/response. The fit for `mix` tasks, escripts, batch jobs, and anything that runs and exits.
+- **Long-lived** (`ClaudeWrapper.DuplexSession`) — a `GenServer` holding **one** `claude` subprocess open across a whole conversation: streams partial tokens, interrupts mid-turn, and routes tool-permission prompts back to your code. The fit for chat UIs, agent runtimes, and Phoenix-backed interfaces.
 
-The duplex mode is the same protocol the official
-`@anthropic-ai/claude-agent-sdk` uses internally and that the
-`@agentclientprotocol/claude-agent-acp` bridge relies on for IDE
-integrations like Zed's agent panel. We surface it here so an OTP
-host can use `claude` the same way an IDE backend would.
+The long-lived mode speaks the same duplex protocol the official `@anthropic-ai/claude-agent-sdk` uses internally and that the `@agentclientprotocol/claude-agent-acp` bridge relies on for IDE integrations like Zed's agent panel — so an OTP host can use `claude` the way an IDE backend does.
 
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.13"}
+    {:claude_wrapper, "~> 0.14"}
   ]
 end
 ```
 
-Requires the `claude` CLI to be installed and on your `PATH` (or set
-`CLAUDE_CLI` to point at it).
+Requires the `claude` CLI installed and on your `PATH` (or set `CLAUDE_CLI` to its path). Run `claude doctor` — or, from Elixir, `ClaudeWrapper.doctor/0` — before your first real call.
 
-### Bundled binary (opt-in)
-
-`claude_wrapper` can also resolve, install, and version-pin a `claude`
-binary under its own `priv/bin/`, so an app can depend on
-`claude_wrapper` and get a known CLI version without a separate PATH
-install. This is opt-in; the PATH/`CLAUDE_CLI` default above is
-unchanged for everyone else.
-
-```elixir
-config = ClaudeWrapper.Config.new(binary: :bundled)
-```
-
-`ClaudeWrapper.Config.new/1` resolution is pure -- it does not touch the network.
-Install the pinned binary explicitly:
-
-```bash
-mix claude_wrapper.install    # install/update the pinned bundled binary
-mix claude_wrapper.uninstall  # remove it
-mix claude_wrapper.path       # print its path and install state
-```
-
-See `ClaudeWrapper.Bundled` for details.
-
-## DuplexSession (long-lived chat-style sessions)
-
-Holds one `claude` subprocess open across many turns. Subscribers
-see assistant messages, partial token deltas, and tool-call results
-as they arrive.
-
-```elixir
-config = ClaudeWrapper.Config.new(working_dir: ".")
-{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config)
-
-# Subscribe to live events.
-:ok = ClaudeWrapper.DuplexSession.subscribe(pid)
-
-# Send a turn; this resolves when the CLI emits its `result` event.
-{:ok, result} = ClaudeWrapper.DuplexSession.send(pid, "Explain this codebase.")
-
-# Inbox now contains:
-#   {:claude, {:system_init, "abc-123"}}
-#   {:claude, {:assistant, %{...}}}
-#   {:claude, {:stream_event, %{...}}}    -- partial token deltas
-#   {:claude, {:user, %{...}}}            -- tool results
-#   {:claude, {:result, %ClaudeWrapper.Result{}}}
-
-# Cancel an in-flight turn cleanly (no SIGKILL):
-ClaudeWrapper.DuplexSession.interrupt(pid)
-
-# Or close the whole session:
-ClaudeWrapper.DuplexSession.close(pid)
-```
-
-### Configuring the session with a `Query`
-
-Pass a `%ClaudeWrapper.Query{}` to configure the session's spawn-time
-knobs (model, system prompt, permission mode, tool allow/deny lists,
-mcp config, effort, turn/budget caps, session continuity, ...) with the
-same setters and `apply_opts/2` as the one-shot path. The query's
-prompt and transport-format flags are ignored: the session owns its
-stream-json transport and takes prompts per turn via `send/3`.
-
-```elixir
-query =
-  ClaudeWrapper.Query.new("")
-  |> ClaudeWrapper.Query.model("sonnet")
-  |> ClaudeWrapper.Query.allowed_tool("Read")
-  |> ClaudeWrapper.Query.max_turns(20)
-
-{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config, query: query)
-```
-
-`:extra_args` still works as an escape hatch for flags not yet on
-`Query`, and is applied after the query's flags.
-
-### Permission callback
-
-When the CLI wants to run a tool, it routes the prompt back through
-your `:on_permission` callback. The callback can answer synchronously
-or defer to a UI:
-
-```elixir
-on_permission = fn tool_name, _input ->
-  case tool_name do
-    "Bash" -> {:deny, "no shell tools in this session"}
-    _      -> :allow
-  end
-end
-
-{:ok, pid} =
-  ClaudeWrapper.DuplexSession.start_link(
-    config: config,
-    on_permission: on_permission
-  )
-```
-
-For human-in-the-loop UIs, return `:defer` from the callback and
-answer later via `respond_to_permission/3`.
-
-### Pairing with a `DynamicSupervisor`
-
-Each session owns one Port. Pair them with a `DynamicSupervisor`
-for per-conversation isolation, named registration, and standard
-OTP restart semantics:
-
-```elixir
-{:ok, _} =
-  DynamicSupervisor.start_child(
-    MyApp.SessionsSupervisor,
-    {ClaudeWrapper.DuplexSession, [config: config, name: {:via, Registry, ...}]}
-  )
-```
-
-See `ClaudeWrapper.DuplexSession` for the full API and message
-vocabulary.
-
-## DuplexIEx (REPL helpers for the duplex session)
-
-For interactive use, the `DuplexIEx` helpers store one session in
-the IEx process dictionary and stream tokens to stdout as they
-arrive:
-
-```elixir
-iex> import ClaudeWrapper.DuplexIEx
-
-iex> start(working_dir: ".")
-Claude session started.
-
-iex> say("Explain the README briefly.")
-...streams text live...
-($0.0123, 1 turn)
-:ok
-
-iex> say("Now suggest a one-line tagline.")
-...streams text live...
-:ok
-
-iex> close()
-Session closed.
-```
-
-## One-shot queries
-
-For short-lived consumers (mix tasks, escripts, batch jobs, anything
-that does one thing and exits), the simpler request/response surface
-spawns a fresh subprocess per turn:
+## Quick start
 
 ```elixir
 {:ok, result} = ClaudeWrapper.query("Explain this error: ...")
+result.result       # the text
+result.cost_usd     # spend for the call
+```
 
+Everything else is a variation on this: more control over the flags (`Query`), continuity across turns (`Session` / `DuplexSession`), streaming, or reading Claude Code's own on-disk state.
+
+## Driving claude
+
+### One-shot query and stream
+
+For short-lived consumers, `query/2` runs a fresh subprocess and returns the full result; `stream/2` yields `%StreamEvent{}`s as they arrive. Both accept the same options (see [Building the call](#building-the-call)).
+
+```elixir
 {:ok, result} =
   ClaudeWrapper.query("Fix the bug in lib/foo.ex",
     model: "sonnet",
@@ -194,226 +50,104 @@ spawns a fresh subprocess per turn:
     max_turns: 5,
     permission_mode: :bypass_permissions
   )
-```
 
-Streaming events from a one-shot query:
-
-```elixir
-ClaudeWrapper.stream("Implement the feature in issue #42",
-  working_dir: "/path/to/project"
-)
+ClaudeWrapper.stream("Implement the feature in issue #42", working_dir: ".")
 |> Stream.each(fn event -> IO.inspect(event.type) end)
 |> Stream.run()
 ```
 
-For a per-call REPL, use `ClaudeWrapper.IEx`:
+### Multi-turn without a process (`Session`)
 
-```elixir
-iex> import ClaudeWrapper.IEx
-iex> chat("explain this codebase", working_dir: ".")
-iex> say("now add tests for the retry module")
-iex> cost()
-iex> reset()
-```
-
-### When to use `Session` vs `DuplexSession`
-
-`ClaudeWrapper.Session` threads `--resume <session_id>` across one-
-shot calls so you get multi-turn continuity without holding a
-subprocess open. Use it when:
-
-- You're outside an OTP host (no GenServer to own a long-lived port)
-- You want a simple struct-passing API rather than a process API
-- Each turn is far apart in wall time and the cold-start cost
-  doesn't matter
+`ClaudeWrapper.Session` threads `--resume <session_id>` across one-shot calls, so you get multi-turn continuity without holding a subprocess open — a struct-passing API, ideal outside an OTP host or when turns are far apart in wall time.
 
 ```elixir
 session = ClaudeWrapper.Session.new(config, model: "sonnet")
-{:ok, session, result} = ClaudeWrapper.Session.send(session, "What files are here?")
-{:ok, session, result} = ClaudeWrapper.Session.send(session, "Add tests for lib/foo.ex")
+{:ok, session, r1} = ClaudeWrapper.Session.send(session, "What files are here?")
+{:ok, session, r2} = ClaudeWrapper.Session.send(session, "Add tests for lib/foo.ex")
 ```
 
-When in doubt: a long-running host (Phoenix server, agent runtime,
-chat UI backend) wants `DuplexSession`; everything else wants
-`Query` or `Session`.
+`ClaudeWrapper.SessionServer` wraps this in a supervised GenServer when you want a process around the per-call flow but not live token streaming.
 
-## Query builder
+### Long-lived sessions (`DuplexSession`)
 
-For full control over flags, build a `Query` directly:
+Holds one `claude` subprocess open across many turns; subscribers see assistant messages, partial token deltas, and tool-call results live.
+
+```elixir
+config = ClaudeWrapper.Config.new(working_dir: ".")
+{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config)
+:ok = ClaudeWrapper.DuplexSession.subscribe(pid)
+
+# Resolves when the CLI emits its `result` event; the inbox streamed the turn.
+{:ok, result} = ClaudeWrapper.DuplexSession.send(pid, "Explain this codebase.")
+
+# Inbox: {:claude, {:system_init, id}} | {:assistant, _} | {:stream_event, _}
+#        | {:user, _}  (tool results) | {:result, %ClaudeWrapper.Result{}}
+
+ClaudeWrapper.DuplexSession.interrupt(pid)   # cancel an in-flight turn cleanly
+ClaudeWrapper.DuplexSession.close(pid)        # end the session
+```
+
+**Configure it with a `Query`.** Pass a `%Query{}` for the session's spawn-time knobs (model, system prompt, permission mode, tool lists, mcp config, ...); its prompt and transport flags are ignored (the session owns stream-json and takes prompts per turn).
+
+```elixir
+query = ClaudeWrapper.Query.new("") |> ClaudeWrapper.Query.model("sonnet") |> ClaudeWrapper.Query.allowed_tool("Read")
+{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config, query: query)
+```
+
+**Permission callback.** When the CLI wants a tool, it routes the request through your `:on_permission` callback — answer synchronously, or return `:defer` and answer later via `respond_to_permission/3` (for human-in-the-loop UIs).
+
+```elixir
+on_permission = fn tool_name, _input ->
+  if tool_name == "Bash", do: {:deny, "no shell here"}, else: :allow
+end
+
+{:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config, on_permission: on_permission)
+```
+
+**Supervise it.** Each session owns one Port; pair it with a `DynamicSupervisor` for per-conversation isolation, named registration, and OTP restart semantics. See `ClaudeWrapper.DuplexSession` for the full API and message vocabulary.
+
+### REPL helpers
+
+For interactive exploration, two IEx helper modules stream tokens to stdout:
+
+```elixir
+iex> import ClaudeWrapper.DuplexIEx      # one long-lived session in the process dictionary
+iex> start(working_dir: ".")
+iex> say("Explain the README briefly.")   # ...streams live...
+
+iex> import ClaudeWrapper.IEx            # per-call one-shot mode
+iex> chat("explain this codebase", working_dir: ".")
+iex> cost()
+```
+
+## Building the call
+
+`ClaudeWrapper.Query` is the builder for the full CLI flag surface; `Query.apply_opts/2` takes a keyword list of any setter, and `query/2` / `stream/2` / `Session.send/3` all delegate to it, so the same options work everywhere.
 
 ```elixir
 alias ClaudeWrapper.{Config, Query}
-
-config = Config.new(working_dir: "/path/to/project")
 
 Query.new("Fix the tests")
 |> Query.model("sonnet")
 |> Query.max_turns(10)
 |> Query.permission_mode(:bypass_permissions)
 |> Query.allowed_tool("Read")
-|> Query.allowed_tool("Write")
-|> Query.execute(config)
+|> Query.execute(Config.new(working_dir: "/path/to/project"))
 ```
 
-`Query.apply_opts/2` accepts a keyword list version of any of these
-setters; `ClaudeWrapper.query/2`, `ClaudeWrapper.stream/2`, and
-`Session.send/3` all delegate to it, so you can pass any of those
-opts uniformly.
-
-Less common setters: `Query.name/2` tags the query for CLI-side
-tracing, `Query.plugin_url/2` loads a plugin from a URL for the
-duration of the call, and `Query.safe_mode/1` enables the CLI's
-safe-mode guardrails:
-
-```elixir
-Query.new("Review this PR")
-|> Query.name("pr-review")
-|> Query.plugin_url("https://example.com/my-plugin.zip")
-|> Query.safe_mode()
-|> Query.execute(config)
-```
-
-## Multi-agent coordination
-
-Multi-agent coordination has moved to a separate package,
-[**agent_workshop**](https://hex.pm/packages/agent_workshop). It is
-backend-agnostic and can drive Claude, Codex, or any agent that
-implements its `Backend` behaviour. Use it alongside
-`claude_wrapper`:
-
-```elixir
-def deps do
-  [
-    {:claude_wrapper, "~> 0.13"},
-    {:agent_workshop, "~> 0.1"}
-  ]
-end
-```
-
-## Telemetry
-
-ClaudeWrapper emits `:telemetry` events around its core exec paths
-so downstream applications can observe query/session/stream
-lifecycle with a single handler. Events use the `:telemetry.span/3`
-shape with `:start`, `:stop`, and `:exception` suffixes:
-
-| Event | Emitted by |
-|---|---|
-| `[:claude_wrapper, :exec, _]` | `Query.execute/2` (one-shot query) |
-| `[:claude_wrapper, :stream, _]` | `Query.stream/2` (NDJSON streaming) |
-| `[:claude_wrapper, :session, :turn, _]` | `Session.send/3` (single turn) |
-| `[:claude_wrapper, :duplex, :session, _]` | `DuplexSession` process lifetime (open/terminate) |
-| `[:claude_wrapper, :duplex, :turn, _]` | `DuplexSession.send/3` (single long-lived-session turn) |
-
-Stop metadata adds `:cost_usd`, `:exit_code`, and the usual
-`:duration`. Subscribe with:
-
-```elixir
-:telemetry.attach_many(
-  "claude-wrapper-observer",
-  [
-    [:claude_wrapper, :exec, :stop],
-    [:claude_wrapper, :stream, :stop],
-    [:claude_wrapper, :session, :turn, :stop]
-  ],
-  fn event, measurements, metadata, _config ->
-    IO.inspect({event, measurements.duration, metadata})
-  end,
-  nil
-)
-```
-
-See `ClaudeWrapper.Telemetry` for the full event reference.
-
-## SessionServer (supervised one-shot sessions)
-
-For OTP applications that want a supervised process around the
-per-call `Session` flow:
-
-```elixir
-{:ok, pid} =
-  ClaudeWrapper.SessionServer.start_link(
-    config: config,
-    query_opts: [model: "sonnet", max_turns: 5]
-  )
-
-{:ok, result} = ClaudeWrapper.SessionServer.send_message(pid, "Fix the tests")
-ClaudeWrapper.SessionServer.total_cost(pid)
-```
-
-`SessionServer` wraps `Session` (one subprocess per turn). For chat-
-UI-style flows where partial-token streaming matters, prefer
-`DuplexSession` instead.
-
-## MCP config builder
-
-Build `.mcp.json` files programmatically:
+Supporting builders: `ClaudeWrapper.Prompt` (composable prompts with deferred file/git expansion), `ClaudeWrapper.McpConfig` (programmatic `.mcp.json`), and `ClaudeWrapper.ToolPattern` (typed, validated tool specs).
 
 ```elixir
 ClaudeWrapper.McpConfig.new()
-|> ClaudeWrapper.McpConfig.add_stdio("my-server", "npx", ["-y", "my-mcp-server"],
-  env: %{"API_KEY" => "sk-..."}
-)
-|> ClaudeWrapper.McpConfig.add_sse("remote", "https://example.com/mcp")
+|> ClaudeWrapper.McpConfig.add_stdio("my-server", "npx", ["-y", "my-mcp-server"], env: %{"API_KEY" => "sk-..."})
 |> ClaudeWrapper.McpConfig.write!(".mcp.json")
 ```
 
-## Retry with backoff
+## Operational concerns
 
-```elixir
-ClaudeWrapper.Retry.execute(query, config,
-  max_retries: 3,
-  base_delay_ms: 1_000,
-  max_delay_ms: 30_000
-)
-```
+### Error handling
 
-## Plugin and marketplace management
-
-```elixir
-alias ClaudeWrapper.Commands.{Plugin, Marketplace}
-
-{:ok, plugins} = Plugin.list(config)
-{:ok, _} = Plugin.install(config, "my-plugin", scope: :project)
-
-{:ok, marketplaces} = Marketplace.list(config)
-{:ok, _} = Marketplace.add(config, "https://github.com/org/marketplace")
-```
-
-## Raw CLI escape hatch
-
-For subcommands not yet wrapped:
-
-```elixir
-ClaudeWrapper.raw(["config", "list"])
-```
-
-## Reading Claude Code state
-
-Beyond driving `claude`, the read-side modules introspect Claude Code's
-on-disk state under `~/.claude` -- useful for dashboards, session
-pickers, and agent tooling:
-
-```elixir
-# Session transcripts (~/.claude/projects/<slug>/*.jsonl)
-{:ok, history} = ClaudeWrapper.History.home()
-{:ok, sessions} = ClaudeWrapper.History.sessions_for_path(history, File.cwd!())
-{:ok, log} = ClaudeWrapper.History.read_session(history, hd(sessions).session_id)
-
-# Settings layers and agent definition files
-{:ok, settings} = ClaudeWrapper.Settings.load(project_root: File.cwd!())
-{:ok, agents_root} = ClaudeWrapper.Agents.home()
-{:ok, agents} = ClaudeWrapper.Agents.list(agents_root)
-```
-
-`History`, `Settings`, `Agents`, `Skills`, `Jobs`, and `Worktrees` parse
-liberally and return typed structs.
-
-## Error handling
-
-Every operational failure is `{:error, %ClaudeWrapper.Error{}}` -- a
-raisable exception. Match on `:kind`; details live in `:reason` and the
-`:exit_code` / `:stdout` / `:stderr` fields:
+Every operational failure is `{:error, %ClaudeWrapper.Error{}}` — a raisable exception you match on by `:kind`, with details in `:reason` / `:exit_code` / `:stdout` / `:stderr`:
 
 ```elixir
 case ClaudeWrapper.query("...", max_turns: 1) do
@@ -423,53 +157,90 @@ case ClaudeWrapper.query("...", max_turns: 1) do
 end
 ```
 
-The CLI's own rail-stop caps are surfaced as typed, recoverable errors
-distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`)
-and `:max_budget_exceeded` (`--max-budget-usd`, separate from the
-client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry a
-`:reason` map of `%{cap:, cost_usd:, num_turns:, session_id:}` so a
-capped run can be resumed:
+The CLI's own rail-stop caps are typed, recoverable errors — distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`) and `:max_budget_exceeded` (`--max-budget-usd`, separate from the client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry `reason: %{cap:, cost_usd:, num_turns:, session_id:}`, so a capped run can be resumed:
 
 ```elixir
-case ClaudeWrapper.query("...", max_budget_usd: 5.0) do
-  {:ok, result} ->
-    result
-
-  {:error, %ClaudeWrapper.Error{kind: :max_budget_exceeded, reason: %{session_id: sid}}} ->
-    {:resume, sid}
-end
+{:error, %ClaudeWrapper.Error{kind: :max_budget_exceeded, reason: %{session_id: sid}}} = ...
+# resume with Query.resume(sid) / Session
 ```
 
-## Leak-free execution (optional)
+### Leak-free execution (opt-in)
 
-By default a timeout, a halted stream, a closed session, or BEAM death
-closes the Erlang port or shuts down a `Task`. That closes the pipes but
-sends no signal to the OS process, so `claude` -- and every stdio MCP
-server it spawned -- can keep running after the caller was told the turn
-failed (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)).
-
-Add [`forcola`](https://hex.pm/packages/forcola) and select its
-implementations to run every `claude` invocation under a process-group
-kill: on timeout, halt, close, or BEAM death the whole group (the CLI and
-its MCP servers) is terminated (SIGTERM, then SIGKILL). forcola is
-POSIX-only; without it the default `Port` paths are used unchanged.
+By default a timeout, halted stream, closed session, or BEAM death closes the Erlang port or shuts down a `Task` — which closes the pipes but sends **no signal** to the OS process, so `claude` and every stdio MCP server it spawned can keep running (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)). Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death):
 
 ```elixir
-# mix.exs
-{:forcola, "~> 0.3"}
-
-# config/config.exs
+# mix.exs:  {:forcola, "~> 0.3"}
 config :claude_wrapper,
-  runner: ClaudeWrapper.Runner.Forcola,           # one-shot + streaming
+  runner: ClaudeWrapper.Runner.Forcola,                        # one-shot + streaming
   duplex_adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola  # DuplexSession
 ```
 
-Both are opt-in and additive: `ClaudeWrapper.Runner.Forcola` and
-`ClaudeWrapper.DuplexSession.Adapter.Forcola` compile only when `forcola`
-is present. A `DuplexSession` can also select the adapter per session with
-`adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola`.
+Both are opt-in and additive (they compile only when `forcola` is present); POSIX-only.
 
-## Modules
+### Retry, telemetry, budget
+
+- **`ClaudeWrapper.Retry`** — exponential backoff around a `Query`. The default retries timeouts, plain non-zero exits, and rate limits; other auth failures and rail stops are not retried.
+
+  ```elixir
+  ClaudeWrapper.Retry.execute(query, config, max_retries: 3, base_delay_ms: 1_000)
+  ```
+
+- **`ClaudeWrapper.Telemetry`** — `:telemetry.span/3`-shaped events (`:start` / `:stop` / `:exception`) around every exec path, so one handler observes the whole lifecycle. `:stop` metadata carries `:cost_usd`, `:exit_code`, `:duration`.
+
+  | Event | Emitted by |
+  |---|---|
+  | `[:claude_wrapper, :exec, _]` | `query/2` / `Query.execute/2` |
+  | `[:claude_wrapper, :stream, _]` | `stream/2` / `Query.stream/2` |
+  | `[:claude_wrapper, :session, :turn, _]` | `Session.send/3` |
+  | `[:claude_wrapper, :duplex, :session, _]` | `DuplexSession` process lifetime |
+  | `[:claude_wrapper, :duplex, :turn, _]` | `DuplexSession.send/3` |
+
+- **`ClaudeWrapper.Budget`** — a client-side USD budget tracker for multi-turn loops.
+
+### Testing
+
+Drive a `DuplexSession` against an in-process double (no network, no `claude`) with `ClaudeWrapper.Test` and `ClaudeWrapper.DuplexSession.Adapter.Test`.
+
+## Reading `~/.claude` state
+
+Beyond driving `claude`, the read-side modules introspect Claude Code's on-disk state — useful for dashboards, session pickers, and agent tooling. All parse liberally and return typed structs:
+
+```elixir
+{:ok, history} = ClaudeWrapper.History.home()
+{:ok, sessions} = ClaudeWrapper.History.sessions_for_path(history, File.cwd!())
+{:ok, settings} = ClaudeWrapper.Settings.load(project_root: File.cwd!())
+```
+
+`History`, `Settings`, `Agents`, `Skills`, `Jobs`, and `Worktrees` cover session transcripts, the settings layers, agent-definition files, skills, background jobs, and git worktrees.
+
+## CLI subcommands & the raw escape hatch
+
+Typed wrappers for the `claude` subcommands live under `ClaudeWrapper.Commands.*` (auth, mcp, plugin, marketplace, agents, doctor, version, …):
+
+```elixir
+{:ok, plugins} = ClaudeWrapper.Commands.Plugin.list(config)
+{:ok, _} = ClaudeWrapper.Commands.Marketplace.add(config, "https://github.com/org/marketplace")
+```
+
+For anything not yet wrapped, `ClaudeWrapper.raw(["config", "list"])` runs an arbitrary subcommand through the configured runner.
+
+### Bundled binary (opt-in)
+
+Instead of a `PATH` install, `claude_wrapper` can resolve, install, and version-floor a `claude` binary under its own `priv/bin/`:
+
+```elixir
+config = ClaudeWrapper.Config.new(binary: :bundled)   # pure resolution; no network
+```
+
+```bash
+mix claude_wrapper.install    # install/update the bundled binary
+mix claude_wrapper.uninstall  # remove it
+mix claude_wrapper.path       # print its path and install state
+```
+
+The `PATH` / `CLAUDE_CLI` default is unchanged for everyone else. See `ClaudeWrapper.Bundled`.
+
+## Module reference
 
 **Long-lived sessions (the headline feature)**
 
@@ -483,7 +254,7 @@ is present. A `DuplexSession` can also select the adapter per session with
 
 | Module | Description |
 |---|---|
-| `ClaudeWrapper` | Convenience API (`query/2`, `stream/2`) |
+| `ClaudeWrapper` | Convenience API (`query/2`, `stream/2`, `version/0`, `auth_status/0`, `doctor/0`, `raw/2`) |
 | `ClaudeWrapper.Query` | Query builder + execute/stream |
 | `ClaudeWrapper.Session` | Multi-turn continuity over per-call subprocesses |
 | `ClaudeWrapper.SessionServer` | Supervised wrapper for `Session` |
@@ -497,21 +268,16 @@ is present. A `DuplexSession` can also select the adapter per session with
 | `ClaudeWrapper.Stream` | Lazy `Stream` combinators over a `DuplexSession` turn |
 | `ClaudeWrapper.Structured` | Typed structured-output tasks |
 
-**Subprocess execution (one-shot / streaming)**
+**Subprocess execution & transport**
 
 | Module | Description |
 |---|---|
 | `ClaudeWrapper.Runner` | Behaviour selecting how one-shot/streaming subprocesses run |
 | `ClaudeWrapper.Runner.Port` | Default: `System.cmd` + `/bin/sh` streaming port |
 | `ClaudeWrapper.Runner.Forcola` | Opt-in leak-free runner (process-group kill); needs `forcola` |
-
-**DuplexSession transport adapter**
-
-| Module | Description |
-|---|---|
 | `ClaudeWrapper.DuplexSession.Adapter` | Transport seam for `DuplexSession` |
 | `ClaudeWrapper.DuplexSession.Adapter.Port` | Default adapter: real `claude` subprocess over a Port |
-| `ClaudeWrapper.DuplexSession.Adapter.Forcola` | Opt-in leak-free adapter (process-group kill); needs `forcola` |
+| `ClaudeWrapper.DuplexSession.Adapter.Forcola` | Opt-in leak-free adapter; needs `forcola` |
 | `ClaudeWrapper.DuplexSession.Adapter.Test` | Controllable in-process test double |
 
 **Shared infrastructure**
@@ -531,7 +297,7 @@ is present. A `DuplexSession` can also select the adapter per session with
 | `ClaudeWrapper.DangerousClient` | Env-gated `--dangerously-skip-permissions` |
 | `ClaudeWrapper.Auth` | Env auth detection + failure classification |
 | `ClaudeWrapper.Test` | Drive a `DuplexSession` against an in-process double (network-free) |
-| `ClaudeWrapper.Bundled` | Opt-in bundled-binary resolution for the `claude` CLI |
+| `ClaudeWrapper.Bundled` | Opt-in bundled-binary resolution |
 
 **Reading `~/.claude` state**
 
@@ -544,22 +310,20 @@ is present. A `DuplexSession` can also select the adapter per session with
 | `ClaudeWrapper.Jobs` | Read background-job state |
 | `ClaudeWrapper.Worktrees` | git worktree introspection |
 
-**CLI subcommand wrappers**
+**CLI subcommand wrappers** (`ClaudeWrapper.Commands.*`)
 
 | Module | Description |
 |---|---|
-| `ClaudeWrapper.Commands.Auth` | Auth management (login modes, status, setup-token) |
-| `ClaudeWrapper.Commands.Agents` | List active background agent sessions (`agents --json`) |
-| `ClaudeWrapper.Commands.Mcp` | MCP server management (add/add-json/add-from-desktop/list/get/remove/serve) |
-| `ClaudeWrapper.Commands.Plugin` | Plugin install/enable/disable/update/tag/details/prune |
-| `ClaudeWrapper.Commands.Marketplace` | Marketplace add/remove/list/update |
-| `ClaudeWrapper.Commands.AutoMode` | auto-mode config/defaults/critique |
-| `ClaudeWrapper.Commands.Ultrareview` | `ultrareview` (cloud multi-agent code review) |
-| `ClaudeWrapper.Commands.Install` | `claude install` |
-| `ClaudeWrapper.Commands.Update` | `claude update` |
-| `ClaudeWrapper.Commands.Project` | `claude project purge` |
-| `ClaudeWrapper.Commands.Doctor` | CLI health check |
-| `ClaudeWrapper.Commands.Version` | CLI version |
+| `Commands.Auth` | Auth management (login modes, status, setup-token) |
+| `Commands.Agents` | List active background agent sessions (`agents --json`) |
+| `Commands.Mcp` | MCP server management (add/add-json/add-from-desktop/list/get/remove/serve) |
+| `Commands.Plugin` | Plugin install/enable/disable/update/validate/tag/details/prune |
+| `Commands.Marketplace` | Marketplace add/remove/list/update |
+| `Commands.AutoMode` | auto-mode config/defaults/critique |
+| `Commands.Ultrareview` | `ultrareview` (cloud multi-agent code review) |
+| `Commands.Install` / `Commands.Update` | `claude install` / `claude update` |
+| `Commands.Project` | `claude project purge` |
+| `Commands.Doctor` / `Commands.Version` | CLI health check / version |
 
 ## License
 
