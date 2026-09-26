@@ -5,26 +5,28 @@
 [![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/claude_wrapper)
 [![License](https://img.shields.io/hexpm/l/claude_wrapper.svg)](https://github.com/genagent/claude_wrapper_ex/blob/main/LICENSE)
 
-Drive the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) from Elixir: typed results and errors, streaming, tool-permission callbacks, and long-lived sessions — over the same `claude` binary you already run in a terminal.
+Drive the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) from Elixir: typed results and errors, streaming, tool-permission callbacks, and long-lived sessions, over the same `claude` binary you already run in a terminal.
 
 `claude_wrapper` owns exactly the seam between Elixir and the `claude` process: spawning it, framing its NDJSON, and turning its output into typed `%ClaudeWrapper.Result{}` / `%ClaudeWrapper.Error{}`. It takes no position on what you do with a result. It offers **two ways to drive `claude`**, and you pick by the lifecycle of your host:
 
-- **One-shot** (`ClaudeWrapper.query/2`, `Query`, `Session`) — a fresh subprocess per turn, simple request/response. The fit for `mix` tasks, escripts, batch jobs, and anything that runs and exits.
-- **Long-lived** (`ClaudeWrapper.DuplexSession`) — a `GenServer` holding **one** `claude` subprocess open across a whole conversation: streams partial tokens, interrupts mid-turn, and routes tool-permission prompts back to your code. The fit for chat UIs, agent runtimes, and Phoenix-backed interfaces.
+- **One-shot** (`ClaudeWrapper.query/2`, `Query`, `Session`): a fresh subprocess per turn, simple request/response. The fit for `mix` tasks, escripts, batch jobs, and anything that runs and exits.
+- **Long-lived** (`ClaudeWrapper.DuplexSession`): a `GenServer` holding **one** `claude` subprocess open across a whole conversation: streams partial tokens, interrupts mid-turn, and routes tool-permission prompts back to your code. The fit for chat UIs, agent runtimes, and Phoenix-backed interfaces.
 
-The long-lived mode speaks the same duplex protocol the official `@anthropic-ai/claude-agent-sdk` uses internally and that the `@agentclientprotocol/claude-agent-acp` bridge relies on for IDE integrations like Zed's agent panel — so an OTP host can use `claude` the way an IDE backend does.
+The long-lived mode speaks the same duplex protocol the official `@anthropic-ai/claude-agent-sdk` uses internally and that the `@agentclientprotocol/claude-agent-acp` bridge relies on for IDE integrations like Zed's agent panel, so an OTP host can use `claude` the way an IDE backend does.
 
 ## Installation
 
+<!-- x-release-please-start-version -->
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.14"}
+    {:claude_wrapper, "~> 0.14.0"}
   ]
 end
 ```
+<!-- x-release-please-end -->
 
-Requires the `claude` CLI installed and on your `PATH` (or set `CLAUDE_CLI` to its path). Run `claude doctor` — or, from Elixir, `ClaudeWrapper.doctor/0` — before your first real call.
+Requires the `claude` CLI installed and on your `PATH` (or set `CLAUDE_CLI` to its path). Run `claude doctor` (or, from Elixir, `ClaudeWrapper.doctor/0`) before your first real call.
 
 ## Quick start
 
@@ -58,7 +60,7 @@ ClaudeWrapper.stream("Implement the feature in issue #42", working_dir: ".")
 
 ### Multi-turn without a process (`Session`)
 
-`ClaudeWrapper.Session` threads `--resume <session_id>` across one-shot calls, so you get multi-turn continuity without holding a subprocess open — a struct-passing API, ideal outside an OTP host or when turns are far apart in wall time.
+`ClaudeWrapper.Session` threads `--resume <session_id>` across one-shot calls, so you get multi-turn continuity without holding a subprocess open: a struct-passing API, ideal outside an OTP host or when turns are far apart in wall time.
 
 ```elixir
 session = ClaudeWrapper.Session.new(config, model: "sonnet")
@@ -94,7 +96,7 @@ query = ClaudeWrapper.Query.new("") |> ClaudeWrapper.Query.model("sonnet") |> Cl
 {:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config, query: query)
 ```
 
-**Permission callback.** When the CLI wants a tool, it routes the request through your `:on_permission` callback — answer synchronously, or return `:defer` and answer later via `respond_to_permission/3` (for human-in-the-loop UIs).
+**Permission callback.** When the CLI wants a tool, it routes the request through your `:on_permission` callback. Answer synchronously, or return `:defer` and answer later via `respond_to_permission/3` (for human-in-the-loop UIs).
 
 ```elixir
 on_permission = fn tool_name, _input ->
@@ -147,7 +149,7 @@ ClaudeWrapper.McpConfig.new()
 
 ### Error handling
 
-Every operational failure is `{:error, %ClaudeWrapper.Error{}}` — a raisable exception you match on by `:kind`, with details in `:reason` / `:exit_code` / `:stdout` / `:stderr`:
+Every operational failure is `{:error, %ClaudeWrapper.Error{}}`, a raisable exception you match on by `:kind`, with details in `:reason` / `:exit_code` / `:stdout` / `:stderr`:
 
 ```elixir
 case ClaudeWrapper.query("...", max_turns: 1) do
@@ -157,7 +159,7 @@ case ClaudeWrapper.query("...", max_turns: 1) do
 end
 ```
 
-The CLI's own rail-stop caps are typed, recoverable errors — distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`) and `:max_budget_exceeded` (`--max-budget-usd`, separate from the client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry `reason: %{cap:, cost_usd:, num_turns:, session_id:}`, so a capped run can be resumed:
+The CLI's own rail-stop caps are typed, recoverable errors, distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`) and `:max_budget_exceeded` (`--max-budget-usd`, separate from the client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry `reason: %{cap:, cost_usd:, num_turns:, session_id:}`, so a capped run can be resumed:
 
 ```elixir
 {:error, %ClaudeWrapper.Error{kind: :max_budget_exceeded, reason: %{session_id: sid}}} = ...
@@ -166,7 +168,7 @@ The CLI's own rail-stop caps are typed, recoverable errors — distinct from a g
 
 ### Leak-free execution (opt-in)
 
-By default a timeout, halted stream, closed session, or BEAM death closes the Erlang port or shuts down a `Task` — which closes the pipes but sends **no signal** to the OS process, so `claude` and every stdio MCP server it spawned can keep running (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)). Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death):
+By default a timeout, halted stream, closed session, or BEAM death closes the Erlang port or shuts down a `Task`, which closes the pipes but sends **no signal** to the OS process, so `claude` and every stdio MCP server it spawned can keep running (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)). Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death):
 
 ```elixir
 # mix.exs:  {:forcola, "~> 0.3"}
@@ -179,13 +181,13 @@ Both are opt-in and additive (they compile only when `forcola` is present); POSI
 
 ### Retry, telemetry, budget
 
-- **`ClaudeWrapper.Retry`** — exponential backoff around a `Query`. The default retries timeouts, plain non-zero exits, and rate limits; other auth failures and rail stops are not retried.
+- **`ClaudeWrapper.Retry`**: exponential backoff around a `Query`. The default retries timeouts, plain non-zero exits, and rate limits; other auth failures and rail stops are not retried.
 
   ```elixir
   ClaudeWrapper.Retry.execute(query, config, max_retries: 3, base_delay_ms: 1_000)
   ```
 
-- **`ClaudeWrapper.Telemetry`** — `:telemetry.span/3`-shaped events (`:start` / `:stop` / `:exception`) around every exec path, so one handler observes the whole lifecycle. `:stop` metadata carries `:cost_usd`, `:exit_code`, `:duration`.
+- **`ClaudeWrapper.Telemetry`**: `:telemetry.span/3`-shaped events (`:start` / `:stop` / `:exception`) around every exec path, so one handler observes the whole lifecycle. `:stop` metadata carries `:cost_usd`, `:exit_code`, `:duration`.
 
   | Event | Emitted by |
   |---|---|
@@ -195,7 +197,7 @@ Both are opt-in and additive (they compile only when `forcola` is present); POSI
   | `[:claude_wrapper, :duplex, :session, _]` | `DuplexSession` process lifetime |
   | `[:claude_wrapper, :duplex, :turn, _]` | `DuplexSession.send/3` |
 
-- **`ClaudeWrapper.Budget`** — a client-side USD budget tracker for multi-turn loops.
+- **`ClaudeWrapper.Budget`**: a client-side USD budget tracker for multi-turn loops.
 
 ### Testing
 
@@ -203,7 +205,7 @@ Drive a `DuplexSession` against an in-process double (no network, no `claude`) w
 
 ## Reading `~/.claude` state
 
-Beyond driving `claude`, the read-side modules introspect Claude Code's on-disk state — useful for dashboards, session pickers, and agent tooling. All parse liberally and return typed structs:
+Beyond driving `claude`, the read-side modules introspect Claude Code's on-disk state, useful for dashboards, session pickers, and agent tooling. All parse liberally and return typed structs:
 
 ```elixir
 {:ok, history} = ClaudeWrapper.History.home()
