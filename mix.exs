@@ -47,6 +47,7 @@ defmodule ClaudeWrapper.MixProject do
     [
       main: "readme",
       source_url: @source_url,
+      source_ref: "v#{@version}",
       extras: ["README.md", "CHANGELOG.md"],
       groups_for_modules: [
         "Driving claude": [
@@ -77,6 +78,7 @@ defmodule ClaudeWrapper.MixProject do
           ClaudeWrapper.CliVersion,
           ClaudeWrapper.DangerousClient,
           ClaudeWrapper.Auth,
+          ClaudeWrapper.Auth.Summary,
           ClaudeWrapper.Test,
           ClaudeWrapper.Bundled
         ],
@@ -93,11 +95,22 @@ defmodule ClaudeWrapper.MixProject do
         ],
         "~/.claude introspection & agent authoring": [
           ClaudeWrapper.History,
+          ClaudeWrapper.History.ProjectSummary,
+          ClaudeWrapper.History.SessionSummary,
+          ClaudeWrapper.History.SessionLog,
           ClaudeWrapper.Settings,
           ClaudeWrapper.Agents,
+          ClaudeWrapper.Agents.Summary,
+          ClaudeWrapper.Agents.Definition,
           ClaudeWrapper.Skills,
+          ClaudeWrapper.Skills.Summary,
+          ClaudeWrapper.Skills.Skill,
           ClaudeWrapper.Jobs,
-          ClaudeWrapper.Worktrees
+          ClaudeWrapper.Jobs.Summary,
+          ClaudeWrapper.Jobs.Job,
+          ClaudeWrapper.Jobs.Event,
+          ClaudeWrapper.Worktrees,
+          ClaudeWrapper.Worktrees.Worktree
         ],
         "Command surface": [
           ClaudeWrapper.Command,
