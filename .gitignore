@@ -23,3 +23,6 @@ erl_crash.dump
 claude_wrapper_ex-*.tar
 claude_wrapper-*.tar
 
+
+# Dialyzer PLTs, cached in CI.
+/priv/plts/

@@ -16,7 +16,8 @@ defmodule ClaudeWrapper.MixProject do
       name: "ClaudeWrapper",
       description: "Elixir wrapper for the Claude Code CLI",
       dialyzer: [
-        plt_file: {:no_warn, "_build/dev/dialyxir_#{System.otp_release()}.plt"},
+        plt_local_path: "priv/plts",
+        plt_core_path: "priv/plts",
         plt_add_apps: [:mix]
       ]
     ]
