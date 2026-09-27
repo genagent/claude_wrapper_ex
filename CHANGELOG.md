@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.0...v0.14.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **deps:** bump forcola floor to ~&gt; 0.3.4 for the stdin-close fix ([#258](https://github.com/genagent/claude_wrapper_ex/issues/258)) ([a36fa7b](https://github.com/genagent/claude_wrapper_ex/commit/a36fa7b770d84b5516f1639c6192e2d11d9d3ac2))
+
 ## [0.14.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.13.2...v0.14.0) (2026-07-14)
 
 
