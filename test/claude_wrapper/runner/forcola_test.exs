@@ -87,6 +87,36 @@ defmodule ClaudeWrapper.Runner.ForcolaTest do
     end
   end
 
+  # Regression for a pre-0.3.4 forcola hang: `Forcola.run/2` and
+  # `Forcola.Stream.lines/2` used to leave the child's stdin open and
+  # unfed after spawn, so a child that reads stdin (as `claude -p` can,
+  # for piped context) blocked until the timeout below instead of exiting
+  # normally. forcola >= 0.3.4 closes stdin right after spawn; these
+  # assert the child sees EOF promptly rather than riding out the timeout.
+  describe "stdin is closed after spawn" do
+    test "run/4: a child that reads stdin to EOF exits promptly" do
+      start = System.monotonic_time(:millisecond)
+      assert {:ok, {"", 0}} = Forcola.run("cat", [], [], 5_000)
+      elapsed = System.monotonic_time(:millisecond) - start
+
+      assert elapsed < 2_000, "expected stdin to be closed promptly, took #{elapsed}ms"
+    end
+
+    test "stream_lines/4: a child that reads stdin to EOF before emitting output does not hang" do
+      start = System.monotonic_time(:millisecond)
+
+      lines =
+        "sh"
+        |> Forcola.stream_lines(["-c", "cat > /dev/null; printf 'done\\n'"], [], 5_000)
+        |> Enum.to_list()
+
+      elapsed = System.monotonic_time(:millisecond) - start
+
+      assert lines == ["done"]
+      assert elapsed < 2_000, "expected stdin to be closed promptly, took #{elapsed}ms"
+    end
+  end
+
   defp read_trimmed(path) do
     case File.read(path) do
       {:ok, ""} -> nil

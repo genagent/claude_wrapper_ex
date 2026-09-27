@@ -13,6 +13,14 @@ if Code.ensure_loaded?(Forcola) do
     This module compiles only when `forcola` is a dependency. Select it
     with `config :claude_wrapper, runner: ClaudeWrapper.Runner.Forcola`.
     forcola is POSIX-only.
+
+    Requires forcola `~> 0.3.4`. `claude -p` documents piped stdin as a
+    supported input channel ("useful for pipes" in `claude --help`), and
+    before 0.3.4 `Forcola.run/2` and `Forcola.Stream.lines/2` left the
+    child's stdin open and unfed after spawn -- a child that reads it
+    blocked until the timeout below instead of exiting normally
+    (forcola#67). 0.3.4 closes the child's stdin right after spawn, so
+    this module needs no stdin handling of its own.
     """
 
     @behaviour ClaudeWrapper.Runner
