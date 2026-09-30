@@ -5,6 +5,8 @@ defmodule ClaudeWrapper.Commands.Auth do
 
   alias ClaudeWrapper.{Config, Error}
 
+  @status_keys ~w(loggedIn logged_in authMethod auth_method apiProvider api_provider email orgId org_id orgName org_name subscriptionType subscription_type)
+
   @type auth_status :: %{
           logged_in: boolean(),
           auth_method: String.t() | nil,
@@ -28,29 +30,20 @@ defmodule ClaudeWrapper.Commands.Auth do
     case Config.exec(config, args) do
       {output, 0} ->
         case Jason.decode(output) do
-          {:ok, data} ->
+          {:ok, data} when is_map(data) ->
             {:ok,
              %{
-               logged_in: data["logged_in"] || false,
-               auth_method: data["auth_method"],
-               api_provider: data["api_provider"],
+               logged_in: status_field(data, "loggedIn", "logged_in", false) == true,
+               auth_method: status_field(data, "authMethod", "auth_method"),
+               api_provider: status_field(data, "apiProvider", "api_provider"),
                email: data["email"],
-               org_id: data["org_id"],
-               org_name: data["org_name"],
-               subscription_type: data["subscription_type"],
-               extra:
-                 Map.drop(data, [
-                   "logged_in",
-                   "auth_method",
-                   "api_provider",
-                   "email",
-                   "org_id",
-                   "org_name",
-                   "subscription_type"
-                 ])
+               org_id: status_field(data, "orgId", "org_id"),
+               org_name: status_field(data, "orgName", "org_name"),
+               subscription_type: status_field(data, "subscriptionType", "subscription_type"),
+               extra: Map.drop(data, @status_keys)
              }}
 
-          {:error, _} ->
+          _ ->
             {:ok,
              %{
                logged_in: true,
@@ -66,6 +59,15 @@ defmodule ClaudeWrapper.Commands.Auth do
 
       {output, code} ->
         {:error, Error.command_failed(code, output)}
+    end
+  end
+
+  # Current CLI spelling wins when both it and the legacy snake_case key
+  # appear, including when the current value is explicitly false or nil.
+  defp status_field(data, current, legacy, default \\ nil) do
+    case Map.fetch(data, current) do
+      {:ok, value} -> value
+      :error -> Map.get(data, legacy, default)
     end
   end
 
