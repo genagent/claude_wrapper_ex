@@ -20,7 +20,7 @@ The long-lived mode speaks the same duplex protocol the official `@anthropic-ai/
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.14.0"}
+    {:claude_wrapper, "~> 0.14.2"}
   ]
 end
 ```

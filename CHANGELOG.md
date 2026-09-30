@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.1...v0.14.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* accept string environment pairs in streaming Port runner ([#264](https://github.com/genagent/claude_wrapper_ex/issues/264)) ([938867d](https://github.com/genagent/claude_wrapper_ex/commit/938867de25ace9b3ae0479ed0c6852eba45de2e9))
+
 ## [0.14.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.0...v0.14.1) (2026-09-27)
 
 
