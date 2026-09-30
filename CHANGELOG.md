@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.3](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.2...v0.14.3) (2026-09-30)
+
+
+### Bug Fixes
+
+* normalize camelCase auth status fields ([#266](https://github.com/genagent/claude_wrapper_ex/issues/266)) ([a344f1b](https://github.com/genagent/claude_wrapper_ex/commit/a344f1bfd3aecbfcf3d0d057d9a1821b69e07e6d))
+
 ## [0.14.2](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.1...v0.14.2) (2026-09-30)
 
 
