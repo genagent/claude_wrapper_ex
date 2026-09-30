@@ -311,10 +311,13 @@ defmodule ClaudeWrapper.Telemetry do
 
   defp stream_next(%{cont: cont, metadata: metadata} = state) do
     case cont do
+      {:resume, continuation} ->
+        stream_next(%{state | cont: continuation.({:cont, []})})
+
       {:suspended, [elem | _], continuation} ->
         updated_metadata = observe_stream_event(metadata, elem)
 
-        {[elem], %{state | metadata: updated_metadata, cont: continuation.({:cont, []})}}
+        {[elem], %{state | metadata: updated_metadata, cont: {:resume, continuation}}}
 
       {:done, _} ->
         {:halt, %{state | cont: :done}}
@@ -337,12 +340,11 @@ defmodule ClaudeWrapper.Telemetry do
     # producer so its cleanup (closing the Port) runs.
     _ =
       case cont do
+        {:resume, continuation} ->
+          halt_stream(continuation)
+
         {:suspended, _elems, continuation} ->
-          try do
-            continuation.({:halt, []})
-          catch
-            _, _ -> :ok
-          end
+          halt_stream(continuation)
 
         _ ->
           :ok
@@ -360,6 +362,12 @@ defmodule ClaudeWrapper.Telemetry do
       %{monotonic_time: System.monotonic_time(), duration: duration},
       stop_metadata
     )
+  end
+
+  defp halt_stream(continuation) do
+    continuation.({:halt, []})
+  catch
+    _, _ -> :ok
   end
 
   defp emit_exception(metadata, monotonic, kind, reason, stacktrace) do

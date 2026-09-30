@@ -110,9 +110,12 @@ defmodule ClaudeWrapper.Runner.Port do
   defp env_opts(opts) do
     case Keyword.get(opts, :env, []) do
       [] -> []
-      env -> [{:env, env}]
+      env -> [{:env, Enum.map(env, fn {key, value} -> {to_charlist(key), env_value(value)} end)}]
     end
   end
+
+  defp env_value(false), do: false
+  defp env_value(value), do: to_charlist(value)
 
   defp cd_opts(opts) do
     case Keyword.get(opts, :cd) do

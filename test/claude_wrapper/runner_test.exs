@@ -96,10 +96,23 @@ defmodule ClaudeWrapper.RunnerTest do
     test "propagates :env to the spawned process (#217)" do
       lines =
         "sh"
-        |> Port.stream_lines(["-c", "echo $CW_TEST"], [env: [{~c"CW_TEST", ~c"hello217"}]], nil)
+        |> Port.stream_lines(["-c", "echo $CW_TEST"], [env: [{"CW_TEST", "hello217"}]], nil)
         |> Enum.to_list()
 
       assert lines == ["hello217"]
+    end
+
+    test "accepts preconverted env pairs and unset values" do
+      lines =
+        "sh"
+        |> Port.stream_lines(
+          ["-c", "echo $CW_TEST; echo ${CW_UNSET-unset}"],
+          [env: [{~c"CW_TEST", ~c"hello217"}, {"CW_UNSET", false}]],
+          nil
+        )
+        |> Enum.to_list()
+
+      assert lines == ["hello217", "unset"]
     end
 
     test "propagates :cd to the spawned process (#217)" do
