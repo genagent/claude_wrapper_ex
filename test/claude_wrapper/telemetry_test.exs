@@ -200,6 +200,33 @@ defmodule ClaudeWrapper.TelemetryTest do
       assert stop_meta.cost_usd == nil
     end
 
+    test "delivers a streamed event without reading ahead and cleans up on halt" do
+      parent = self()
+      event = %StreamEvent{type: "assistant", data: %{}}
+
+      producer =
+        Stream.resource(
+          fn -> 0 end,
+          fn
+            0 ->
+              {[event], 1}
+
+            1 ->
+              send(parent, :read_next)
+              {[], 2}
+
+            _ ->
+              {:halt, 2}
+          end,
+          fn _ -> send(parent, :producer_closed) end
+        )
+
+      stream = Telemetry.span_stream(Query.new("stream"), fn -> producer end)
+      assert [^event] = Enum.take(stream, 1)
+      refute_receive :read_next
+      assert_receive :producer_closed
+    end
+
     test "emits :exception when producer raises" do
       query = Query.new("stream")
 
