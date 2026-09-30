@@ -14,7 +14,7 @@ if Code.ensure_loaded?(Forcola) do
     with `config :claude_wrapper, runner: ClaudeWrapper.Runner.Forcola`.
     forcola is POSIX-only.
 
-    Requires forcola `~> 0.3.4`. `claude -p` documents piped stdin as a
+    Requires forcola `~> 0.3.5`. `claude -p` documents piped stdin as a
     supported input channel ("useful for pipes" in `claude --help`), and
     before 0.3.4 `Forcola.run/2` and `Forcola.Stream.lines/2` left the
     child's stdin open and unfed after spawn -- a child that reads it

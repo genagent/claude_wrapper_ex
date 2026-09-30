@@ -171,7 +171,7 @@ The CLI's own rail-stop caps are typed, recoverable errors, distinct from a genu
 By default a timeout, halted stream, closed session, or BEAM death closes the Erlang port or shuts down a `Task`, which closes the pipes but sends **no signal** to the OS process, so `claude` and every stdio MCP server it spawned can keep running (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)). Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death):
 
 ```elixir
-# mix.exs:  {:forcola, "~> 0.3.4"}
+# mix.exs:  {:forcola, "~> 0.3.5"}
 config :claude_wrapper,
   runner: ClaudeWrapper.Runner.Forcola,                        # one-shot + streaming
   duplex_adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola  # DuplexSession
