@@ -14,7 +14,7 @@ defmodule ClaudeWrapper.Runner do
   its runner:
 
       # mix.exs
-      {:forcola, "~> 0.3.5"}
+      {:forcola, "~> 0.4.0"}
 
       # config/config.exs
       config :claude_wrapper, runner: ClaudeWrapper.Runner.Forcola
