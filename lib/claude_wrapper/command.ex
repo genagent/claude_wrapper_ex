@@ -43,7 +43,7 @@ defmodule ClaudeWrapper.Command do
   @spec shell_cmd_args(String.t(), [String.t()]) :: [String.t()]
   def shell_cmd_args(binary, args) do
     escaped_args = Enum.map_join(args, " ", &shell_escape/1)
-    shell_cmd = "#{binary} #{escaped_args} < /dev/null"
+    shell_cmd = "#{shell_escape(binary)} #{escaped_args} < /dev/null"
     ["-c", shell_cmd]
   end
 
