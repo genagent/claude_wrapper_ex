@@ -135,6 +135,7 @@ defmodule ClaudeWrapper.DuplexSession.Adapter.ForcolaTest do
         )
 
       assert {:ok, %ClaudeWrapper.Result{result: "done"}} = DuplexSession.send(pid, "hi", 5_000)
+      await_stderr_tail(pid, "diagnostic\n")
       assert {:ok, %DuplexSession.TransportTerminal{stderr: stderr}} = DuplexSession.shutdown(pid)
       assert byte_size(stderr) <= 18
       assert String.ends_with?(stderr, "diagnostic\n")
@@ -264,6 +265,21 @@ defmodule ClaudeWrapper.DuplexSession.Adapter.ForcolaTest do
         await_exit_waiter(pid, deadline)
       else
         flunk("the exit waiter never registered")
+      end
+    end
+  end
+
+  defp await_stderr_tail(pid, expected, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 2_000
+
+    if String.ends_with?(:sys.get_state(pid).stderr, expected) do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(10)
+        await_stderr_tail(pid, expected, deadline)
+      else
+        flunk("stderr was not captured before shutdown")
       end
     end
   end
