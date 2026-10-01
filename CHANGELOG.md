@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.5](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.4...v0.14.5) (2026-10-01)
+
+
+### Bug Fixes
+
+* escape binary path in streaming shell command ([#271](https://github.com/genagent/claude_wrapper_ex/issues/271)) ([4bef983](https://github.com/genagent/claude_wrapper_ex/commit/4bef9836e51399a3b2f5a9a6b12d38702468a788))
+
 ## [0.14.4](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.3...v0.14.4) (2026-10-01)
 
 
