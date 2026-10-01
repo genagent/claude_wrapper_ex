@@ -82,5 +82,34 @@ defmodule ClaudeWrapper.CommandTest do
       assert Command.shell_cmd_args("claude", ["--setting-sources", ""]) ==
                ["-c", "claude --setting-sources '' < /dev/null"]
     end
+
+    test "executes a binary whose path contains spaces" do
+      binary = executable_fixture("claude runner")
+      ["-c", shell_cmd] = Command.shell_cmd_args(binary, ["first arg", "second"])
+
+      assert {"first arg\nsecond\n", 0} = System.cmd("/bin/sh", ["-c", shell_cmd])
+    end
+
+    test "treats shell metacharacters in the binary path literally" do
+      for name <- ["claude$HOME", "claude;echo injected", "claude's CLI"] do
+        binary = executable_fixture(name)
+        ["-c", shell_cmd] = Command.shell_cmd_args(binary, ["literal"])
+
+        assert {"literal\n", 0} = System.cmd("/bin/sh", ["-c", shell_cmd])
+      end
+    end
+  end
+
+  defp executable_fixture(name) do
+    dir =
+      Path.join(System.tmp_dir!(), "claude-wrapper-command-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    binary = Path.join(dir, name)
+    File.write!(binary, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    File.chmod!(binary, 0o755)
+    binary
   end
 end
