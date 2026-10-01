@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.4](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.3...v0.14.4) (2026-10-01)
+
+
+### Bug Fixes
+
+* preserve bounded Forcola duplex terminal evidence ([#268](https://github.com/genagent/claude_wrapper_ex/issues/268)) ([c36ce1c](https://github.com/genagent/claude_wrapper_ex/commit/c36ce1c2cb465b639a61a9f5045dc9465e10b66e))
+
 ## [0.14.3](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.2...v0.14.3) (2026-09-30)
 
 
