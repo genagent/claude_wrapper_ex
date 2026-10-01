@@ -187,7 +187,7 @@ defmodule ClaudeWrapper.StreamTest do
 
       events = pid |> CWStream.stream("hi") |> Enum.to_list()
 
-      assert [{:error, %ClaudeWrapper.Error{kind: :duplex_closed}}] = events
+      assert {:error, %ClaudeWrapper.Error{kind: :duplex_closed}} = List.last(events)
     end
 
     # The occupying turn registers a pending_turn but no subscriber; wait

@@ -1,123 +1,177 @@
 if Code.ensure_loaded?(Forcola) do
   defmodule ClaudeWrapper.DuplexSession.Adapter.Forcola do
     @moduledoc """
-    Leak-free `ClaudeWrapper.DuplexSession` transport backed by
-    `Forcola.Duplex`.
+    Bounded duplex transport backed by `Forcola.Duplex`.
 
-    Holds the long-lived `claude` subprocess in its own process group; on
-    session close, owner death, or BEAM death the whole group is killed
-    (SIGTERM then SIGKILL), reaping `claude` and every stdio MCP server it
-    spawned. The default `ClaudeWrapper.DuplexSession.Adapter.Port` closes
-    the port instead, which sends no signal (see #185).
+    The `DuplexSession` process owns the Forcola session directly, so its
+    death closes the child's process group. A separate puller demands one
+    stdout or stderr line at a time and waits for the session to acknowledge
+    it before demanding another. Stderr is kept out of the NDJSON parser.
 
-    This module compiles only when `forcola` is a dependency. Select it
-    per session with `adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola`,
-    or globally with
-    `config :claude_wrapper, duplex_adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola`.
-    forcola is POSIX-only.
+    Select this optional adapter with `adapter: __MODULE__` or set
+    `config :claude_wrapper, duplex_adapter: __MODULE__`. It requires
+    `forcola ~> 0.4.0` and a POSIX host.
 
-    ## How it fits the adapter seam
-
-    A small translator `GenServer` owns the `Forcola.Duplex` session and
-    forwards its owner messages into the three shapes
-    `ClaudeWrapper.DuplexSession.Adapter` delivers. The translator's pid is
-    the transport handle, so the session's `%{port: handle}` match works
-    unchanged:
-
-      * `{:forcola_line, _, line}` -> `{handle, {:data, line <> "\\n"}}`
-        (forcola strips the trailing newline; the session's buffer splits
-        on it, so it is re-added)
-      * `{:forcola_exit, _, status}` -> `{handle, {:exit_status, code}}`,
-        then the translator stops and its linked `{:EXIT, handle, reason}`
-        reaches the session
-      * `{:forcola_stderr, _, _}` is dropped, matching the `Port` adapter
-        which does not fold stderr into the NDJSON stream
+    `:adapter_opts` accepts `:max_line_bytes`, `:max_output_bytes`, and
+    `:max_pending_bytes` (defaults: 1 MiB, 64 MiB, and one line plus its
+    newline), plus `:stderr_capture_bytes` for the wrapper's bounded stderr
+    tail (default 16 KiB). `:terminal_recipient` can name an independent
+    process that receives Forcola's terminal record even if the session
+    owner dies. `:kill_grace_ms`, `:cgroup`, and `:shim_path` are passed
+    through. Pull delivery and separate stderr are always enabled.
     """
 
     @behaviour ClaudeWrapper.DuplexSession.Adapter
 
-    use GenServer
-
     alias ClaudeWrapper.Config
 
-    @impl ClaudeWrapper.DuplexSession.Adapter
+    @default_max_line_bytes 1_048_576
+    @default_max_output_bytes 64 * 1_048_576
+    @allowed_opts [
+      :max_line_bytes,
+      :max_output_bytes,
+      :max_pending_bytes,
+      :stderr_capture_bytes,
+      :terminal_recipient,
+      :kill_grace_ms,
+      :cgroup,
+      :shim_path
+    ]
+
+    defmodule Handle do
+      @moduledoc false
+      @enforce_keys [:session, :puller, :monitor]
+      defstruct [:session, :puller, :monitor]
+    end
+
+    @impl true
     def open(opts) do
       config = Keyword.fetch!(opts, :config)
       args = Keyword.fetch!(opts, :args)
       owner = Keyword.fetch!(opts, :owner)
+      adapter_opts = Keyword.drop(opts, [:config, :args, :owner])
+      validate_opts!(adapter_opts)
 
-      GenServer.start_link(__MODULE__, {config, args, owner})
-    end
+      case Forcola.Duplex.open([config.binary | args], duplex_opts(config, adapter_opts)) do
+        {:ok, session} ->
+          puller = spawn(fn -> await_start(owner) end)
+          monitor = Process.monitor(puller)
+          handle = %Handle{session: session, puller: puller, monitor: monitor}
+          send(puller, {:start, session, owner, handle})
+          {:ok, handle}
 
-    @impl ClaudeWrapper.DuplexSession.Adapter
-    def command(pid, iodata) do
-      GenServer.cast(pid, {:send_line, IO.iodata_to_binary(iodata)})
-    end
-
-    @impl ClaudeWrapper.DuplexSession.Adapter
-    def close(pid) do
-      GenServer.stop(pid, :normal, :infinity)
-    catch
-      :exit, _ -> :ok
-    end
-
-    ## Translator GenServer
-
-    @impl GenServer
-    def init({config, args, owner}) do
-      Process.flag(:trap_exit, true)
-
-      case Forcola.Duplex.open([config.binary | args], duplex_opts(config)) do
-        {:ok, session} -> {:ok, %{session: session, owner: owner}}
-        {:error, reason} -> {:stop, reason}
+        {:error, reason} ->
+          {:error, reason}
       end
     end
 
-    @impl GenServer
-    def handle_cast({:send_line, line}, %{session: session} = state) do
-      # The session frames each write as `[json, ?\n]`; Forcola.Duplex
-      # appends its own newline, so strip the one trailing newline.
-      Forcola.Duplex.send_line(session, String.replace_suffix(line, "\n", ""))
-      {:noreply, state}
+    @impl true
+    def command(%Handle{session: session}, iodata) do
+      # DuplexSession frames each write with a newline; Forcola adds one.
+      line = iodata |> IO.iodata_to_binary() |> String.replace_suffix("\n", "")
+      Forcola.Duplex.send_line(session, line)
     end
 
-    @impl GenServer
-    def handle_info({:forcola_line, session, line}, %{session: session, owner: owner} = state) do
-      send(owner, {self(), {:data, line <> "\n"}})
-      {:noreply, state}
-    end
-
-    def handle_info({:forcola_stderr, session, _line}, %{session: session} = state) do
-      {:noreply, state}
-    end
-
-    def handle_info({:forcola_exit, session, status}, %{session: session, owner: owner} = state) do
-      send(owner, {self(), {:exit_status, exit_code(status)}})
-      {:stop, :normal, state}
-    end
-
-    def handle_info(_other, state), do: {:noreply, state}
-
-    @impl GenServer
-    def terminate(_reason, %{session: session}) do
+    @impl true
+    def close(%Handle{session: session} = handle) do
       Forcola.Duplex.close(session)
+      stop_puller(handle)
       :ok
     end
 
-    def terminate(_reason, _state), do: :ok
+    @impl true
+    @doc false
+    def shutdown(%Handle{session: session} = handle) do
+      result = Forcola.Duplex.shutdown(session)
+      stop_puller(handle)
+      result
+    end
 
-    # Map a Forcola exit status onto the integer exit code the session
-    # expects. A clean exit carries its code; a signal or abnormal
-    # termination has no exit code, so surface a conventional non-zero one
-    # (128 + signal) that the session records as {:failed, ...}.
-    defp exit_code(status) when is_integer(status), do: status
-    defp exit_code({:signal, n}) when is_integer(n), do: 128 + n
-    defp exit_code(_other), do: 1
+    @impl true
+    @doc false
+    def ack(%Handle{puller: puller}, ref) do
+      send(puller, {:ack, ref})
+      :ok
+    end
 
-    defp duplex_opts(%Config{} = config) do
-      []
+    defp stop_puller(%Handle{puller: puller, monitor: monitor}) do
+      Process.exit(puller, :kill)
+      Process.demonitor(monitor, [:flush])
+    end
+
+    defp await_start(owner) do
+      owner_ref = Process.monitor(owner)
+
+      receive do
+        {:start, session, owner, handle} ->
+          pull(session, owner, owner_ref, handle)
+
+        {:DOWN, ^owner_ref, :process, ^owner, _reason} ->
+          :ok
+      end
+    end
+
+    defp pull(session, owner, owner_ref, handle) do
+      case Forcola.Duplex.recv(session) do
+        {:ok, {stream, line}} when stream in [:stdout, :stderr] ->
+          ref = make_ref()
+          event = if stream == :stdout, do: {:data, line <> "\n", ref}, else: {:stderr, line, ref}
+          send(owner, {handle, event})
+
+          receive do
+            {:ack, ^ref} -> pull(session, owner, owner_ref, handle)
+            {:DOWN, ^owner_ref, :process, ^owner, _reason} -> :ok
+          end
+
+        {:done, terminal} ->
+          send(owner, {handle, {:terminal, terminal}})
+
+        {:error, {:output_limit, terminal}} ->
+          send(owner, {handle, {:terminal, terminal}})
+
+        {:error, reason} ->
+          send(owner, {handle, {:transport_error, reason}})
+      end
+    end
+
+    defp validate_opts!(opts) do
+      case Keyword.keys(opts) -- @allowed_opts do
+        [] ->
+          capture = Keyword.get(opts, :stderr_capture_bytes, 16 * 1024)
+
+          unless is_integer(capture) and capture >= 0 do
+            raise ArgumentError, ":stderr_capture_bytes must be a non-negative integer"
+          end
+
+        unknown ->
+          raise ArgumentError, "unsupported Forcola adapter options: #{inspect(unknown)}"
+      end
+    end
+
+    defp duplex_opts(%Config{} = config, opts) do
+      max_line = positive_option!(opts, :max_line_bytes, @default_max_line_bytes)
+      max_output = positive_option!(opts, :max_output_bytes, @default_max_output_bytes)
+      max_pending = positive_option!(opts, :max_pending_bytes, max_line + 1)
+
+      [
+        delivery: :pull,
+        merge_stderr: false,
+        max_line_bytes: max_line,
+        max_output_bytes: max_output,
+        max_pending_bytes: max_pending
+      ]
+      |> Keyword.merge(
+        Keyword.take(opts, [:terminal_recipient, :kill_grace_ms, :cgroup, :shim_path])
+      )
       |> put_cd(config)
       |> put_env(config)
+    end
+
+    defp positive_option!(opts, key, default) do
+      case Keyword.get(opts, key, default) do
+        value when is_integer(value) and value > 0 -> value
+        _ -> raise ArgumentError, "#{inspect(key)} must be a positive integer"
+      end
     end
 
     defp put_cd(opts, %Config{working_dir: nil}), do: opts

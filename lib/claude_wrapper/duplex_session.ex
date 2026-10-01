@@ -84,6 +84,8 @@ defmodule ClaudeWrapper.DuplexSession do
       (`SDKPartialAssistantMessage`)
     * `{:user, msg}` -- a user message (e.g. tool results, replays)
     * `{:result, %ClaudeWrapper.Result{}}` -- the parsed turn boundary
+    * `{:transport_terminal, %ClaudeWrapper.DuplexSession.TransportTerminal{}}`
+      -- Forcola's terminal evidence and bounded stderr tail
 
   Subscribers are monitored; if a subscriber crashes or exits, it is
   automatically removed.
@@ -107,12 +109,12 @@ defmodule ClaudeWrapper.DuplexSession do
   mirroring the Rust crate's `is_alive` / `exit_status` / `wait_for_exit`
   (`SessionExitStatus`). See `t:exit_status/0`.
 
-  `wait_for_exit/2` is the authoritative source of the terminal status:
-  it blocks until the session exits and returns `:completed` for a clean
-  shutdown or `{:failed, {:port_exit, code}}` when the underlying
-  `claude` subprocess exits with a non-zero status (or the port closes
-  abnormally). The status is delivered live from `terminate/2`, so there
-  is no persisted state and nothing to read post-mortem.
+  `wait_for_exit/2` blocks until the session exits and returns `:completed`
+  for a clean shutdown or `{:failed, reason}` for a transport failure.
+  With Forcola, the failure reason contains its structured terminal record;
+  `shutdown/2` also returns that record on explicit close. The status is
+  delivered live from `terminate/2`, so a caller must register before the
+  session exits or subscribe to terminal events.
 
   `exit_status/1` is only a *live snapshot*: it reports `:running` while
   the session process is alive and `:completed` once the process is
@@ -124,7 +126,9 @@ defmodule ClaudeWrapper.DuplexSession do
   require Logger
 
   alias ClaudeWrapper.{Config, Error, Query, Result, Telemetry}
-  alias ClaudeWrapper.DuplexSession.Adapter
+  alias ClaudeWrapper.DuplexSession.{Adapter, TransportTerminal}
+
+  @default_stderr_capture_bytes 16 * 1024
 
   @type tool_input :: map()
 
@@ -166,6 +170,9 @@ defmodule ClaudeWrapper.DuplexSession do
           | {:query, Query.t()}
           | {:extra_args, [String.t()]}
           | {:on_permission, permission_handler()}
+          | {:adapter, module()}
+          | {:adapter_opts, keyword()}
+          | {:owner, pid()}
           | {:name, GenServer.name()}
           | GenServer.option()
 
@@ -177,9 +184,9 @@ defmodule ClaudeWrapper.DuplexSession do
     * `:completed` -- the session shut down cleanly (graceful
       `stop/3`/`close/1`, or the `claude` subprocess exited with status
       `0`).
-    * `{:failed, reason}` -- the `claude` subprocess exited abnormally
-      (non-zero status, or the port closed with an error reason). The
-      `reason` is the recorded `{:port_exit, code | term}` tuple.
+    * `{:failed, reason}` -- the transport ended abnormally. Port adapters
+      report `{:port_exit, code | term}`; Forcola preserves its terminal
+      record under `{:transport_terminal, record}`.
   """
   @type exit_status :: :running | :completed | {:failed, term()}
 
@@ -196,6 +203,9 @@ defmodule ClaudeWrapper.DuplexSession do
           exit_status: exit_status(),
           exit_waiters: %{reference() => pid()},
           owner_ref: reference() | nil,
+          transport_terminal: TransportTerminal.t() | nil,
+          stderr: binary(),
+          stderr_capture_bytes: non_neg_integer(),
           deferred_permissions: MapSet.t(String.t()),
           turn_span: {integer(), map()} | nil,
           session_monotonic: integer() | nil
@@ -216,6 +226,9 @@ defmodule ClaudeWrapper.DuplexSession do
     subscribers: %{},
     exit_status: :running,
     exit_waiters: %{},
+    transport_terminal: nil,
+    stderr: <<>>,
+    stderr_capture_bytes: @default_stderr_capture_bytes,
     deferred_permissions: MapSet.new()
   ]
 
@@ -238,6 +251,11 @@ defmodule ClaudeWrapper.DuplexSession do
     * `:extra_args` -- extra CLI flags to append, applied after the
       `:query` flags (e.g. `["--permission-mode", "plan"]`). The
       escape hatch for flags not yet on `Query`.
+    * `:adapter` -- transport module (default `Adapter.Port`).
+    * `:adapter_opts` -- transport-specific options. The Forcola adapter
+      accepts explicit output bounds, stderr capture size, and an
+      independent terminal recipient; see its module documentation.
+    * `:owner` -- optional lifecycle owner to monitor.
     * `:name` -- register the GenServer under a name.
 
   All other keyword options are passed through to `GenServer.start_link/3`.
@@ -366,6 +384,28 @@ defmodule ClaudeWrapper.DuplexSession do
   def close(server), do: stop(server, :normal, 10_000)
 
   @doc """
+  Stop the session and return structured transport evidence when available.
+
+  With `Adapter.Forcola`, the return is `{:ok,
+  %ClaudeWrapper.DuplexSession.TransportTerminal{}}` containing the native
+  child status, cleanup confirmation, output completeness, and a bounded
+  stderr tail. The default Port adapter has no such evidence and returns
+  `{:ok, nil}`. `close/1` and `stop/3` retain their `:ok` contract.
+
+  A subscriber also receives `{:claude, {:transport_terminal, evidence}}`
+  when the transport ends on its own. A caller that may lose ownership can
+  pass `terminal_recipient: pid` in Forcola `:adapter_opts` to receive the
+  native Forcola record independently of this session process.
+  """
+  @spec shutdown(GenServer.server(), timeout()) ::
+          {:ok, TransportTerminal.t() | nil} | {:error, :not_found}
+  def shutdown(server, timeout \\ 20_000) do
+    GenServer.call(server, :shutdown, timeout)
+  catch
+    :exit, {reason, _} when reason in [:normal, :noproc] -> {:error, :not_found}
+  end
+
+  @doc """
   Send an `interrupt` control_request to the CLI. The CLI cancels any
   in-flight turn and emits a `result` with a cancel-flavored stop
   reason; that result still flows through the normal `send/3` reply.
@@ -430,10 +470,11 @@ defmodule ClaudeWrapper.DuplexSession do
   `t:exit_status/0`. Mirrors the Rust `wait_for_exit`.
 
   This is the authoritative source of the terminal status. It returns
-  `:completed` for a clean shutdown and `{:failed, {:port_exit, code}}`
-  when the underlying `claude` subprocess exited with a non-zero status
-  (or the port closed abnormally). Returns immediately (`:completed`) if
-  the session has already exited.
+  `:completed` for a clean shutdown and `{:failed, reason}` on failure.
+  Forcola failures retain the native terminal record in `reason` instead of
+  projecting a signal or unconfirmed outcome onto an integer exit code.
+  Returns `:completed` if the session had already exited before the caller
+  could register; use a subscriber or `terminal_recipient` for that case.
 
   Implemented with a `Process.monitor/1` plus a one-shot waiter
   registration on the session: `terminate/2` sends each registered
@@ -519,6 +560,14 @@ defmodule ClaudeWrapper.DuplexSession do
 
     adapter = Keyword.get(opts, :adapter, default_adapter())
     adapter_opts = Keyword.get(opts, :adapter_opts, [])
+
+    stderr_capture_bytes =
+      Keyword.get(adapter_opts, :stderr_capture_bytes, @default_stderr_capture_bytes)
+
+    unless is_integer(stderr_capture_bytes) and stderr_capture_bytes >= 0 do
+      raise ArgumentError, ":stderr_capture_bytes must be a non-negative integer"
+    end
+
     open_opts = [config: config, args: args, owner: self()] ++ adapter_opts
 
     # An optional lifecycle owner (e.g. the IEx evaluator driving DuplexIEx):
@@ -542,6 +591,7 @@ defmodule ClaudeWrapper.DuplexSession do
            config: config,
            on_permission: on_permission,
            owner_ref: owner_ref,
+           stderr_capture_bytes: stderr_capture_bytes,
            session_monotonic: session_monotonic
          }}
 
@@ -567,9 +617,14 @@ defmodule ClaudeWrapper.DuplexSession do
       parent_tool_use_id: nil
     }
 
-    state.adapter.command(port, [Jason.encode!(msg), ?\n])
-    span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: state.session_id})
-    {:noreply, %{state | pending_turn: {from, []}, turn_span: span}}
+    case state.adapter.command(port, [Jason.encode!(msg), ?\n]) do
+      :ok ->
+        span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: state.session_id})
+        {:noreply, %{state | pending_turn: {from, []}, turn_span: span}}
+
+      {:error, reason} ->
+        {:reply, {:error, Error.new(:terminated, reason: {:transport_write, reason})}, state}
+    end
   end
 
   def handle_call({:send, _prompt}, _from, %{pending_turn: nil, port: nil} = state) do
@@ -583,6 +638,11 @@ defmodule ClaudeWrapper.DuplexSession do
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
 
   def handle_call(:exit_status, _from, state), do: {:reply, state.exit_status, state}
+
+  def handle_call(:shutdown, _from, state) do
+    {terminal, state} = close_transport(state)
+    {:stop, :normal, {:ok, terminal}, state}
+  end
 
   def handle_call({:await_exit, ref}, {pid, _tag}, state) do
     {:reply, :ok, %{state | exit_waiters: Map.put(state.exit_waiters, ref, pid)}}
@@ -640,10 +700,42 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   @impl true
+  def handle_info({port, {:data, chunk, ref}}, %{port: port} = state) do
+    {complete, rest} = split_lines(state.buffer <> chunk)
+    state = Enum.reduce(complete, %{state | buffer: rest}, &handle_line/2)
+    state.adapter.ack(port, ref)
+    {:noreply, state}
+  end
+
   def handle_info({port, {:data, chunk}}, %{port: port} = state) do
     {complete, rest} = split_lines(state.buffer <> chunk)
     state = Enum.reduce(complete, %{state | buffer: rest}, &handle_line/2)
     {:noreply, state}
+  end
+
+  def handle_info({port, {:stderr, line, ref}}, %{port: port} = state) do
+    state = capture_stderr(state, line)
+    state.adapter.ack(port, ref)
+    {:noreply, state}
+  end
+
+  def handle_info({port, {:terminal, evidence}}, %{port: port} = state) do
+    terminal = %TransportTerminal{evidence: evidence, stderr: state.stderr}
+    broadcast(state, {:transport_terminal, terminal})
+    state = fail_pending(state, {:transport_terminal, evidence})
+
+    {:stop, :normal,
+     %{
+       state
+       | port: nil,
+         transport_terminal: terminal,
+         exit_status: terminal_exit_status(evidence)
+     }}
+  end
+
+  def handle_info({port, {:transport_error, reason}}, %{port: port} = state) do
+    state = fail_pending(state, {:transport_error, reason})
+    {:stop, :normal, %{state | exit_status: {:failed, {:transport_error, reason}}}}
   end
 
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
@@ -665,6 +757,13 @@ defmodule ClaudeWrapper.DuplexSession do
     {:stop, :normal, state}
   end
 
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{port: %{monitor: ref}} = state) do
+    state = fail_pending(state, {:transport_error, {:puller_down, reason}})
+
+    {:stop, :normal,
+     %{state | exit_status: {:failed, {:transport_error, {:puller_down, reason}}}}}
+  end
+
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
     case Map.get(state.subscribers, pid) do
       ^ref -> {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
@@ -676,7 +775,9 @@ defmodule ClaudeWrapper.DuplexSession do
 
   @impl true
   def terminate(reason, %{port: port} = state) do
-    if not is_nil(port), do: state.adapter.close(port)
+    {_terminal, state} =
+      if is_nil(port), do: {state.transport_terminal, state}, else: close_transport(state)
+
     state = fail_pending(state, :terminated)
     notify_exit_waiters(state, final_exit_status(state, reason))
 
@@ -942,6 +1043,12 @@ defmodule ClaudeWrapper.DuplexSession do
   defp fail_reason_to_error({:port_exit, _} = reason),
     do: Error.new(:terminated, reason: reason)
 
+  defp fail_reason_to_error({:transport_terminal, _} = reason),
+    do: Error.new(:terminated, reason: reason)
+
+  defp fail_reason_to_error({:transport_error, _} = reason),
+    do: Error.new(:terminated, reason: reason)
+
   # Wrap an interrupt/permission control_request failure reported by the
   # CLI via a `subtype: "error"` control_response.
   defp control_failed(reason), do: Error.new(:duplex_control_failed, reason: reason)
@@ -991,6 +1098,54 @@ defmodule ClaudeWrapper.DuplexSession do
   defp generate_request_id do
     :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
   end
+
+  defp capture_stderr(%{stderr_capture_bytes: 0} = state, _line), do: state
+
+  defp capture_stderr(state, line) do
+    combined = state.stderr <> line <> "\n"
+    size = byte_size(combined)
+    kept = min(size, state.stderr_capture_bytes)
+    %{state | stderr: binary_part(combined, size - kept, kept)}
+  end
+
+  defp close_transport(%{port: nil} = state), do: {state.transport_terminal, state}
+
+  defp close_transport(%{port: port, adapter: adapter} = state) do
+    terminal =
+      if function_exported?(adapter, :shutdown, 1) do
+        case adapter.shutdown(port) do
+          {:ok, evidence} -> %TransportTerminal{evidence: evidence, stderr: state.stderr}
+          {:error, reason} -> %TransportTerminal{evidence: {:error, reason}, stderr: state.stderr}
+        end
+      else
+        :ok = adapter.close(port)
+        nil
+      end
+
+    if terminal, do: broadcast(state, {:transport_terminal, terminal})
+
+    status =
+      cond do
+        state.exit_status != :running -> state.exit_status
+        terminal -> terminal_exit_status(terminal.evidence)
+        true -> state.exit_status
+      end
+
+    {terminal, %{state | port: nil, transport_terminal: terminal, exit_status: status}}
+  end
+
+  defp terminal_exit_status(%{confirmation: :confirmed, cause: :explicit_close}),
+    do: :completed
+
+  defp terminal_exit_status(%{
+         confirmation: :confirmed,
+         cause: :child_exit,
+         status: 0,
+         output: :complete
+       }),
+       do: :completed
+
+  defp terminal_exit_status(evidence), do: {:failed, {:transport_terminal, evidence}}
 
   # --- Health helpers (internals) -------------------------------------
 

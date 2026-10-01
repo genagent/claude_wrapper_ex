@@ -4,12 +4,17 @@ defmodule ClaudeWrapper.DuplexSession.Adapter do
 
   A `DuplexSession` drives the `claude` subprocess through exactly three
   active operations -- open the transport, write a line to it, close it --
-  and consumes three inbound message shapes delivered to its own process
+  and consumes inbound message shapes delivered to its own process
   mailbox:
 
     * `{handle, {:data, chunk}}` -- raw stdout bytes
     * `{handle, {:exit_status, code}}` -- the subprocess exited
     * `{:EXIT, handle, reason}` -- the transport process exited
+
+  The optional Forcola adapter also sends acknowledged
+  `{handle, {:data, chunk, ref}}` and `{handle, {:stderr, line, ref}}`
+  messages, followed by `{handle, {:terminal, evidence}}`. The session
+  acknowledges each line before the adapter requests another.
 
   where `handle` is the value the adapter's `open/1` returned (and which
   the session stores as its transport handle). An adapter implements the
@@ -42,8 +47,16 @@ defmodule ClaudeWrapper.DuplexSession.Adapter do
   @callback open(open_opts()) :: {:ok, handle()} | {:error, term()}
 
   @doc "Write iodata (one NDJSON line, newline included) to the transport."
-  @callback command(handle(), iodata()) :: :ok
+  @callback command(handle(), iodata()) :: :ok | {:error, term()}
 
   @doc "Shut the transport down. Idempotent; the handle may already be dead."
   @callback close(handle()) :: :ok
+
+  @doc "Optionally shut down while retaining structured transport evidence."
+  @callback shutdown(handle()) :: {:ok, term()} | {:error, term()}
+
+  @doc "Optionally acknowledge a pull-delivered line after processing it."
+  @callback ack(handle(), reference()) :: :ok
+
+  @optional_callbacks shutdown: 1, ack: 2
 end
