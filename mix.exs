@@ -37,7 +37,7 @@ defmodule ClaudeWrapper.MixProject do
       # timeout / BEAM death). Enables Runner.Forcola and
       # DuplexSession.Adapter.Forcola. See "Leak-free execution" in the
       # README. POSIX-only; absent it, the default Port paths are used.
-      {:forcola, "~> 0.4.0", optional: true},
+      {:forcola, ">= 0.4.0 and < 0.7.0", optional: true},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
