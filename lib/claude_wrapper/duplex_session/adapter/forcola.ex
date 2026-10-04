@@ -10,7 +10,7 @@ if Code.ensure_loaded?(Forcola) do
 
     Select this optional adapter with `adapter: __MODULE__` or set
     `config :claude_wrapper, duplex_adapter: __MODULE__`. It requires
-    `forcola ~> 0.4.0` and a POSIX host.
+    `forcola >= 0.4.0 and < 0.7.0` and a POSIX host.
 
     `:adapter_opts` accepts `:max_line_bytes`, `:max_output_bytes`, and
     `:max_pending_bytes` (defaults: 1 MiB, 64 MiB, and one line plus its
