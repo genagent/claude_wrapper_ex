@@ -152,6 +152,11 @@ defmodule ClaudeWrapper do
     * `:verbose` - Enable verbose output
     * `:debug` - Enable debug output
 
+  Execution options:
+    * `:session_observer` - `{local_pid, reference}` for an early typed native
+      session observation. Requires an observed runner; see `Query.execute/3`.
+      Omit it to retain ordinary one-shot execution.
+
   Query options (passed to `Query` builder):
     * `:model` - Model name
     * `:system_prompt` - System prompt override
@@ -177,17 +182,18 @@ defmodule ClaudeWrapper do
   """
   @spec query(String.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def query(prompt, opts \\ []) do
-    {config_opts, query_opts} = split_opts(opts)
+    {config_opts, query_opts, execution_opts} = split_opts(opts)
     config = Config.new(config_opts)
     query = build_query(prompt, query_opts)
-    Query.execute(query, config)
+    Query.execute(query, config, execution_opts)
   end
 
   @doc """
   Execute a query and return a lazy stream of `%StreamEvent{}` structs.
 
   The subprocess starts when the stream is consumed. Accepts the same options as
-  `query/2`, except `:timeout`: streaming is bounded only by a per-frame idle
+  `query/2`, except `:session_observer` (one-shot only) and `:timeout`:
+  streaming is bounded only by a per-frame idle
   deadline, not a whole-run timeout. A truncated run (idle timeout, non-zero
   exit, spawn failure) ends with a terminal
   `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` rather
@@ -196,7 +202,7 @@ defmodule ClaudeWrapper do
   """
   @spec stream(String.t(), keyword()) :: Enumerable.t()
   def stream(prompt, opts \\ []) do
-    {config_opts, query_opts} = split_opts(opts)
+    {config_opts, query_opts, _execution_opts} = split_opts(opts)
     config = Config.new(config_opts)
     query = build_query(prompt, query_opts)
     Query.stream(query, config)
@@ -243,7 +249,7 @@ defmodule ClaudeWrapper do
   """
   @spec agents(keyword()) :: {:ok, [map()]} | {:error, term()}
   def agents(opts \\ []) do
-    {config_opts, agent_opts} = split_opts(opts)
+    {config_opts, agent_opts, _execution_opts} = split_opts(opts)
     config = Config.new(config_opts)
     Commands.Agents.list(config, agent_opts)
   end
@@ -253,7 +259,9 @@ defmodule ClaudeWrapper do
   @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
 
   defp split_opts(opts) do
-    Enum.split_with(opts, fn {k, _v} -> k in @config_keys end)
+    {config_opts, remaining} = Enum.split_with(opts, fn {k, _v} -> k in @config_keys end)
+    {execution_opts, query_opts} = Keyword.split(remaining, [:session_observer])
+    {config_opts, query_opts, execution_opts}
   end
 
   defp build_query(prompt, opts) do

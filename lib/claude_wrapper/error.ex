@@ -18,6 +18,10 @@ defmodule ClaudeWrapper.Error do
 
   ## Kinds
 
+    * `:invalid_session_observer` -- observed execution needs
+      `session_observer: {local_pid, reference}`
+    * `:observation_unsupported` -- the configured runner does not implement
+      observed one-shot execution (`:reason` is the runner module)
     * `:binary_not_found` -- the `claude` binary could not be launched
     * `:command_failed` -- the CLI exited non-zero (`:exit_code`,
       `:stdout`, `:stderr`)
@@ -82,7 +86,9 @@ defmodule ClaudeWrapper.Error do
   """
 
   @type kind ::
-          :binary_not_found
+          :invalid_session_observer
+          | :observation_unsupported
+          | :binary_not_found
           | :command_failed
           | :io
           | :timeout
@@ -166,6 +172,12 @@ defmodule ClaudeWrapper.Error do
   def io(reason), do: %__MODULE__{kind: :io, reason: reason}
 
   # --- default messages ---------------------------------------------
+
+  defp default_message(%{kind: :invalid_session_observer}),
+    do: "session_observer must be a {local_pid, reference} pair"
+
+  defp default_message(%{kind: :observation_unsupported, reason: runner}),
+    do: "runner #{inspect(runner)} does not support observed execution"
 
   defp default_message(%{kind: :binary_not_found, reason: bin}),
     do: "claude binary not found: #{inspect(bin)}"
