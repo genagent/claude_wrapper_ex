@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.5...v0.15.0) (2026-10-04)
+
+
+### Features
+
+* observe native session identity during one-shot execution (closes [#273](https://github.com/genagent/claude_wrapper_ex/issues/273)) ([#274](https://github.com/genagent/claude_wrapper_ex/issues/274)) ([21daec1](https://github.com/genagent/claude_wrapper_ex/commit/21daec1ba01c4942b3d4c5c9939c0f5830b8fb51))
+
 ## [0.14.5](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.4...v0.14.5) (2026-10-01)
 
 
