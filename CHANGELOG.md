@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.0...v0.15.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* allow compatible Forcola releases (closes [#276](https://github.com/genagent/claude_wrapper_ex/issues/276)) ([#277](https://github.com/genagent/claude_wrapper_ex/issues/277)) ([8b55ffa](https://github.com/genagent/claude_wrapper_ex/commit/8b55ffa8677a2f62dd867bb4701c3b5bb75cb194))
+
 ## [0.15.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.14.5...v0.15.0) (2026-10-04)
 
 
