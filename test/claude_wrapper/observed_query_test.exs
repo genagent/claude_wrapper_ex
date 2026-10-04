@@ -295,6 +295,68 @@ defmodule ClaudeWrapper.ObservedQueryTest do
     assert arguments =~ "--resume\nprior\n"
   end
 
+  test "query/2 routes execution, config and query options through the shared splitter",
+       context do
+    argv = Path.join(context.directory, "convenience-argv")
+    cwd = Path.join(context.directory, "convenience-cwd")
+    script = ~s(printf '%s\\n' "$@" > "$ARGV"\npwd > "$CWD"\n) <> emit(init()) <> emit(result())
+    config = fixture(context, script)
+
+    opts = [
+      binary: config.binary,
+      working_dir: context.directory,
+      env: [{"ARGV", argv}, {"CWD", cwd}],
+      timeout: 1_000,
+      model: "sonnet",
+      max_turns: 3,
+      max_budget_usd: 0.5,
+      resume: "prior",
+      session_observer: {self(), context.reference}
+    ]
+
+    assert {:ok, %Result{}} = ClaudeWrapper.query("hello", opts)
+    reference = context.reference
+    assert_receive {^reference, %SessionObservation{session_id: "native-session"}}
+    arguments = File.read!(argv)
+    assert arguments =~ "--output-format\nstream-json\n"
+    assert arguments =~ "--model\nsonnet\n"
+    assert arguments =~ "--max-turns\n3\n"
+    assert arguments =~ "--max-budget-usd\n0.5\n"
+    assert arguments =~ "--resume\nprior\n"
+    refute arguments =~ "session_observer"
+
+    assert String.trim(File.read!(cwd)) ==
+             System.cmd("pwd", [], cd: context.directory) |> elem(0) |> String.trim()
+
+    assert {:ok, %Result{}} =
+             ClaudeWrapper.query("hello", Keyword.delete(opts, :session_observer))
+
+    assert File.read!(argv) =~ "--output-format\njson\n"
+    refute_receive {^reference, _observation}, 20
+  end
+
+  test "query/2 preserves observed preflight errors and the configured deadline", context do
+    config = fixture(context, emit(init()) <> "sleep 30\n")
+
+    assert {:error, %Error{kind: :invalid_session_observer}} =
+             ClaudeWrapper.query("hello", binary: config.binary, session_observer: :invalid)
+
+    assert {:error, %Error{kind: :timeout, reason: 150}} =
+             ClaudeWrapper.query("hello",
+               binary: config.binary,
+               timeout: 150,
+               session_observer: {self(), context.reference}
+             )
+
+    Application.put_env(:claude_wrapper, :runner, Runner.Port)
+
+    assert {:error, %Error{kind: :observation_unsupported}} =
+             ClaudeWrapper.query("hello",
+               binary: config.binary,
+               session_observer: {self(), context.reference}
+             )
+  end
+
   test "timeout kills the child and descendant after observing init", context do
     pidfile = Path.join(context.directory, "pids")
     script = ~s(sleep 30 &\nprintf '%s %s' "$$" "$!" > "$PIDS"\n) <> emit(init()) <> "wait\n"

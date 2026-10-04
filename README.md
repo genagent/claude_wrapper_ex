@@ -212,7 +212,9 @@ The function waits for transport completion even after a result event.
 
 Invalid observer options return `:invalid_session_observer`; a runner without
 observed execution returns `:observation_unsupported`, both before spawning.
-`Query.execute/2` and the existing convenience APIs are unchanged. Observed
+`ClaudeWrapper.query/2` accepts the same `:session_observer` execution option
+alongside its existing config and query options. Calls without that option,
+and `Query.execute/2`, retain ordinary execution. Observed
 failure diagnostics keep stderr separate, with newline-normalized stdout;
 clean completion returns the usual parsed `Result`. Forcola's existing
 24-hour bound applies when `Config.timeout` is `nil`.
