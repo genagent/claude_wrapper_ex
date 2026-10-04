@@ -70,6 +70,7 @@ defmodule ClaudeWrapper.MixProject do
           ClaudeWrapper.Config,
           ClaudeWrapper.Result,
           ClaudeWrapper.StreamEvent,
+          ClaudeWrapper.SessionObservation,
           ClaudeWrapper.Error,
           ClaudeWrapper.McpConfig,
           ClaudeWrapper.Retry,

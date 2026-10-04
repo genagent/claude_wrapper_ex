@@ -23,7 +23,16 @@ defmodule ClaudeWrapper.Query do
       |> Stream.run()
   """
 
-  alias ClaudeWrapper.{Auth, Config, Error, Result, Runner, StreamEvent, Telemetry}
+  alias ClaudeWrapper.{
+    Auth,
+    Config,
+    Error,
+    Result,
+    Runner,
+    SessionObservation,
+    StreamEvent,
+    Telemetry
+  }
 
   @type permission_mode ::
           :default | :accept_edits | :bypass_permissions | :dont_ask | :plan | :auto
@@ -567,6 +576,124 @@ defmodule ClaudeWrapper.Query do
     Telemetry.span_exec(query, fn -> do_execute(query, config) end)
   end
 
+  @doc """
+  Execute one shot while optionally observing its native session identity.
+
+  Pass `session_observer: {local_pid, reference}` to receive exactly one
+  `{reference, %ClaudeWrapper.SessionObservation{}}` after the first valid
+  stdout `system/init` event. A valid ID is a nonblank string. Malformed,
+  duplicate and conflicting later init events are ignored. A dead observer
+  is harmless; no caller-supplied callback executes. The execution caller
+  sends the observation before `execute/3` returns, preserving message order
+  with any terminal reply that caller sends to the same observer.
+
+  The observation can precede a timeout or failure and is not a completion
+  signal. Callers must fence the reference against their current invocation
+  before persisting it. The call still waits for transport completion and
+  returns the same Result/Error categories as `execute/2`.
+
+  This opt-in requires a runner implementing `c:ClaudeWrapper.Runner.run_observed/5`
+  (currently `ClaudeWrapper.Runner.Forcola`). Invalid observer options and
+  unsupported runners return typed errors before spawning. An empty options
+  list delegates to `execute/2` unchanged.
+  """
+  @spec execute(t(), Config.t(), keyword()) :: {:ok, Result.t()} | {:error, Error.t()}
+  def execute(%__MODULE__{} = query, %Config{} = config, []), do: execute(query, config)
+
+  def execute(%__MODULE__{} = query, %Config{} = config, opts) do
+    with {:ok, observer} <- session_observer(opts),
+         {:ok, runner} <- observed_runner() do
+      query = %{query | output_format: :stream_json}
+      Telemetry.span_exec(query, fn -> do_execute_observed(query, config, runner, observer) end)
+    end
+  end
+
+  defp session_observer(session_observer: {pid, reference})
+       when is_pid(pid) and node(pid) == node() and is_reference(reference),
+       do: {:ok, {pid, reference}}
+
+  defp session_observer(_opts), do: {:error, Error.new(:invalid_session_observer)}
+
+  defp observed_runner do
+    runner = Runner.impl()
+
+    if Code.ensure_loaded?(runner) and function_exported?(runner, :run_observed, 5) do
+      {:ok, runner}
+    else
+      {:error, Error.new(:observation_unsupported, reason: runner)}
+    end
+  end
+
+  defp do_execute_observed(query, config, runner, observer) do
+    base = Config.base_args(config)
+    base = if "--verbose" in base, do: base, else: ["--verbose" | base]
+    args = base ++ build_args(query)
+    observe = &observe_session(&1, observer)
+
+    case runner.run_observed(
+           config.binary,
+           args,
+           Config.cmd_opts(config),
+           config.timeout,
+           observe
+         ) do
+      {:ok, {stdout, code, stderr}} ->
+        observed_result(stdout, code, stderr)
+
+      {:error, :timeout} ->
+        {:error, Error.timeout(config.timeout)}
+
+      {:error, {:binary_not_found, _reason}} ->
+        {:error, Error.new(:binary_not_found, reason: config.binary)}
+
+      {:error, reason} ->
+        {:error, Error.io(reason)}
+    end
+  end
+
+  defp observe_session(line, {pid, reference}) do
+    case StreamEvent.parse(line) do
+      {:ok, %StreamEvent{type: "system", data: %{"subtype" => "init", "session_id" => id}}}
+      when is_binary(id) ->
+        send_session(id, pid, reference)
+
+      _other ->
+        :continue
+    end
+  end
+
+  defp send_session(id, pid, reference) do
+    if String.trim(id) == "" do
+      :continue
+    else
+      send(pid, {reference, %SessionObservation{session_id: id}})
+      :observed
+    end
+  end
+
+  defp observed_result(stdout, code, stderr) do
+    case terminal_result(stdout) do
+      nil when code == 0 -> {:error, Error.json(:missing_result, stdout)}
+      nil -> classify_command_failure(code, stdout, stderr)
+      result when code == 0 -> {:ok, result}
+      result -> nonzero_result(result, code, stdout, stderr)
+    end
+  end
+
+  defp terminal_result(stdout) do
+    stdout
+    |> String.split("\n")
+    |> Enum.reverse()
+    |> Enum.find_value(&result_line/1)
+  end
+
+  defp result_line(line) do
+    case StreamEvent.parse(line) do
+      {:ok, %StreamEvent{type: "result", data: data}} -> Result.from_json(data)
+      _other -> nil
+    end
+  end
+
   defp do_execute(%__MODULE__{} = query, %Config{} = config) do
     # Strip --verbose from base args: it causes the CLI to emit non-JSON
     # output (NDJSON stream lines, stdin warnings) that breaks JSON parsing.
@@ -601,23 +728,27 @@ defmodule ClaudeWrapper.Query do
   def handle_nonzero_exit(code, stdout) do
     case parse_json_output(stdout) do
       {:ok, result} ->
-        case rail_stop_kind(result) do
-          nil ->
-            {:ok, result}
-
-          {kind, cap} ->
-            reason = %{
-              cap: cap,
-              cost_usd: result.cost_usd,
-              num_turns: result.num_turns,
-              session_id: result.session_id
-            }
-
-            {:error, Error.new(kind, reason: reason, exit_code: code, stdout: stdout)}
-        end
+        nonzero_result(result, code, stdout, nil)
 
       {:error, _} ->
         classify_command_failure(code, stdout)
+    end
+  end
+
+  defp nonzero_result(result, code, stdout, stderr) do
+    case rail_stop_kind(result) do
+      nil ->
+        {:ok, result}
+
+      {kind, cap} ->
+        reason = %{
+          cap: cap,
+          cost_usd: result.cost_usd,
+          num_turns: result.num_turns,
+          session_id: result.session_id
+        }
+
+        {:error, Error.new(kind, reason: reason, exit_code: code, stdout: stdout, stderr: stderr)}
     end
   end
 
@@ -658,13 +789,13 @@ defmodule ClaudeWrapper.Query do
   # the output and, when it recognizes an auth-shaped failure, surface a
   # typed `:auth` error carrying the classified kind in `:reason`.
   # Otherwise fall back to a plain `:command_failed`.
-  defp classify_command_failure(code, stdout) do
-    case Auth.classify_failure(code, stdout, "") do
+  defp classify_command_failure(code, stdout, stderr \\ nil) do
+    case Auth.classify_failure(code, stdout, stderr || "") do
       nil ->
-        {:error, Error.command_failed(code, stdout)}
+        {:error, Error.command_failed(code, stdout, stderr)}
 
       kind ->
-        {:error, Error.new(:auth, reason: kind, exit_code: code, stdout: stdout)}
+        {:error, Error.new(:auth, reason: kind, exit_code: code, stdout: stdout, stderr: stderr)}
     end
   end
 

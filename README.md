@@ -186,6 +186,37 @@ alongside Forcola's terminal status, cleanup confirmation, and output evidence.
 For owner-death evidence, pass `terminal_recipient: supervisor_pid` in
 `adapter_opts` so an independent process receives Forcola's terminal record.
 
+### Observing a one-shot session identity
+
+With `Runner.Forcola`, `Query.execute/3` can announce the native session as
+soon as stdout reports `system/init`, while retaining synchronous Result/Error
+completion and the configured whole-run timeout:
+
+```elixir
+reference = make_ref()
+ClaudeWrapper.Query.execute(query, config,
+  session_observer: {observer_pid, reference})
+```
+
+The local observer process handles
+`{reference, %ClaudeWrapper.SessionObservation{session_id: session_id}}` while
+the call runs. The execution caller sends this message before returning, so
+its later terminal reply to the same observer cannot overtake it.
+
+Only the first valid, nonblank session ID is announced. Malformed, duplicate
+and conflicting later init events are ignored; stderr cannot supply an ID or
+terminal result. A dead observer is harmless and no caller callback runs.
+An observation is not proof of success: the call may still time out or fail.
+The caller owns persistence and must reject observations from stale attempts.
+The function waits for transport completion even after a result event.
+
+Invalid observer options return `:invalid_session_observer`; a runner without
+observed execution returns `:observation_unsupported`, both before spawning.
+`Query.execute/2` and the existing convenience APIs are unchanged. Observed
+failure diagnostics keep stderr separate, with newline-normalized stdout;
+clean completion returns the usual parsed `Result`. Forcola's existing
+24-hour bound applies when `Config.timeout` is `nil`.
+
 ### Retry, telemetry, budget
 
 - **`ClaudeWrapper.Retry`**: exponential backoff around a `Query`. The default retries timeouts, plain non-zero exits, and rate limits; other auth failures and rail stops are not retried.

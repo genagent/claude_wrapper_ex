@@ -55,6 +55,82 @@ if Code.ensure_loaded?(Forcola) do
       end
     end
 
+    @doc """
+    Run to completion while observing stdout lines with a trusted callback.
+
+    The timeout bounds the whole run, including a producer that keeps writing.
+    Stderr is never merged into observed lines. See `ClaudeWrapper.Runner` for
+    the callback and normalized output contract.
+    """
+    @spec run_observed(
+            String.t(),
+            [String.t()],
+            keyword(),
+            timeout() | nil,
+            ClaudeWrapper.Runner.line_observer()
+          ) ::
+            {:ok, {String.t(), non_neg_integer(), String.t()}}
+            | {:error, ClaudeWrapper.Runner.error()}
+    @impl true
+    def run_observed(binary, args, opts, timeout, observer) do
+      forcola_opts =
+        [timeout_ms: timeout || @unbounded_ms, merge_stderr: false] ++
+          Keyword.take(opts, [:cd, :env])
+
+      stream = Forcola.Stream.lines([binary | args], forcola_opts)
+      next = &Enumerable.reduce(stream, &1, fn line, _acc -> {:suspend, line} end)
+      collect_observed(next, [], observer)
+    end
+
+    # Suspend after each line so the accumulated stdout survives a terminal
+    # Forcola.Stream.Error. An ordinary Enum.reduce would lose its accumulator
+    # when that exception unwinds. Resuming to completion retains the stream's
+    # cleanup handshake, including failures after a terminal JSON result.
+    defp collect_observed(next, lines, observer) do
+      case next_observed(next) do
+        {:suspended, line, continuation} ->
+          observer = observe_line(observer, line)
+          collect_observed(continuation, [[line, "\n"] | lines], observer)
+
+        {finished, _acc} when finished in [:done, :halted] ->
+          {:ok, {observed_stdout(lines), 0, ""}}
+
+        {:error, error} ->
+          observed_failure(error, lines)
+      end
+    end
+
+    defp next_observed(next) do
+      next.({:cont, nil})
+    rescue
+      error in Forcola.Stream.Error -> {:error, error}
+    end
+
+    defp observe_line(nil, _line), do: nil
+
+    defp observe_line(observer, line) do
+      case observer.(line) do
+        :observed -> nil
+        :continue -> observer
+      end
+    end
+
+    defp observed_failure(%Forcola.Stream.Error{timed_out: true}, _lines),
+      do: {:error, :timeout}
+
+    defp observed_failure(%Forcola.Stream.Error{reason: reason}, _lines)
+         when not is_nil(reason),
+         do: {:error, {:spawn, reason}}
+
+    defp observed_failure(%Forcola.Stream.Error{status: {:signal, signal}}, _lines),
+      do: {:error, {:signal, signal}}
+
+    defp observed_failure(%Forcola.Stream.Error{status: status, stderr: stderr}, lines)
+         when is_integer(status),
+         do: {:ok, {observed_stdout(lines), status, stderr}}
+
+    defp observed_stdout(lines), do: lines |> Enum.reverse() |> IO.iodata_to_binary()
+
     @impl true
     def stream_lines(binary, args, opts, timeout) do
       forcola_opts =
