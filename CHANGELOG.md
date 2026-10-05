@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.3](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.2...v0.15.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* bound streaming queries by finite whole-run timeout ([#283](https://github.com/genagent/claude_wrapper_ex/issues/283)) ([92f6c76](https://github.com/genagent/claude_wrapper_ex/commit/92f6c76a74f7d0b80c22278d4b6ff2e2a67f7c78))
+
 ## [0.15.2](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.1...v0.15.2) (2026-10-05)
 
 
