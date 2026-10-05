@@ -25,8 +25,9 @@ defmodule ClaudeWrapper.Runner do
 
   `run_observed/5` is optional. It runs to transport completion while calling
   a trusted, nonblocking line observer with stdout lines only. The observer
-  returns `:continue` until it has delivered its observation, then `:observed`;
-  the runner must not call it again after that. It must execute synchronously
+  returns `:continue`, `:observed` to stop observing, or
+  `{:continue, next_observer}` to replace itself with an observer carrying
+  updated state. The runner must not call it again after `:observed`. It must execute synchronously
   in the process calling `run_observed/5`, before that function returns.
   This is an internal execution
   seam, not an API for caller-supplied callbacks.
@@ -71,7 +72,8 @@ defmodule ClaudeWrapper.Runner do
             ) :: {:ok, {String.t(), non_neg_integer()}} | {:error, error()}
 
   @typedoc "A trusted stdout line observer constructed by Query."
-  @type line_observer :: (String.t() -> :continue | :observed)
+  @type line_observer ::
+          (String.t() -> :continue | :observed | {:continue, line_observer()})
 
   @callback run_observed(
               binary :: String.t(),

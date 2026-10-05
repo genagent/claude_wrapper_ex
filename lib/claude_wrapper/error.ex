@@ -20,6 +20,8 @@ defmodule ClaudeWrapper.Error do
 
     * `:invalid_session_observer` -- observed execution needs
       `session_observer: {local_pid, reference}`
+    * `:invalid_rate_limit_observer` -- observed execution needs
+      `rate_limit_observer: {local_pid, reference}`
     * `:observation_unsupported` -- the configured runner does not implement
       observed one-shot execution (`:reason` is the runner module)
     * `:binary_not_found` -- the `claude` binary could not be launched
@@ -87,6 +89,7 @@ defmodule ClaudeWrapper.Error do
 
   @type kind ::
           :invalid_session_observer
+          | :invalid_rate_limit_observer
           | :observation_unsupported
           | :binary_not_found
           | :command_failed
@@ -175,6 +178,9 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :invalid_session_observer}),
     do: "session_observer must be a {local_pid, reference} pair"
+
+  defp default_message(%{kind: :invalid_rate_limit_observer}),
+    do: "rate_limit_observer must be a {local_pid, reference} pair"
 
   defp default_message(%{kind: :observation_unsupported, reason: runner}),
     do: "runner #{inspect(runner)} does not support observed execution"

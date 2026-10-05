@@ -156,6 +156,8 @@ defmodule ClaudeWrapper do
     * `:session_observer` - `{local_pid, reference}` for an early typed native
       session observation. Requires an observed runner; see `Query.execute/3`.
       Omit it to retain ordinary one-shot execution.
+    * `:rate_limit_observer` - `{local_pid, reference}` for typed rate-limit
+      events from the same observed one-shot execution path.
 
   Query options (passed to `Query` builder):
     * `:model` - Model name
@@ -192,7 +194,8 @@ defmodule ClaudeWrapper do
   Execute a query and return a lazy stream of `%StreamEvent{}` structs.
 
   The subprocess starts when the stream is consumed. Accepts the same options as
-  `query/2`, except `:session_observer` (one-shot only) and `:timeout`:
+  `query/2`, except `:session_observer`, `:rate_limit_observer` (one-shot only),
+  and `:timeout`:
   streaming is bounded only by a per-frame idle
   deadline, not a whole-run timeout. A truncated run (idle timeout, non-zero
   exit, spawn failure) ends with a terminal
@@ -260,7 +263,10 @@ defmodule ClaudeWrapper do
 
   defp split_opts(opts) do
     {config_opts, remaining} = Enum.split_with(opts, fn {k, _v} -> k in @config_keys end)
-    {execution_opts, query_opts} = Keyword.split(remaining, [:session_observer])
+
+    {execution_opts, query_opts} =
+      Keyword.split(remaining, [:session_observer, :rate_limit_observer])
+
     {config_opts, query_opts, execution_opts}
   end
 
