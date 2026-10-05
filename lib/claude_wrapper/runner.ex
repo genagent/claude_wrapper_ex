@@ -45,7 +45,9 @@ defmodule ClaudeWrapper.Runner do
   means), `{:error, :timeout}` when the timeout elapsed, and other
   `{:error, reason}` tuples for spawn/io failures. `stream_lines/4`
   returns a lazy `Enumerable` of complete stdout lines (no trailing
-  newline); the caller parses each line.
+  newline); the caller parses each line. A finite streaming timeout bounds
+  both the whole run and each gap between lines. Without one, implementations
+  retain their idle safety deadline.
   """
 
   @typedoc "Runner error reasons. `:timeout` is common to both runners."

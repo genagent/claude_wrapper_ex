@@ -42,8 +42,9 @@ defmodule ClaudeWrapper.Config do
     * `:env` - List of `{key, value}` environment variable tuples
     * `:timeout` - Command timeout in milliseconds (default `nil`: unbounded).
       Applies to `query/2`, `Command.run/3`, `raw/2`, and the CLI subcommand
-      wrappers (via `exec/2`). Streaming (`ClaudeWrapper.stream/2`) is bounded
-      only by its per-frame idle deadline, not this whole-run value.
+      wrappers (via `exec/2`). For `ClaudeWrapper.stream/2`, a finite value
+      bounds both the whole run and each gap between output frames. Without
+      one, streaming retains its per-frame idle safety deadline.
     * `:verbose` - Enable verbose output
     * `:debug` - Enable debug output
   """

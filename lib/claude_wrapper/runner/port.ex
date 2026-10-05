@@ -15,8 +15,7 @@ defmodule ClaudeWrapper.Runner.Port do
 
   alias ClaudeWrapper.Command
 
-  # Safety timeout for a hung streaming producer: bounds the gap between
-  # output frames, matching the historical per-receive deadline.
+  # Safety timeout for a hung streaming producer when no deadline is set.
   @stream_idle_timeout_ms 300_000
 
   @impl true
@@ -68,29 +67,49 @@ defmodule ClaudeWrapper.Runner.Port do
         env_opts(opts) ++ cd_opts(opts)
 
     Stream.resource(
-      fn -> {Port.open({:spawn_executable, "/bin/sh"}, port_opts), [], :open} end,
-      fn {port, buffer, _status} -> next_line(port, buffer, idle_timeout) end,
-      fn {port, _buffer, status} -> close(port, status) end
+      fn ->
+        {Port.open({:spawn_executable, "/bin/sh"}, port_opts), [], :open, deadline(timeout)}
+      end,
+      fn {port, buffer, _status, deadline} -> next_line(port, buffer, idle_timeout, deadline) end,
+      fn {port, _buffer, status, _deadline} -> close(port, status) end
     )
   end
+
+  defp deadline(timeout) when is_integer(timeout),
+    do: System.monotonic_time(:millisecond) + timeout
+
+  defp deadline(_timeout), do: nil
 
   # Reassemble lines longer than the port's line buffer: the port delivers an
   # over-long line as one or more `{:noeol, fragment}` followed by `{:eol, rest}`.
   # Carry the fragments in an iolist buffer and flush the whole line on `:eol`,
   # rather than dropping fragments (which silently lost any NDJSON event > 1 MB).
-  defp next_line(port, buffer, idle_timeout) do
-    receive do
-      {^port, {:data, {:eol, line}}} ->
-        {[IO.iodata_to_binary([buffer, line])], {port, [], :open}}
+  defp next_line(port, buffer, idle_timeout, deadline) do
+    wait = receive_timeout(idle_timeout, deadline)
 
-      {^port, {:data, {:noeol, fragment}}} ->
-        {[], {port, [buffer, fragment], :open}}
+    if wait == 0 do
+      {:halt, {port, buffer, :open, deadline}}
+    else
+      receive do
+        {^port, {:data, {:eol, line}}} ->
+          {[IO.iodata_to_binary([buffer, line])], {port, [], :open, deadline}}
 
-      {^port, {:exit_status, _code}} ->
-        {:halt, {port, buffer, :exited}}
-    after
-      idle_timeout -> {:halt, {port, buffer, :open}}
+        {^port, {:data, {:noeol, fragment}}} ->
+          {[], {port, [buffer, fragment], :open, deadline}}
+
+        {^port, {:exit_status, _code}} ->
+          {:halt, {port, buffer, :exited, deadline}}
+      after
+        wait -> {:halt, {port, buffer, :open, deadline}}
+      end
     end
+  end
+
+  defp receive_timeout(idle_timeout, nil), do: idle_timeout
+
+  defp receive_timeout(idle_timeout, deadline) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    if idle_timeout == :infinity, do: remaining, else: min(idle_timeout, remaining)
   end
 
   # On normal completion the port has already terminated (we received

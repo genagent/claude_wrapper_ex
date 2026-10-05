@@ -102,6 +102,17 @@ defmodule ClaudeWrapper.RunnerConfigTest do
     end
   end
 
+  defmodule DeadlineRunner do
+    @behaviour ClaudeWrapper.Runner
+    @impl true
+    def run(_binary, _args, _opts, _timeout), do: {:ok, {"", 0}}
+    @impl true
+    def stream_lines(_binary, _args, _opts, timeout) do
+      send(self(), {:stream_timeout, timeout})
+      [~s({"type":"result","result":"done"})]
+    end
+  end
+
   setup do
     prev = Application.get_env(:claude_wrapper, :runner)
 
@@ -158,6 +169,40 @@ defmodule ClaudeWrapper.RunnerConfigTest do
 
       assert last.type == "error"
       assert last.data["error"] == "stream_truncated"
+    end
+
+    test "the public streaming API passes a finite timeout to the runner" do
+      Application.put_env(:claude_wrapper, :runner, DeadlineRunner)
+
+      assert [%ClaudeWrapper.StreamEvent{type: "result"}] =
+               ClaudeWrapper.stream("hi", timeout: 500) |> Enum.to_list()
+
+      assert_receive {:stream_timeout, 500}
+    end
+
+    test "the default runner truncates a continuously writing stream at the whole-run deadline" do
+      Application.put_env(:claude_wrapper, :runner, ClaudeWrapper.Runner.Port)
+      script = Path.join(System.tmp_dir!(), "cw_deadline_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm(script) end)
+
+      File.write!(script, """
+      #!/bin/sh
+      i=0
+      while [ "$i" -lt 30 ]; do
+        printf '%s\\n' '{"type":"assistant","message":{}}' 2>/dev/null || exit 0
+        i=$((i + 1))
+        sleep 0.05
+      done
+      printf '%s\\n' '{"type":"result","result":"done"}'
+      """)
+
+      File.chmod!(script, 0o755)
+
+      events = ClaudeWrapper.stream("hi", binary: script, timeout: 500) |> Enum.to_list()
+
+      assert Enum.any?(events, &(&1.type == "assistant"))
+      refute Enum.any?(events, &(&1.type == "result"))
+      assert List.last(events).data["error"] == "stream_truncated"
     end
   end
 
