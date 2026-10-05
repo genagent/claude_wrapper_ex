@@ -3,7 +3,16 @@ defmodule ClaudeWrapper.ObservedQueryTest do
 
   @moduletag :forcola
 
-  alias ClaudeWrapper.{Command, Config, Error, Query, Result, Runner, SessionObservation}
+  alias ClaudeWrapper.{
+    Command,
+    Config,
+    Error,
+    Query,
+    RateLimitObservation,
+    Result,
+    Runner,
+    SessionObservation
+  }
 
   setup do
     previous = Application.get_env(:claude_wrapper, :runner)
@@ -76,6 +85,102 @@ defmodule ClaudeWrapper.ObservedQueryTest do
 
     assert_receive {^reference, ^caller, "one"}
     refute_receive {^reference, _pid, _line}, 20
+  end
+
+  test "the runner can replace its observer without changing transport completion", context do
+    caller = self()
+    reference = context.reference
+
+    observer = fn line ->
+      send(caller, {reference, :first, line})
+
+      {:continue,
+       fn later ->
+         send(caller, {reference, :later, later})
+         :continue
+       end}
+    end
+
+    assert {:ok, {"one\ntwo\n", 0, ""}} =
+             Runner.Forcola.run_observed("printf", ["one\ntwo\n"], [], 1_000, observer)
+
+    assert_receive {^reference, :first, "one"}
+    assert_receive {^reference, :later, "two"}
+  end
+
+  test "rate-limit observations retain stream order and do not replace the final result",
+       context do
+    first = rate_limit_event("allowed")
+    second = rate_limit_event("rejected")
+    script = emit(first) <> emit(init()) <> emit(init("later")) <> emit(second) <> emit(result())
+    config = fixture(context, script)
+    reference = context.reference
+
+    assert {:ok, %Result{result: "done", session_id: "native-session"}} =
+             Query.execute(Query.new("hello"), config,
+               session_observer: {self(), reference},
+               rate_limit_observer: {self(), reference}
+             )
+
+    assert_receive {^reference, %RateLimitObservation{status: "allowed"} = observed}
+    assert observed.rate_limit_type == "five_hour"
+
+    assert observed.unified_windows["five_hour"] == %{
+             "utilization" => 0.12,
+             "resetsAt" => 1_789_892_400
+           }
+
+    assert_receive {^reference, %SessionObservation{session_id: "native-session"}}
+    assert_receive {^reference, %RateLimitObservation{status: "rejected"}}
+    refute_receive {^reference, _observation}, 20
+  end
+
+  test "rate-only observation ignores malformed events and stderr", context do
+    invalid = [
+      %{"type" => "rate_limit_event"},
+      %{"type" => "rate_limit_event", "rate_limit_info" => %{"status" => 17}},
+      %{"type" => "rate_limit_event", "rate_limit_info" => %{"status" => ""}}
+    ]
+
+    script =
+      Enum.map_join(invalid, &emit/1) <>
+        emit(rate_limit_event("stderr"), :stderr) <>
+        emit(init()) <> emit(rate_limit_event("allowed")) <> emit(result())
+
+    config = fixture(context, script)
+    reference = context.reference
+
+    assert {:ok, %Result{}} =
+             Query.execute(Query.new("hello"), config, rate_limit_observer: {self(), reference})
+
+    assert_receive {^reference, %RateLimitObservation{status: "allowed"}}
+    refute_receive {^reference, _observation}, 20
+  end
+
+  test "rate-limit evidence remains visible before a timed-out run", context do
+    script = emit(init()) <> emit(rate_limit_event("allowed")) <> "sleep 30\n"
+    config = fixture(context, script, timeout: 150)
+    reference = context.reference
+
+    assert {:error, %Error{kind: :timeout, reason: 150}} =
+             Query.execute(Query.new("hello"), config,
+               session_observer: {self(), reference},
+               rate_limit_observer: {self(), reference}
+             )
+
+    assert_receive {^reference, %SessionObservation{}}
+    assert_receive {^reference, %RateLimitObservation{status: "allowed"}}
+  end
+
+  test "rate-limit evidence remains visible on nonzero exit", context do
+    script = emit(rate_limit_event("rejected")) <> "exit 7\n"
+    config = fixture(context, script)
+    reference = context.reference
+
+    assert {:error, %Error{kind: :command_failed, exit_code: 7}} =
+             Query.execute(Query.new("hello"), config, rate_limit_observer: {self(), reference})
+
+    assert_receive {^reference, %RateLimitObservation{status: "rejected"}}
   end
 
   test "accepts fragmented init and suppresses duplicate and conflicting later init", context do
@@ -258,6 +363,15 @@ defmodule ClaudeWrapper.ObservedQueryTest do
     end
   end
 
+  test "invalid rate-limit observer is rejected before spawning", context do
+    config = Config.new(binary: Path.join(context.directory, "missing"))
+
+    for value <- [self(), {self(), :not_reference}, {"not a pid", make_ref()}] do
+      assert {:error, %Error{kind: :invalid_rate_limit_observer}} =
+               Query.execute(Query.new("hello"), config, rate_limit_observer: value)
+    end
+  end
+
   test "unsupported runner is rejected before spawning", context do
     Application.put_env(:claude_wrapper, :runner, Runner.Port)
     config = Config.new(binary: Path.join(context.directory, "missing"))
@@ -357,6 +471,29 @@ defmodule ClaudeWrapper.ObservedQueryTest do
              )
   end
 
+  test "query/2 routes rate-limit observations without leaking an execution flag to CLI",
+       context do
+    argv = Path.join(context.directory, "rate-argv")
+
+    script =
+      ~s(printf '%s\\n' "$@" > "$ARGV"\n) <> emit(rate_limit_event("allowed")) <> emit(result())
+
+    config = fixture(context, script)
+    reference = context.reference
+
+    assert {:ok, %Result{}} =
+             ClaudeWrapper.query("hello",
+               binary: config.binary,
+               env: [{"ARGV", argv}],
+               rate_limit_observer: {self(), reference}
+             )
+
+    assert_receive {^reference, %RateLimitObservation{status: "allowed"}}
+    arguments = File.read!(argv)
+    assert arguments =~ "--output-format\nstream-json\n"
+    refute arguments =~ "rate_limit_observer"
+  end
+
   test "timeout kills the child and descendant after observing init", context do
     pidfile = Path.join(context.directory, "pids")
     script = ~s(sleep 30 &\nprintf '%s %s' "$$" "$!" > "$PIDS"\n) <> emit(init()) <> "wait\n"
@@ -369,18 +506,26 @@ defmodule ClaudeWrapper.ObservedQueryTest do
 
   test "execution owner death kills the child and descendant", context do
     pidfile = Path.join(context.directory, "pids")
-    script = ~s(sleep 30 &\nprintf '%s %s' "$$" "$!" > "$PIDS"\n) <> emit(init()) <> "wait\n"
+
+    script =
+      ~s(sleep 30 &\nprintf '%s %s' "$$" "$!" > "$PIDS"\n) <>
+        emit(init()) <> emit(rate_limit_event("allowed")) <> "wait\n"
+
     config = fixture(context, script, env: [{"PIDS", pidfile}])
     observer = {self(), context.reference}
 
     {owner, monitor} =
       spawn_monitor(fn ->
-        Query.execute(Query.new("hello"), config, session_observer: observer)
+        Query.execute(Query.new("hello"), config,
+          session_observer: observer,
+          rate_limit_observer: observer
+        )
       end)
 
     on_exit(fn -> Process.exit(owner, :kill) end)
     reference = context.reference
     assert_receive {^reference, %SessionObservation{}}, 1_000
+    assert_receive {^reference, %RateLimitObservation{status: "allowed"}}, 1_000
     Process.exit(owner, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^owner, :killed}
     assert_dead_pids(pidfile)
@@ -418,6 +563,19 @@ defmodule ClaudeWrapper.ObservedQueryTest do
       "result" => "done",
       "session_id" => "native-session"
     }
+
+  defp rate_limit_event(status) do
+    %{
+      "type" => "rate_limit_event",
+      "rate_limit_info" => %{
+        "status" => status,
+        "rateLimitType" => "five_hour",
+        "unifiedWindows" => %{
+          "five_hour" => %{"utilization" => 0.12, "resetsAt" => 1_789_892_400}
+        }
+      }
+    }
+  end
 
   defp emit(data, stream \\ :stdout) do
     redirect = if stream == :stderr, do: " >&2", else: ""

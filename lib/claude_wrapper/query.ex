@@ -27,6 +27,7 @@ defmodule ClaudeWrapper.Query do
     Auth,
     Config,
     Error,
+    RateLimitObservation,
     Result,
     Runner,
     SessionObservation,
@@ -592,7 +593,14 @@ defmodule ClaudeWrapper.Query do
   before persisting it. The call still waits for transport completion and
   returns the same Result/Error categories as `execute/2`.
 
-  This opt-in requires a runner implementing `c:ClaudeWrapper.Runner.run_observed/5`
+  Pass `rate_limit_observer: {local_pid, reference}` to receive a
+  `%ClaudeWrapper.RateLimitObservation{}` for each valid stdout
+  `rate_limit_event`. It can be used alone or with `:session_observer`.
+  Observations are sent in stream order, before `execute/3` returns, including
+  events seen before a timeout or failed transport. They are not completion
+  signals. Stderr, malformed events, and other stream messages are ignored.
+
+  Either opt-in requires a runner implementing `c:ClaudeWrapper.Runner.run_observed/5`
   (currently `ClaudeWrapper.Runner.Forcola`). Invalid observer options and
   unsupported runners return typed errors before spawning. An empty options
   list delegates to `execute/2` unchanged.
@@ -601,18 +609,50 @@ defmodule ClaudeWrapper.Query do
   def execute(%__MODULE__{} = query, %Config{} = config, []), do: execute(query, config)
 
   def execute(%__MODULE__{} = query, %Config{} = config, opts) do
-    with {:ok, observer} <- session_observer(opts),
+    with :ok <- validate_execution_opts(opts),
+         {:ok, session_observer} <- session_observer(opts),
+         {:ok, rate_limit_observer} <- rate_limit_observer(opts),
          {:ok, runner} <- observed_runner() do
       query = %{query | output_format: :stream_json}
-      Telemetry.span_exec(query, fn -> do_execute_observed(query, config, runner, observer) end)
+
+      Telemetry.span_exec(query, fn ->
+        do_execute_observed(query, config, runner, session_observer, rate_limit_observer)
+      end)
     end
   end
 
-  defp session_observer(session_observer: {pid, reference})
+  defp session_observer(opts), do: validated_observer(opts, :session_observer)
+
+  defp rate_limit_observer(opts), do: validated_observer(opts, :rate_limit_observer)
+
+  defp validate_execution_opts(opts) when is_list(opts) do
+    keys = Keyword.keys(opts)
+
+    if Keyword.keyword?(opts) and Enum.uniq(keys) == keys and
+         Enum.all?(keys, &(&1 in [:session_observer, :rate_limit_observer])) do
+      :ok
+    else
+      {:error, observer_error(:session_observer)}
+    end
+  end
+
+  defp validate_execution_opts(_opts), do: {:error, observer_error(:session_observer)}
+
+  defp validated_observer(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> {:ok, nil}
+      {:ok, value} -> observer_pair(value, key)
+    end
+  end
+
+  defp observer_pair({pid, reference}, _key)
        when is_pid(pid) and node(pid) == node() and is_reference(reference),
        do: {:ok, {pid, reference}}
 
-  defp session_observer(_opts), do: {:error, Error.new(:invalid_session_observer)}
+  defp observer_pair(_value, key), do: {:error, observer_error(key)}
+
+  defp observer_error(:session_observer), do: Error.new(:invalid_session_observer)
+  defp observer_error(:rate_limit_observer), do: Error.new(:invalid_rate_limit_observer)
 
   defp observed_runner do
     runner = Runner.impl()
@@ -624,11 +664,11 @@ defmodule ClaudeWrapper.Query do
     end
   end
 
-  defp do_execute_observed(query, config, runner, observer) do
+  defp do_execute_observed(query, config, runner, session_observer, rate_limit_observer) do
     base = Config.base_args(config)
     base = if "--verbose" in base, do: base, else: ["--verbose" | base]
     args = base ++ build_args(query)
-    observe = &observe_session(&1, observer)
+    observe = &observe_events(&1, session_observer, rate_limit_observer)
 
     case runner.run_observed(
            config.binary,
@@ -651,25 +691,56 @@ defmodule ClaudeWrapper.Query do
     end
   end
 
-  defp observe_session(line, {pid, reference}) do
+  defp observe_events(line, session_observer, rate_limit_observer) do
     case StreamEvent.parse(line) do
       {:ok, %StreamEvent{type: "system", data: %{"subtype" => "init", "session_id" => id}}}
-      when is_binary(id) ->
-        send_session(id, pid, reference)
+      when is_binary(id) and not is_nil(session_observer) ->
+        maybe_send_session(id, session_observer, rate_limit_observer)
+
+      {:ok, %StreamEvent{type: "rate_limit_event", data: data}} ->
+        maybe_send_rate_limit(data, rate_limit_observer)
 
       _other ->
         :continue
     end
   end
 
-  defp send_session(id, pid, reference) do
+  defp maybe_send_session(id, {pid, reference}, rate_limit_observer) do
     if String.trim(id) == "" do
       :continue
     else
       send(pid, {reference, %SessionObservation{session_id: id}})
-      :observed
+
+      if is_nil(rate_limit_observer) do
+        :observed
+      else
+        {:continue, &observe_events(&1, nil, rate_limit_observer)}
+      end
     end
   end
+
+  defp maybe_send_rate_limit(
+         %{"rate_limit_info" => %{"status" => status} = info},
+         {pid, reference}
+       )
+       when is_binary(status) and byte_size(status) > 0 do
+    observation = %RateLimitObservation{
+      status: status,
+      rate_limit_type: optional_string(info["rateLimitType"]),
+      unified_windows: optional_map(info["unifiedWindows"])
+    }
+
+    send(pid, {reference, observation})
+    :continue
+  end
+
+  defp maybe_send_rate_limit(_data, _observer), do: :continue
+
+  defp optional_string(value) when is_binary(value), do: value
+  defp optional_string(_value), do: nil
+
+  defp optional_map(value) when is_map(value), do: value
+  defp optional_map(_value), do: %{}
 
   defp observed_result(stdout, code, stderr) do
     case terminal_result(stdout) do

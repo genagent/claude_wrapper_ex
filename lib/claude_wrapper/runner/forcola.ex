@@ -112,6 +112,7 @@ if Code.ensure_loaded?(Forcola) do
       case observer.(line) do
         :observed -> nil
         :continue -> observer
+        {:continue, next_observer} when is_function(next_observer, 1) -> next_observer
       end
     end
 
