@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.1...v0.15.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* observe rate-limit events during one-shot Claude runs ([#279](https://github.com/genagent/claude_wrapper_ex/issues/279)) ([#280](https://github.com/genagent/claude_wrapper_ex/issues/280)) ([5dfbac8](https://github.com/genagent/claude_wrapper_ex/commit/5dfbac870badd17d0435ccd9761400342ec110d4))
+
 ## [0.15.1](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.0...v0.15.1) (2026-10-04)
 
 
