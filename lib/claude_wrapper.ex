@@ -194,11 +194,10 @@ defmodule ClaudeWrapper do
   Execute a query and return a lazy stream of `%StreamEvent{}` structs.
 
   The subprocess starts when the stream is consumed. Accepts the same options as
-  `query/2`, except `:session_observer`, `:rate_limit_observer` (one-shot only),
-  and `:timeout`:
-  streaming is bounded only by a per-frame idle
-  deadline, not a whole-run timeout. A truncated run (idle timeout, non-zero
-  exit, spawn failure) ends with a terminal
+  `query/2`, except `:session_observer` and `:rate_limit_observer` (one-shot only).
+  A finite `:timeout` bounds both the whole run and each gap between frames;
+  without one, a per-frame idle safety deadline still applies. A truncated run
+  (timeout, non-zero exit, spawn failure) ends with a terminal
   `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` rather
   than a silent stop; see `ClaudeWrapper.Query.stream/2` for details and the
   Forcola-runner note.

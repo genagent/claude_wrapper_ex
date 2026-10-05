@@ -30,8 +30,8 @@ if Code.ensure_loaded?(Forcola) do
     # large bound rather than falling back to the leaky path.
     @unbounded_ms 24 * 60 * 60 * 1000
 
-    # Streaming safety: bounds the gap between output frames, matching
-    # Runner.Port's historical per-receive deadline.
+    # Streaming safety: bounds the gap between output frames when no finite
+    # whole-run deadline was configured.
     @stream_idle_timeout_ms 300_000
 
     @impl true
@@ -134,10 +134,13 @@ if Code.ensure_loaded?(Forcola) do
 
     @impl true
     def stream_lines(binary, args, opts, timeout) do
+      whole_timeout = if is_integer(timeout), do: timeout, else: @unbounded_ms
+      idle_timeout = if is_integer(timeout), do: timeout, else: @stream_idle_timeout_ms
+
       forcola_opts =
         [
-          timeout_ms: @unbounded_ms,
-          idle_timeout_ms: timeout || @stream_idle_timeout_ms
+          timeout_ms: whole_timeout,
+          idle_timeout_ms: idle_timeout
         ] ++ Keyword.take(opts, [:cd, :env])
 
       # merge_stderr defaults to false: stderr must not be folded into the

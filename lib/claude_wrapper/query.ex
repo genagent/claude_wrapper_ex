@@ -878,9 +878,9 @@ defmodule ClaudeWrapper.Query do
   the stream terminates.
 
   A clean run ends with a terminal `%StreamEvent{type: "result"}`. If the stream
-  halts without one -- an idle timeout (`Config.timeout` is *not* a whole-run
-  bound here; only the per-frame idle deadline applies), a non-zero exit, or a
-  spawn failure -- the stream ends with a terminal
+  halts without one -- a timeout (`Config.timeout` bounds both the whole run
+  and each gap between frames), a non-zero exit, or a spawn failure -- the
+  stream ends with a terminal
   `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` so the
   truncation is observable. Note the default runner orphans a stalled
   subprocess; use the `ClaudeWrapper.Runner.Forcola` runner for leak-free
@@ -900,7 +900,7 @@ defmodule ClaudeWrapper.Query do
     args = base ++ build_args(query)
 
     config.binary
-    |> Runner.impl().stream_lines(args, stream_opts(config), nil)
+    |> Runner.impl().stream_lines(args, stream_opts(config), config.timeout)
     |> Stream.transform(
       fn -> false end,
       fn line, saw_result? ->
@@ -911,7 +911,7 @@ defmodule ClaudeWrapper.Query do
         end
       end,
       # A clean stream-json run ends with a terminal `result` event. If the
-      # stream halts without one -- an idle timeout, a non-zero/failed exit, or a
+      # stream halts without one -- a timeout, a non-zero/failed exit, or a
       # spawn failure -- the default runner ends the Stream silently, so a caller
       # cannot tell a truncated run from a clean one. Append an explicit terminal
       # `error` event so the truncation is observable (the Forcola runner already
@@ -930,7 +930,7 @@ defmodule ClaudeWrapper.Query do
       data: %{
         "error" => "stream_truncated",
         "message" =>
-          "the stream ended without a terminal `result` event (idle timeout, " <>
+          "the stream ended without a terminal `result` event (timeout, " <>
             "non-zero exit, or spawn failure); the run may be incomplete. The " <>
             "default runner also orphans a stalled subprocess -- use the Forcola " <>
             "runner for leak-free termination."

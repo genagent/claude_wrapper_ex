@@ -85,6 +85,24 @@ defmodule ClaudeWrapper.Runner.ForcolaTest do
       pid = wait_for(fn -> read_trimmed(pidfile) end)
       assert eventually(fn -> not os_alive?(pid) end)
     end
+
+    test "a continuously writing producer hits the whole-run timeout and is reaped" do
+      pidfile = Path.join(System.tmp_dir!(), "cw_forcola_d_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm(pidfile) end)
+
+      script =
+        "echo $$ > #{pidfile}; i=0; " <>
+          "while [ \"$i\" -lt 40 ]; do printf 'tick\\n'; i=$((i + 1)); sleep 0.05; done; " <>
+          "printf 'done\\n'"
+
+      lines = Forcola.stream_lines("sh", ["-c", script], [], 500) |> Enum.to_list()
+
+      assert "tick" in lines
+      refute "done" in lines
+
+      pid = wait_for(fn -> read_trimmed(pidfile) end)
+      assert eventually(fn -> not os_alive?(pid) end)
+    end
   end
 
   # Regression for a pre-0.3.4 forcola hang: `Forcola.run/2` and

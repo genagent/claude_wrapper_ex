@@ -159,6 +159,12 @@ case ClaudeWrapper.query("...", max_turns: 1) do
 end
 ```
 
+For streaming calls, `timeout: ms` bounds both the total run and each gap
+between output frames. A stream that ends before its terminal result emits a
+`stream_truncated` error event. Without an explicit timeout, a per-frame idle
+safety deadline still applies. Select the Forcola runner below when timeout
+cleanup must terminate the CLI process group.
+
 The CLI's own rail-stop caps are typed, recoverable errors, distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`) and `:max_budget_exceeded` (`--max-budget-usd`, separate from the client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry `reason: %{cap:, cost_usd:, num_turns:, session_id:}`, so a capped run can be resumed:
 
 ```elixir
