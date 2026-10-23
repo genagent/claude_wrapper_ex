@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.3...v0.16.0) (2026-10-23)
+
+
+### Features
+
+* support isolated evidenced execution ([#286](https://github.com/genagent/claude_wrapper_ex/issues/286)) ([dd7c032](https://github.com/genagent/claude_wrapper_ex/commit/dd7c032a1d9785f8616803a70b26537be38fad56))
+
 ## [0.15.3](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.2...v0.15.3) (2026-10-05)
 
 
