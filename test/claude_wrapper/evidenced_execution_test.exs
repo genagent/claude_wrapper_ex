@@ -220,7 +220,7 @@ defmodule ClaudeWrapper.EvidencedExecutionTest do
         end)
 
       # Both executions are in flight at the same time before either returns.
-      assert Map.keys(calls) == [:a, :b]
+      assert Enum.sort(Map.keys(calls)) == [:a, :b]
       for {_label, {pid, _call}} <- calls, do: send(pid, :release)
       assert [{:ok, %Result{}}, {:ok, %Result{}}] = Task.await_many(tasks)
 
