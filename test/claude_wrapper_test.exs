@@ -39,6 +39,16 @@ defmodule ClaudeWrapperTest do
       config = Config.new()
       assert Config.base_args(config) == []
     end
+
+    test "runner and runner_options are per-config and absent by default" do
+      assert %Config{runner: nil, runner_options: nil} = Config.new()
+
+      config = Config.new(runner: ClaudeWrapper.Runner.Port, runner_options: [])
+      assert config.runner == ClaudeWrapper.Runner.Port
+      assert config.runner_options == []
+      refute "--runner" in Config.base_args(config)
+      refute Keyword.has_key?(Config.cmd_opts(config), :runner_options)
+    end
   end
 
   describe "Query" do

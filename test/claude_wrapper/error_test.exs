@@ -38,7 +38,11 @@ defmodule ClaudeWrapper.ErrorTest do
     end
 
     test "is an exception struct" do
-      assert Exception.exception?(Error.new(:timeout, reason: 1_000))
+      error = Error.new(:timeout, reason: 1_000)
+      assert %Error{__exception__: true} = error
+
+      raised = assert_raise Error, "claude timed out after 1000ms", fn -> raise error end
+      assert raised == error
     end
   end
 

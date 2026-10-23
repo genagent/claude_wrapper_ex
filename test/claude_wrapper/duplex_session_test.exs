@@ -331,7 +331,13 @@ defmodule ClaudeWrapper.DuplexSessionTest do
       parent = self()
 
       :sys.replace_state(pid, fn state ->
-        %{state | on_permission: fn _tool, _input, _id -> send(parent, :asked) && :defer end}
+        %{
+          state
+          | on_permission: fn _tool, _input, _id ->
+              send(parent, :asked)
+              :defer
+            end
+        }
       end)
 
       try do
@@ -361,7 +367,13 @@ defmodule ClaudeWrapper.DuplexSessionTest do
       parent = self()
 
       :sys.replace_state(pid, fn state ->
-        %{state | on_permission: fn _tool, _input -> send(parent, :asked) && :defer end}
+        %{
+          state
+          | on_permission: fn _tool, _input ->
+              send(parent, :asked)
+              :defer
+            end
+        }
       end)
 
       try do

@@ -27,6 +27,7 @@ defmodule ClaudeWrapper.Query do
     Auth,
     Config,
     Error,
+    ExecutionEvidence,
     RateLimitObservation,
     Result,
     Runner,
@@ -568,13 +569,24 @@ defmodule ClaudeWrapper.Query do
   @doc """
   Execute the query synchronously, returning a parsed `%Result{}`.
 
-  Automatically sets `--output-format json` for parsing.
+  Automatically sets `--output-format json` for parsing. The runner is
+  `ClaudeWrapper.Runner.impl/1` for `config`.
+
+  When `ClaudeWrapper.Runner.options/1` resolves non-empty runner options for
+  `config`, the call uses evidenced execution instead (stream-json output; see
+  `execute/3`), because only that path can honor them. A runner without
+  `c:ClaudeWrapper.Runner.run_evidenced/5` then returns
+  `:evidence_unsupported` before spawning.
   """
   @spec execute(t(), Config.t()) :: {:ok, Result.t()} | {:error, Error.t()}
   def execute(%__MODULE__{} = query, %Config{} = config) do
-    query = %{query | output_format: :json}
+    if Runner.options(config) == [] do
+      query = %{query | output_format: :json}
 
-    Telemetry.span_exec(query, fn -> do_execute(query, config) end)
+      Telemetry.span_exec(query, fn -> do_execute(query, config) end)
+    else
+      execute_evidenced(query, config, %{session: nil, rate_limit: nil, execution: nil})
+    end
   end
 
   @doc """
@@ -604,15 +616,109 @@ defmodule ClaudeWrapper.Query do
   (currently `ClaudeWrapper.Runner.Forcola`). Invalid observer options and
   unsupported runners return typed errors before spawning. An empty options
   list delegates to `execute/2` unchanged.
+
+  ## Evidenced execution
+
+  Pass `execution_observer: {local_pid, reference}` to receive exactly one
+  `{reference, %ClaudeWrapper.ExecutionEvidence{}}` per call, on success or
+  failure, sent by the execution caller before `execute/3` returns. Session
+  observations for the same call are sent earlier, as soon as the native ID
+  is seen, so to a shared observer the order is: session observation (if
+  any), rate-limit observations in stream order, terminal evidence, then
+  whatever the caller does with the return value. Once the options are a
+  keyword list with exactly one valid `:execution_observer`, every return
+  path sends the record, including rejections before spawning such as
+  unknown options or other invalid observers (with `execution: :not_started`
+  and no native status). An invalid or duplicated `:execution_observer`, or
+  options that are not a keyword list, are rejected without a record. Runner
+  raises, throws and catchable exits become
+  `{:error, %Error{kind: :io, reason: {:runner_failed, kind, reason}}}` and
+  still send one record. A failure converting the runner's outcome into a
+  reply becomes `:io` with `{:reply_failed, kind, reason}`; its record keeps
+  the native facts the runner reported. The fallback retains up to 1 MiB of observed stdout
+  (lines reconstructed with newlines) and the first native session ID;
+  unreported native status and cleanup stay unknown. Uncatchable process
+  death cannot send a terminal record.
+
+  Evidenced execution is selected when `:execution_observer` is given or
+  when the config resolves non-empty `ClaudeWrapper.Runner.options/1`. It
+  needs a runner implementing `c:ClaudeWrapper.Runner.run_evidenced/5`; any
+  other runner is rejected with `:evidence_unsupported` before it is invoked,
+  with no fallback. Runner options the runner cannot validate or enforce are
+  rejected (`:invalid_runner_options` / `:evidence_unsupported`) before
+  spawning.
+
+  The returned Result/Error categories match observed execution, plus:
+  `:timeout` for an idle bound (`:reason` is the idle milliseconds),
+  `:output_limit` when an output bound cancelled the run, and `:io` with
+  `{:helper_down, reason}` if the runner's collector died. Collector observer
+  failures return `:io` with `{:observer_failed, kind, reason}` after the
+  owned native run drains; its native terminal facts are retained. A terminal `result`
+  event, a session ID, or a zero exit alone is never reported as a clean
+  execution: the evidence record carries the child status, termination,
+  cleanup confirmation and its scope, guard close, and retained partial
+  output as separate facts. The evidence `:result` keeps a terminal result
+  even when the call returns an error.
   """
   @spec execute(t(), Config.t(), keyword()) :: {:ok, Result.t()} | {:error, Error.t()}
   def execute(%__MODULE__{} = query, %Config{} = config, []), do: execute(query, config)
 
   def execute(%__MODULE__{} = query, %Config{} = config, opts) do
+    # The execution observer is extracted first so every later preflight
+    # rejection (unknown or duplicate keys, other invalid observers) still
+    # delivers its not-started terminal record.
+    with {:ok, execution_observer} <- execution_observer(opts) do
+      execute_checked(query, config, opts, execution_observer)
+    end
+  end
+
+  defp execute_checked(query, config, opts, execution_observer) do
     with :ok <- validate_execution_opts(opts),
          {:ok, session_observer} <- session_observer(opts),
-         {:ok, rate_limit_observer} <- rate_limit_observer(opts),
-         {:ok, runner} <- observed_runner() do
+         {:ok, rate_limit_observer} <- rate_limit_observer(opts) do
+      observers = %{
+        session: session_observer,
+        rate_limit: rate_limit_observer,
+        execution: execution_observer
+      }
+
+      execute_with(query, config, observers)
+    else
+      {:error, _error} = reply -> reject_not_started(execution_observer, config, reply)
+    end
+  end
+
+  defp execute_with(query, config, observers) do
+    if observers.execution != nil or Runner.options(config) != [] do
+      execute_evidenced(query, config, observers)
+    else
+      execute_observed(query, config, observers.session, observers.rate_limit)
+    end
+  end
+
+  defp reject_not_started(execution_observer, config, reply) do
+    send_evidence(execution_observer, Runner.not_started_evidence(), Runner.impl(config), reply)
+    reply
+  end
+
+  # Only a well-formed keyword list with exactly one valid pair yields an
+  # observer. Invalid or ambiguous values are rejected without a record; a
+  # malformed option list has no trustworthy observer and is rejected by
+  # validate_execution_opts/1.
+  defp execution_observer(opts) do
+    if is_list(opts) and Keyword.keyword?(opts) do
+      case Keyword.get_values(opts, :execution_observer) do
+        [] -> {:ok, nil}
+        [value] -> observer_pair(value, :execution_observer)
+        _ambiguous -> {:error, observer_error(:execution_observer)}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp execute_observed(query, config, session_observer, rate_limit_observer) do
+    with {:ok, runner} <- observed_runner(config) do
       query = %{query | output_format: :stream_json}
 
       Telemetry.span_exec(query, fn ->
@@ -625,11 +731,10 @@ defmodule ClaudeWrapper.Query do
 
   defp rate_limit_observer(opts), do: validated_observer(opts, :rate_limit_observer)
 
-  defp validate_execution_opts(opts) when is_list(opts) do
-    keys = Keyword.keys(opts)
+  @execution_keys [:session_observer, :rate_limit_observer, :execution_observer]
 
-    if Keyword.keyword?(opts) and Enum.uniq(keys) == keys and
-         Enum.all?(keys, &(&1 in [:session_observer, :rate_limit_observer])) do
+  defp validate_execution_opts(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) and known_unique_keys?(Keyword.keys(opts)) do
       :ok
     else
       {:error, observer_error(:session_observer)}
@@ -637,6 +742,9 @@ defmodule ClaudeWrapper.Query do
   end
 
   defp validate_execution_opts(_opts), do: {:error, observer_error(:session_observer)}
+
+  defp known_unique_keys?(keys),
+    do: Enum.uniq(keys) == keys and Enum.all?(keys, &(&1 in @execution_keys))
 
   defp validated_observer(opts, key) do
     case Keyword.fetch(opts, key) do
@@ -653,9 +761,10 @@ defmodule ClaudeWrapper.Query do
 
   defp observer_error(:session_observer), do: Error.new(:invalid_session_observer)
   defp observer_error(:rate_limit_observer), do: Error.new(:invalid_rate_limit_observer)
+  defp observer_error(:execution_observer), do: Error.new(:invalid_execution_observer)
 
-  defp observed_runner do
-    runner = Runner.impl()
+  defp observed_runner(config) do
+    runner = Runner.impl(config)
 
     if Code.ensure_loaded?(runner) and function_exported?(runner, :run_observed, 5) do
       {:ok, runner}
@@ -663,6 +772,181 @@ defmodule ClaudeWrapper.Query do
       {:error, Error.new(:observation_unsupported, reason: runner)}
     end
   end
+
+  # --- Evidenced execution ---
+
+  defp execute_evidenced(query, config, observers) do
+    query = %{query | output_format: :stream_json}
+    runner = Runner.impl(config)
+    options = Runner.options(config)
+
+    Telemetry.span_exec(query, fn ->
+      {native, session_id, reply} = run_evidenced(query, config, runner, options, observers)
+      send_evidence(observers.execution, native, runner, reply, session_id)
+      reply
+    end)
+  end
+
+  # Rejects a runner without the callback before invoking it; there is no
+  # fallback to run/4 or run_observed/5.
+  defp run_evidenced(query, config, runner, options, observers) do
+    if Code.ensure_loaded?(runner) and function_exported?(runner, :run_evidenced, 5) do
+      {outcome, native, session_id} = invoke_evidenced(query, config, runner, options, observers)
+      {native, session_id, safe_evidenced_reply(outcome, config, runner, options)}
+    else
+      reason = %{runner: runner, reason: :run_evidenced_not_implemented}
+      error = Error.new(:evidence_unsupported, reason: reason)
+      {Runner.not_started_evidence(), nil, {:error, error}}
+    end
+  end
+
+  defp invoke_evidenced(query, config, runner, options, observers) do
+    base = Config.base_args(config)
+    base = if "--verbose" in base, do: base, else: ["--verbose" | base]
+    args = base ++ build_args(query)
+    seen = make_ref()
+    observe = &observe_evidenced(&1, observers.session, observers.rate_limit, seen)
+    opts = Config.cmd_opts(config) ++ [runner_options: options]
+
+    Process.put(seen, %{session_id: nil, stdout: [], size: 0, truncated: false})
+
+    try do
+      returned = runner.run_evidenced(config.binary, args, opts, config.timeout, observe)
+      {outcome, native} = normalize_runner_return(returned)
+      partial = Process.get(seen)
+      {outcome, Map.merge(partial_evidence(partial), native), partial.session_id}
+    catch
+      kind, reason ->
+        partial = Process.get(seen)
+        native = partial_evidence(partial)
+        {{:error, {:runner_failed, kind, reason}}, native, partial.session_id}
+    after
+      Process.delete(seen)
+    end
+  end
+
+  defp normalize_runner_return({outcome, native}) when is_map(native), do: {outcome, native}
+
+  defp normalize_runner_return(other), do: {{:error, {:invalid_runner_return, other}}, %{}}
+
+  # Private per-invocation state survives a callback unwinding. It is bounded
+  # and erased in the after clause, including on failure; no mailbox backlog.
+  @failure_stdout_bytes 1_048_576
+
+  defp retain_observed_line(seen, line) do
+    partial = Process.get(seen)
+    bytes = line <> "\n"
+    size = min(byte_size(bytes), @failure_stdout_bytes - partial.size)
+    retained = :binary.copy(binary_part(bytes, 0, size))
+
+    Process.put(seen, %{
+      partial
+      | stdout: if(size > 0, do: [retained | partial.stdout], else: partial.stdout),
+        size: partial.size + size,
+        truncated: partial.truncated or size < byte_size(bytes)
+    })
+  end
+
+  defp partial_evidence(partial) do
+    %{
+      execution: if(partial.size > 0, do: :started, else: :unknown),
+      stdout: partial.stdout |> Enum.reverse() |> IO.iodata_to_binary(),
+      output_truncated: if(partial.truncated, do: true, else: :unknown)
+    }
+  end
+
+  defp observe_evidenced(line, session_observer, rate_limit_observer, seen) do
+    retain_observed_line(seen, line)
+
+    case StreamEvent.parse(line) do
+      {:ok, %StreamEvent{type: "system", data: %{"subtype" => "init", "session_id" => id}}}
+      when is_binary(id) ->
+        announce_session(id, session_observer, rate_limit_observer, seen)
+
+      {:ok, %StreamEvent{type: "rate_limit_event", data: data}} ->
+        maybe_send_rate_limit(data, rate_limit_observer)
+
+      _other ->
+        :continue
+    end
+  end
+
+  defp announce_session(id, session_observer, rate_limit_observer, seen) do
+    partial = Process.get(seen)
+
+    if String.trim(id) == "" or partial.session_id != nil do
+      :continue
+    else
+      Process.put(seen, %{partial | session_id: id})
+      maybe_send_observation(session_observer, %SessionObservation{session_id: id})
+      {:continue, &observe_evidenced(&1, nil, rate_limit_observer, seen)}
+    end
+  end
+
+  defp maybe_send_observation(nil, _observation), do: :ok
+
+  defp maybe_send_observation({pid, reference}, observation),
+    do: send(pid, {reference, observation})
+
+  # Reply conversion runs after the native facts are collected, so a failure
+  # here becomes a typed error and those facts still reach the terminal record.
+  defp safe_evidenced_reply(outcome, config, runner, options) do
+    evidenced_reply(outcome, config, runner, options)
+  catch
+    kind, reason -> {:error, Error.io({:reply_failed, kind, reason})}
+  end
+
+  defp evidenced_reply({:ok, {stdout, code, stderr}}, _config, _runner, _options)
+       when is_binary(stdout) and is_integer(code) and code >= 0,
+       do: observed_result(stdout, code, stderr)
+
+  defp evidenced_reply({:error, :timeout}, config, _runner, _options),
+    do: {:error, Error.timeout(config.timeout)}
+
+  defp evidenced_reply({:error, :idle_timeout}, _config, _runner, options) do
+    ms = options[:idle_timeout_ms]
+    {:error, Error.new(:timeout, reason: ms, message: "claude produced no output for #{ms}ms")}
+  end
+
+  defp evidenced_reply({:error, {:limit, limit}}, _config, _runner, options) do
+    reason = %{limit: limit, max_output_bytes: options[:max_output_bytes]}
+    {:error, Error.new(:output_limit, reason: reason)}
+  end
+
+  defp evidenced_reply({:error, {:invalid_runner_options, reason}}, _config, _runner, _options),
+    do: {:error, Error.new(:invalid_runner_options, reason: reason)}
+
+  defp evidenced_reply({:error, {:evidence_unsupported, reason}}, _config, runner, _options),
+    do: {:error, Error.new(:evidence_unsupported, reason: %{runner: runner, reason: reason})}
+
+  defp evidenced_reply({:error, {:binary_not_found, _reason}}, config, _runner, _options),
+    do: {:error, Error.new(:binary_not_found, reason: config.binary)}
+
+  defp evidenced_reply({:error, reason}, _config, _runner, _options),
+    do: {:error, Error.io(reason)}
+
+  defp evidenced_reply(other, _config, _runner, _options),
+    do: {:error, Error.io({:invalid_runner_return, other})}
+
+  defp send_evidence(observer, native, runner, reply, session_id \\ nil)
+
+  defp send_evidence(nil, _native, _runner, _reply, _session_id), do: :ok
+
+  defp send_evidence({pid, reference}, native, runner, reply, session_id) do
+    evidence =
+      ExecutionEvidence.from_native(native,
+        runner: runner,
+        session_id: session_id,
+        result: retained_result(native),
+        outcome: reply
+      )
+
+    send(pid, {reference, evidence})
+    :ok
+  end
+
+  defp retained_result(%{stdout: stdout}) when is_binary(stdout), do: terminal_result(stdout)
+  defp retained_result(_native), do: nil
 
   defp do_execute_observed(query, config, runner, session_observer, rate_limit_observer) do
     base = Config.base_args(config)
@@ -773,7 +1057,7 @@ defmodule ClaudeWrapper.Query do
     args = base ++ build_args(query)
     opts = Config.cmd_opts(config)
 
-    case run_cmd(config.binary, args, opts, config.timeout) do
+    case run_cmd(Runner.impl(config), config.binary, args, opts, config.timeout) do
       {:ok, stdout} ->
         parse_json_output(stdout)
 
@@ -842,6 +1126,8 @@ defmodule ClaudeWrapper.Query do
     end
   end
 
+  defp parse_cap(_message, _type), do: nil
+
   defp cast_cap(captured, :int) do
     case Integer.parse(captured) do
       {n, _} -> n
@@ -885,6 +1171,11 @@ defmodule ClaudeWrapper.Query do
   truncation is observable. Note the default runner orphans a stalled
   subprocess; use the `ClaudeWrapper.Runner.Forcola` runner for leak-free
   termination.
+
+  The runner is `ClaudeWrapper.Runner.impl/1` for `config`. Streaming cannot
+  honor runner options, so when `ClaudeWrapper.Runner.options/1` is non-empty
+  nothing is spawned and the stream yields one terminal
+  `%StreamEvent{type: "error", data: %{"error" => "runner_options_unsupported"}}`.
   """
   @spec stream(t(), Config.t()) :: Enumerable.t()
   def stream(%__MODULE__{} = query, %Config{} = config) do
@@ -893,14 +1184,32 @@ defmodule ClaudeWrapper.Query do
     Telemetry.span_stream(query, fn -> do_stream(query, config) end)
   end
 
+  @doc false
+  @spec rejected_stream(String.t(), String.t()) :: [StreamEvent.t()]
+  def rejected_stream(error, message) do
+    [%StreamEvent{type: "error", data: %{"error" => error, "message" => message}, raw: nil}]
+  end
+
   defp do_stream(%__MODULE__{} = query, %Config{} = config) do
+    if Runner.options(config) == [] do
+      do_stream_lines(query, config)
+    else
+      rejected_stream(
+        "runner_options_unsupported",
+        "runner_options are only honored by evidenced one-shot execution; nothing was spawned"
+      )
+    end
+  end
+
+  defp do_stream_lines(%__MODULE__{} = query, %Config{} = config) do
     # stream-json with --print requires --verbose
     base = Config.base_args(config)
     base = if "--verbose" in base, do: base, else: ["--verbose" | base]
     args = base ++ build_args(query)
+    runner = Runner.impl(config)
 
     config.binary
-    |> Runner.impl().stream_lines(args, stream_opts(config), config.timeout)
+    |> runner.stream_lines(args, stream_opts(config), config.timeout)
     |> Stream.transform(
       fn -> false end,
       fn line, saw_result? ->
@@ -1174,8 +1483,8 @@ defmodule ClaudeWrapper.Query do
   # :command_failed (do_execute re-inspects it for a JSON rail-stop result); a
   # timeout becomes :timeout; a missing/unlaunchable binary becomes the typed
   # :binary_not_found; anything else is :io.
-  defp run_cmd(binary, args, opts, timeout) do
-    case Runner.impl().run(binary, args, opts, timeout) do
+  defp run_cmd(runner, binary, args, opts, timeout) do
+    case runner.run(binary, args, opts, timeout) do
       {:ok, {stdout, 0}} ->
         {:ok, stdout}
 

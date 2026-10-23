@@ -531,6 +531,20 @@ defmodule ClaudeWrapper.ObservedQueryTest do
     assert_dead_pids(pidfile)
   end
 
+  test "per-config runner selects Forcola without the application env", context do
+    Application.delete_env(:claude_wrapper, :runner)
+    config = fixture(context, emit(init()) <> emit(result()), runner: Runner.Forcola)
+
+    assert {:ok, %Result{}} =
+             Query.execute(Query.new("hello"), config,
+               session_observer: {self(), context.reference}
+             )
+
+    reference = context.reference
+    assert_received {^reference, %SessionObservation{session_id: "native-session"}}
+    assert Application.get_env(:claude_wrapper, :runner) == nil
+  end
+
   test "stdin closes and a final non-newline result is parsed", context do
     script =
       "cat > /dev/null\n" <>

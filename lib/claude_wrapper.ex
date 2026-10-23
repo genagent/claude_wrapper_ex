@@ -113,7 +113,13 @@ defmodule ClaudeWrapper do
     # honors `config.timeout` AND the leak-free Forcola runner's process-group
     # kill -- the one API explicitly framed as "run an arbitrary CLI command"
     # should not be the one that silently bypasses both.
-    case ClaudeWrapper.Runner.impl().run(
+    with :ok <- ClaudeWrapper.Command.reject_runner_options(config, :raw) do
+      run_raw(config, all_args)
+    end
+  end
+
+  defp run_raw(config, all_args) do
+    case ClaudeWrapper.Runner.impl(config).run(
            config.binary,
            all_args,
            Config.cmd_opts(config),
@@ -151,6 +157,13 @@ defmodule ClaudeWrapper do
     * `:timeout` - Timeout in ms
     * `:verbose` - Enable verbose output
     * `:debug` - Enable debug output
+    * `:runner` - Runner module for this call (default: application config)
+    * `:runner_options` - Runner options for this call (default: application
+      config; an explicit `[]` disables configured defaults). Non-empty
+      options select evidenced execution; see `Query.execute/3`.
+
+  Each call builds its own immutable `Config`; no application or OS
+  environment is modified.
 
   Execution options:
     * `:session_observer` - `{local_pid, reference}` for an early typed native
@@ -158,6 +171,9 @@ defmodule ClaudeWrapper do
       Omit it to retain ordinary one-shot execution.
     * `:rate_limit_observer` - `{local_pid, reference}` for typed rate-limit
       events from the same observed one-shot execution path.
+    * `:execution_observer` - `{local_pid, reference}` for exactly one terminal
+      `%ClaudeWrapper.ExecutionEvidence{}` per call. Requires a runner with
+      evidenced execution; see `Query.execute/3`.
 
   Query options (passed to `Query` builder):
     * `:model` - Model name
@@ -194,7 +210,11 @@ defmodule ClaudeWrapper do
   Execute a query and return a lazy stream of `%StreamEvent{}` structs.
 
   The subprocess starts when the stream is consumed. Accepts the same options as
-  `query/2`, except `:session_observer` and `:rate_limit_observer` (one-shot only).
+  `query/2`, except `:session_observer` and `:rate_limit_observer` (one-shot
+  only, ignored here). `:execution_observer` and non-empty runner options are
+  one-shot only and cannot be honored by a stream: with either, nothing is
+  spawned and the stream yields one terminal `%StreamEvent{type: "error"}`
+  (`"execution_observer_unsupported"` / `"runner_options_unsupported"`).
   A finite `:timeout` bounds both the whole run and each gap between frames;
   without one, a per-frame idle safety deadline still applies. A truncated run
   (timeout, non-zero exit, spawn failure) ends with a terminal
@@ -204,10 +224,18 @@ defmodule ClaudeWrapper do
   """
   @spec stream(String.t(), keyword()) :: Enumerable.t()
   def stream(prompt, opts \\ []) do
-    {config_opts, query_opts, _execution_opts} = split_opts(opts)
+    {config_opts, query_opts, execution_opts} = split_opts(opts)
     config = Config.new(config_opts)
     query = build_query(prompt, query_opts)
-    Query.stream(query, config)
+
+    if Keyword.has_key?(execution_opts, :execution_observer) do
+      Query.rejected_stream(
+        "execution_observer_unsupported",
+        "execution_observer is one-shot only; nothing was spawned"
+      )
+    else
+      Query.stream(query, config)
+    end
   end
 
   @doc """
@@ -258,13 +286,14 @@ defmodule ClaudeWrapper do
 
   # --- Private ---
 
-  @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
+  @runner_keys [:runner, :runner_options]
+  @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug | @runner_keys]
+  @execution_keys [:session_observer, :rate_limit_observer, :execution_observer]
 
   defp split_opts(opts) do
     {config_opts, remaining} = Enum.split_with(opts, fn {k, _v} -> k in @config_keys end)
 
-    {execution_opts, query_opts} =
-      Keyword.split(remaining, [:session_observer, :rate_limit_observer])
+    {execution_opts, query_opts} = Keyword.split(remaining, @execution_keys)
 
     {config_opts, query_opts, execution_opts}
   end
