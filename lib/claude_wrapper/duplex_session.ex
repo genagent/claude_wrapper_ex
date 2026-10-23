@@ -125,7 +125,7 @@ defmodule ClaudeWrapper.DuplexSession do
   use GenServer
   require Logger
 
-  alias ClaudeWrapper.{Config, Error, Query, Result, Telemetry}
+  alias ClaudeWrapper.{Command, Config, Error, Query, Result, Telemetry}
   alias ClaudeWrapper.DuplexSession.{Adapter, TransportTerminal}
 
   @default_stderr_capture_bytes 16 * 1024
@@ -260,6 +260,13 @@ defmodule ClaudeWrapper.DuplexSession do
 
   All other keyword options are passed through to `GenServer.start_link/3`.
 
+  Runner options are not supported: when `ClaudeWrapper.Runner.options/1`
+  resolves a non-empty list for `:config` (its own `:runner_options`, or the
+  `:runner_options` application env when that field is `nil`), this returns
+  `{:error, %ClaudeWrapper.Error{kind: :invalid_runner_options, reason:
+  {:unsupported_mode, :duplex}}}` before any adapter is opened. An explicit
+  `runner_options: []` on the config overrides application defaults.
+
   ## Examples
 
       query =
@@ -274,8 +281,20 @@ defmodule ClaudeWrapper.DuplexSession do
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do
     {start_opts, init_opts} = Keyword.split(opts, [:name])
-    GenServer.start_link(__MODULE__, init_opts, start_opts)
+
+    # Checked here as well as in init/1 so the common path returns the
+    # typed error without starting (and exiting) a linked process.
+    with :ok <- reject_runner_options(Keyword.get(init_opts, :config)) do
+      GenServer.start_link(__MODULE__, init_opts, start_opts)
+    end
   end
+
+  # Runner options are honored only by evidenced one-shot execution. Neither
+  # duplex adapter can apply them, so a session never opens with them.
+  defp reject_runner_options(%Config{} = config),
+    do: Command.reject_runner_options(config, :duplex)
+
+  defp reject_runner_options(_config), do: :ok
 
   @doc """
   Send a user prompt. Blocks until the turn's `result` event arrives.
@@ -539,8 +558,16 @@ defmodule ClaudeWrapper.DuplexSession do
 
   @impl true
   def init(opts) do
-    Process.flag(:trap_exit, true)
     config = Keyword.fetch!(opts, :config)
+
+    case reject_runner_options(config) do
+      :ok -> open_session(opts, config)
+      {:error, error} -> {:stop, error}
+    end
+  end
+
+  defp open_session(opts, config) do
+    Process.flag(:trap_exit, true)
     on_permission = Keyword.get(opts, :on_permission, &__MODULE__.deny_all/2)
 
     # A `%Query{}`'s spawn-time knobs come first; explicit `:extra_args`

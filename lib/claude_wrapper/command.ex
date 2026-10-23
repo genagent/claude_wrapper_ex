@@ -20,16 +20,34 @@ defmodule ClaudeWrapper.Command do
 
   Returns the parsed output on success. On timeout the default runner
   abandons the OS process; `ClaudeWrapper.Runner.Forcola` kills it.
+
+  The runner is `ClaudeWrapper.Runner.impl/1` for `config`. Runner options
+  are not supported here: a non-empty `ClaudeWrapper.Runner.options/1`
+  returns `{:error, %Error{kind: :invalid_runner_options}}` before spawning.
   """
   @spec run(module(), struct(), ClaudeWrapper.Config.t()) :: {:ok, term()} | {:error, term()}
   def run(mod, command, config) do
     all_args = ClaudeWrapper.Config.base_args(config) ++ mod.args(command)
     opts = ClaudeWrapper.Config.cmd_opts(config)
 
-    case Runner.impl().run(config.binary, all_args, opts, config.timeout) do
-      {:ok, {stdout, code}} -> mod.parse_output(stdout, code)
-      {:error, :timeout} -> {:error, Error.timeout(config.timeout)}
-      {:error, reason} -> {:error, Error.io(reason)}
+    with :ok <- reject_runner_options(config, :command) do
+      case Runner.impl(config).run(config.binary, all_args, opts, config.timeout) do
+        {:ok, {stdout, code}} -> mod.parse_output(stdout, code)
+        {:error, :timeout} -> {:error, Error.timeout(config.timeout)}
+        {:error, reason} -> {:error, Error.io(reason)}
+      end
+    end
+  end
+
+  @doc false
+  # Paths that dispatch through run/4 or stream_lines/4 cannot honor runner
+  # options; reject them before spawning instead of silently dropping them.
+  @spec reject_runner_options(ClaudeWrapper.Config.t(), atom()) :: :ok | {:error, Error.t()}
+  def reject_runner_options(config, mode) do
+    if Runner.options(config) == [] do
+      :ok
+    else
+      {:error, Error.new(:invalid_runner_options, reason: {:unsupported_mode, mode})}
     end
   end
 

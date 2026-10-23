@@ -14,16 +14,64 @@ if Code.ensure_loaded?(Forcola) do
     with `config :claude_wrapper, runner: ClaudeWrapper.Runner.Forcola`.
     forcola is POSIX-only.
 
-    Requires forcola `>= 0.4.0 and < 0.7.0`. `claude -p` documents piped
+    Requires forcola `~> 0.7.0`. `claude -p` documents piped
     stdin as a supported input channel ("useful for pipes" in `claude --help`), and
     before 0.3.4 `Forcola.run/2` and `Forcola.Stream.lines/2` left the
     child's stdin open and unfed after spawn -- a child that reads it
     blocked until the timeout below instead of exiting normally
     (forcola#67). 0.3.4 closes the child's stdin right after spawn, so
     this module needs no stdin handling of its own.
+
+    ## Evidenced execution
+
+    `run_evidenced/5` runs one `Forcola.run/2` and reports its
+    bounded-execution evidence using Forcola 0.7 and its matching shim.
+    The shim must support the bounded-run capability exchange. If an
+    unsupported Forcola is loaded, it returns `{:error, {:evidence_unsupported, :forcola_result_lacks_evidence}}`
+    before spawning. An older shim is rejected by Forcola itself before the
+    child is spawned (`{:spawn, :incompatible_shim}`).
+
+    Runner options (from `ClaudeWrapper.Config` `:runner_options`, validated
+    before spawning; unknown keys are rejected):
+
+      * `:max_output_bytes` - combined stdout+stderr bound, positive integer at
+        most `4_294_967_295`. Default `67_108_864` (64 MiB). Exceeding it
+        cancels the run with partial output retained.
+      * `:idle_timeout_ms` - cancel after this long without output,
+        independently of the whole-run `Config.timeout`
+      * `:max_line_bytes` - per-line bound for the session/rate-limit
+        observers (default 1 MiB). A longer stdout line is not observed and
+        is counted in the evidence `:lines_dropped`; it is still retained in
+        the bounded stdout.
+      * `:env_mode` - `:inherit` (default) or `:replace`. Replacement clears
+        the inherited environment before applying `Config.env`; use an
+        absolute `Config.binary` when clearing `PATH`.
+      * `:interrupt_signal` / `:interrupt_grace_ms` - the pair
+        `interrupt_signal: :int, interrupt_grace_ms: ms` makes Forcola's
+        native supervisor send SIGINT to the process group and wait `ms`
+        before its TERM/KILL escalation
+      * `:kill_grace_ms` - Forcola's TERM-to-KILL grace
+      * `:shim_path` - a trusted absolute path to a matching Forcola shim
+
+    `Config.timeout` is the whole-run bound (24 hours when `nil`) and is not
+    reset by output. `Config.env` entries must be `{name, value}` strings.
+
+    The native run executes in an owned helper process; Forcola's
+    `:output_observer` frames arrive in the execution caller, which frames
+    stdout lines and runs the observer itself. Forcola cancels the run if the
+    caller's queue reaches its observer bound. If the execution caller dies,
+    the helper exits and Forcola's shim cleans up as for owner death. If the
+    helper dies, the call returns `{:error, {:helper_down, reason}}` with
+    unknown cleanup. This module never signals the child itself.
+
+    Evidence `:cleanup` is `:confirmed` only when the shim explicitly
+    confirmed it, and `:scope` says what that covers. A process-group
+    confirmation does not include descendants that escaped the group.
     """
 
     @behaviour ClaudeWrapper.Runner
+
+    alias ClaudeWrapper.Runner.{Collector, ForcolaEvidence}
 
     # forcola requires a mandatory whole-run bound. When the caller sets
     # no timeout we still want group-kill-on-BEAM-death, so we pass a very
@@ -131,6 +179,44 @@ if Code.ensure_loaded?(Forcola) do
          do: {:ok, {observed_stdout(lines), status, stderr}}
 
     defp observed_stdout(lines), do: lines |> Enum.reverse() |> IO.iodata_to_binary()
+
+    @doc """
+    Run one bounded `Forcola.run/2` and return its outcome with native
+    evidence. See "Evidenced execution" above and
+    `c:ClaudeWrapper.Runner.run_evidenced/5`.
+    """
+    @spec run_evidenced(
+            String.t(),
+            [String.t()],
+            keyword(),
+            timeout() | nil,
+            ClaudeWrapper.Runner.line_observer()
+          ) :: ClaudeWrapper.Runner.evidenced_result()
+    @impl true
+    def run_evidenced(binary, args, opts, timeout, observer) do
+      with :ok <- evidence_supported(),
+           {:ok, forcola_opts, max_line} <- ForcolaEvidence.build(opts, timeout) do
+        argv = [binary | args]
+        run = fn target -> Forcola.run(argv, [{:output_observer, target} | forcola_opts]) end
+
+        run
+        |> Collector.run(observer,
+          max_line_bytes: max_line,
+          max_output_bytes: forcola_opts[:max_output_bytes]
+        )
+        |> ForcolaEvidence.translate()
+      else
+        {:error, reason} -> {{:error, reason}, ClaudeWrapper.Runner.not_started_evidence()}
+      end
+    end
+
+    defp evidence_supported do
+      if ForcolaEvidence.supported?(Forcola.Result) do
+        :ok
+      else
+        {:error, {:evidence_unsupported, :forcola_result_lacks_evidence}}
+      end
+    end
 
     @impl true
     def stream_lines(binary, args, opts, timeout) do

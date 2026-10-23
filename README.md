@@ -177,13 +177,16 @@ The CLI's own rail-stop caps are typed, recoverable errors, distinct from a genu
 By default a timeout, halted stream, closed session, or BEAM death closes the Erlang port or shuts down a `Task`, which closes the pipes but sends **no signal** to the OS process, so `claude` and every stdio MCP server it spawned can keep running (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)). Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death):
 
 ```elixir
-# mix.exs:  {:forcola, ">= 0.4.0 and < 0.7.0"}
+# mix.exs:  {:forcola, "~> 0.7.0"}
 config :claude_wrapper,
   runner: ClaudeWrapper.Runner.Forcola,                        # one-shot + streaming
   duplex_adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola  # DuplexSession
 ```
 
 Both are opt-in and additive (they compile only when `forcola` is present); POSIX-only.
+A single config can also select its own runner without touching application
+config: `Config.new(runner: ClaudeWrapper.Runner.Forcola)` (see
+[Per-config runners](#per-config-runners-and-runner-options)).
 The duplex adapter uses Forcola's bounded pull delivery with separate stderr.
 Set per-session bounds with `adapter_opts: [max_line_bytes: ..., max_output_bytes: ...]`;
 the defaults are 1 MiB per line and 64 MiB over the session. A bounded stderr
@@ -224,6 +227,73 @@ and `Query.execute/2`, retain ordinary execution. Observed
 failure diagnostics keep stderr separate, with newline-normalized stdout;
 clean completion returns the usual parsed `Result`. Forcola's existing
 24-hour bound applies when `Config.timeout` is `nil`.
+
+### Per-config runners and runner options
+
+`Config` carries an optional `:runner` and `:runner_options`, so two configs
+for the same provider (different binary, working directory, endpoint,
+credentials, MCP files or `CLAUDE_CONFIG_DIR`) can run side by side. Each
+field falls back to `config :claude_wrapper, runner: ... / runner_options: ...`
+only when it is absent; an explicit `runner_options: []` disables configured
+defaults. Nothing in the library writes application or OS environment state.
+`ClaudeWrapper.query/2` accepts both as config options.
+
+```elixir
+config =
+  ClaudeWrapper.Config.new(
+    binary: "/opt/claude-a/bin/claude",
+    working_dir: "/srv/a",
+    env: [{"CLAUDE_CONFIG_DIR", "/srv/a/.claude"}],
+    timeout: 600_000,
+    runner: ClaudeWrapper.Runner.Forcola,
+    runner_options: [idle_timeout_ms: 120_000, max_output_bytes: 16_777_216]
+  )
+```
+
+Runner options are honored only by evidenced one-shot execution (below).
+Paths that cannot honor them reject non-empty options before spawning:
+`Command.run/3` and `raw/2` return `:invalid_runner_options`, `stream/2` yields
+one terminal `runner_options_unsupported` error event, and
+`ClaudeWrapper.Config.exec/2` (used by the `Commands.*` wrappers) raises
+`ArgumentError`. `DuplexSession.start_link/1` rejects non-empty resolved options
+before opening any adapter, returning `:invalid_runner_options` with reason
+`{:unsupported_mode, :duplex}`. Pass `runner_options: []` on those calls to opt
+out of an application default.
+
+### Evidenced one-shot execution
+
+`Query.execute/3` with `execution_observer: {pid, reference}` (or any call
+whose config resolves non-empty runner options) runs through
+`c:ClaudeWrapper.Runner.run_evidenced/5` and sends exactly one
+`{reference, %ClaudeWrapper.ExecutionEvidence{}}` before returning, on success
+or failure. A `SessionObservation` for the same call is sent earlier, as soon
+as the native ID appears. The record keeps separate facts: raw child exit
+status/signal, native termination, the bound that cancelled the run, output
+truncation, cleanup confirmation and its scope, guard close, retained partial
+stdout/stderr, the observed session ID, and the last terminal `result` found
+in retained stdout (kept even when the call fails). A terminal result, a
+session ID or a zero exit alone never means clean completion; missing or
+malformed native facts are `:unknown`. A process-group cleanup confirmation
+does not cover descendants that escaped the group.
+
+Runner raises, throws and catchable exits return a typed `:io` error with
+`reason: {:runner_failed, kind, reason}` and still deliver one terminal record.
+This fallback retains the first native ID and up to 1 MiB of observed stdout
+with reconstructed newlines; unreported status, cleanup and stderr remain
+unknown or empty. Collector helper failures retain bounded received stdout and
+stderr. A collector observer failure returns `:io` with
+`{:observer_failed, kind, reason}` after draining the native run, preserving
+its terminal facts. Uncatchable execution caller death cannot deliver a record.
+
+`Runner.Forcola` implements it around one `Forcola.run/2` with an owned
+bounded collector and accepts `:max_output_bytes` (default 64 MiB), `:idle_timeout_ms`,
+`:max_line_bytes`, `:env_mode`, `:interrupt_signal` / `:interrupt_grace_ms`,
+`:kill_grace_ms` and `:shim_path`. It requires Forcola `~> 0.7.0` and a
+matching shim; an incompatible shim is rejected before SPAWN. An unsupported
+Forcola result contract returns `:evidence_unsupported` before spawning.
+Other runners are rejected with
+`:evidence_unsupported` before they are invoked; there is no fallback to the
+Port runner.
 
 ### Retry, telemetry, budget
 
@@ -335,6 +405,7 @@ The `PATH` / `CLAUDE_CLI` default is unchanged for everyone else. See `ClaudeWra
 | `ClaudeWrapper.Config` | Shared client config (binary, working_dir, env, timeout) |
 | `ClaudeWrapper.Result` | Parsed result struct |
 | `ClaudeWrapper.Error` | Canonical error exception (match on `:kind`) |
+| `ClaudeWrapper.ExecutionEvidence` | Terminal evidence record of an evidenced one-shot execution |
 | `ClaudeWrapper.StreamEvent` | NDJSON streaming event (`partial_message/1`) |
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |

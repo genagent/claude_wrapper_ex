@@ -17,6 +17,33 @@ defmodule ClaudeWrapper.RunnerTest do
     end
   end
 
+  describe "impl/1 and options/1" do
+    alias ClaudeWrapper.Config
+
+    test "a per-config runner wins over the application env" do
+      Application.put_env(:claude_wrapper, :runner, ClaudeWrapper.Runner.Forcola)
+      on_exit(fn -> Application.delete_env(:claude_wrapper, :runner) end)
+
+      assert Runner.impl(Config.new()) == ClaudeWrapper.Runner.Forcola
+      assert Runner.impl(Config.new(runner: Runner.Port)) == Runner.Port
+    end
+
+    test "options default to [] and an explicit [] overrides application defaults" do
+      assert Runner.options(Config.new()) == []
+
+      Application.put_env(:claude_wrapper, :runner_options, idle_timeout_ms: 10)
+      on_exit(fn -> Application.delete_env(:claude_wrapper, :runner_options) end)
+
+      assert Runner.options(Config.new()) == [idle_timeout_ms: 10]
+      assert Runner.options(Config.new(runner_options: [])) == []
+    end
+
+    test "the Port runner does not implement evidenced execution" do
+      Code.ensure_loaded!(Runner.Port)
+      refute function_exported?(Runner.Port, :run_evidenced, 5)
+    end
+  end
+
   describe "Runner.Port.run/4" do
     alias ClaudeWrapper.Runner.Port
 

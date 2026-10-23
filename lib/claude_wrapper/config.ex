@@ -9,6 +9,27 @@ defmodule ClaudeWrapper.Config do
 
       config = ClaudeWrapper.Config.new()
       config = ClaudeWrapper.Config.new(working_dir: "/path/to/project")
+
+  ## Per-config runner
+
+  A config can carry its own `:runner` and `:runner_options`, so two configs
+  for the same provider (different binaries, working directories, endpoints,
+  credentials, MCP files or config roots) can run side by side without
+  touching application or OS environment state:
+
+      a = ClaudeWrapper.Config.new(
+        binary: "/opt/claude-a/bin/claude",
+        env: [{"CLAUDE_CONFIG_DIR", "/srv/a/.claude"}],
+        runner: ClaudeWrapper.Runner.Forcola,
+        runner_options: [idle_timeout_ms: 120_000, max_output_bytes: 8_388_608]
+      )
+
+  Each field falls back to the application default
+  (`config :claude_wrapper, runner: ...` / `runner_options: ...`) only when
+  it is absent. An explicit `runner_options: []` overrides a configured
+  default with no options. The struct is immutable; resolution happens per
+  execution through `ClaudeWrapper.Runner.impl/1` and
+  `ClaudeWrapper.Runner.options/1`.
   """
 
   @type t :: %__MODULE__{
@@ -17,13 +38,17 @@ defmodule ClaudeWrapper.Config do
           env: [{String.t(), String.t()}],
           timeout: pos_integer() | nil,
           verbose: boolean(),
-          debug: boolean()
+          debug: boolean(),
+          runner: module() | nil,
+          runner_options: keyword() | nil
         }
 
   defstruct [
     :binary,
     :working_dir,
     :timeout,
+    :runner,
+    :runner_options,
     env: [],
     verbose: false,
     debug: false
@@ -47,6 +72,19 @@ defmodule ClaudeWrapper.Config do
       one, streaming retains its per-frame idle safety deadline.
     * `:verbose` - Enable verbose output
     * `:debug` - Enable debug output
+    * `:runner` - A `ClaudeWrapper.Runner` module for this config (default
+      `nil`: the `:runner` application env, then `ClaudeWrapper.Runner.Port`)
+    * `:runner_options` - A keyword list of runner options for this config
+      (default `nil`: the `:runner_options` application env, then `[]`). An
+      explicit `[]` disables configured defaults. Runner options are honored
+      only by evidenced one-shot execution (`Query.execute/2,3` through a
+      runner implementing `c:ClaudeWrapper.Runner.run_evidenced/5`); other
+      runner paths and `ClaudeWrapper.DuplexSession` reject non-empty
+      options before spawning. See
+      `ClaudeWrapper.Runner.Forcola` for the keys it accepts.
+
+  Raises `ArgumentError` when `:runner` is not a module atom or
+  `:runner_options` is not a keyword list with unique keys.
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -56,9 +94,40 @@ defmodule ClaudeWrapper.Config do
       env: opts[:env] || [],
       timeout: opts[:timeout],
       verbose: Keyword.get(opts, :verbose, false),
-      debug: Keyword.get(opts, :debug, false)
+      debug: Keyword.get(opts, :debug, false),
+      runner: validate_runner!(opts[:runner]),
+      runner_options: validate_runner_options!(opts[:runner_options])
     }
   end
+
+  defp validate_runner!(nil), do: nil
+
+  defp validate_runner!(runner) when is_atom(runner) and runner not in [true, false] do
+    runner
+  end
+
+  defp validate_runner!(other),
+    do: raise(ArgumentError, "runner must be a module, got: #{inspect(other)}")
+
+  defp validate_runner_options!(nil), do: nil
+
+  defp validate_runner_options!(options) do
+    if keyword_options?(options) do
+      options
+    else
+      raise ArgumentError,
+            "runner_options must be a keyword list with unique keys, got: #{inspect(options)}"
+    end
+  end
+
+  @doc false
+  @spec keyword_options?(term()) :: boolean()
+  def keyword_options?(options) when is_list(options) do
+    keys = if Keyword.keyword?(options), do: Keyword.keys(options), else: nil
+    keys != nil and Enum.uniq(keys) == keys
+  end
+
+  def keyword_options?(_options), do: false
 
   # Resolve the `:binary` option into a concrete path.
   #
@@ -120,9 +189,21 @@ defmodule ClaudeWrapper.Config do
   clause surfaces it as a `command_failed` instead of hanging. A `nil` timeout
   (the default) is unbounded, exactly as before. A spawn failure (missing
   binary) still crashes the caller via the task link, as the direct call did.
+
+  This helper calls `System.cmd/3` directly and does not dispatch through
+  `config.runner`. Because it cannot honor runner options (for example
+  `env_mode: :replace`), it raises `ArgumentError` before spawning when the
+  resolved `ClaudeWrapper.Runner.options/1` is non-empty, rather than
+  silently running without them.
   """
   @spec exec(t(), [String.t()]) :: {String.t(), non_neg_integer()}
   def exec(%__MODULE__{} = config, args) do
+    if ClaudeWrapper.Runner.options(config) != [] do
+      raise ArgumentError,
+            "runner_options are only supported by evidenced one-shot Query execution; " <>
+              "Config.exec/2 cannot honor them"
+    end
+
     opts = cmd_opts(config)
     task = Task.async(fn -> System.cmd(config.binary, args, opts) end)
 

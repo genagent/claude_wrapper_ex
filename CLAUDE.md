@@ -35,6 +35,7 @@ ClaudeWrapper.IEx             # REPL helpers for one-shot/per-call mode
 ClaudeWrapper.Config          # Shared client config (binary, working_dir, env, timeout)
 ClaudeWrapper.Result          # Parsed result struct
 ClaudeWrapper.StreamEvent     # One NDJSON event; partial_message/1 typed accessor
+ClaudeWrapper.ExecutionEvidence # Terminal evidence record of an evidenced one-shot
 ClaudeWrapper.Error           # Canonical error exception (see "Error handling")
 ClaudeWrapper.McpConfig       # Programmatic .mcp.json builder
 ClaudeWrapper.Retry           # Retry policy with exponential backoff + jitter
@@ -61,9 +62,18 @@ ClaudeWrapper.Runner.Port     # default: System.cmd + /bin/sh streaming port
 ClaudeWrapper.Runner.Forcola  # opt-in leak-free (process-group kill); needs forcola
 ```
 
-`Command.run` and `Query` (execute + stream) dispatch through
-`Runner.impl/0`, which reads `config :claude_wrapper, runner: ...`
-(default `Runner.Port`). `Runner.Forcola` compiles only when the optional
+`Command.run`, `raw/2` and `Query` (execute + stream) dispatch through
+`Runner.impl/1`: the config's own `:runner`, else
+`config :claude_wrapper, runner: ...` (default `Runner.Port`).
+`Runner.options/1` resolves `:runner_options` the same way (explicit `[]`
+wins over the application default). Runner options are honored only by the
+optional `run_evidenced/5` callback, selected by `Query.execute/2,3` when an
+`:execution_observer` is given or options are non-empty; other paths reject
+non-empty options before spawning. `Runner.Forcola.run_evidenced/5` runs
+one `Forcola.run/2` in a helper owned by `Runner.Collector` (bounded line
+framing in the execution caller, no second process killer) and translates
+the result through `Runner.ForcolaEvidence`; it requires Forcola `~> 0.7.0`
+and its matching shim. `Runner.Forcola` compiles only when the optional
 `forcola` dep is present; it runs every `claude` under a Rust shim that
 process-group-kills the CLI (and its stdio MCP servers) on timeout, stream
 halt, or BEAM death. This is the fix for #185 (timeout abandoned the OS
@@ -81,7 +91,11 @@ ClaudeWrapper.DuplexSession.Adapter.Test      # per-session controllable double 
 The default adapter is chosen from `config :claude_wrapper, duplex_adapter:
 ...` (default `Adapter.Port`); an explicit `adapter:` option on
 `start_link/1` still wins. `Adapter.Forcola` wraps `Forcola.Duplex` in a
-translator GenServer whose pid is the transport handle.
+translator GenServer whose pid is the transport handle. Neither adapter
+honors runner options: a non-empty resolved `Runner.options/1` returns
+`:invalid_runner_options` with `{:unsupported_mode, :duplex}` before any
+adapter is opened (explicit `runner_options: []` still overrides the
+application default).
 
 ### Read-side introspection of `~/.claude`
 
@@ -233,7 +247,21 @@ GenServer's dispatch behavior. New session tests prefer
 `ClaudeWrapper.Test` (the `Adapter.Test` transport double): each
 `start_session/1` gets its own controllable stub with no shared state, so
 it is `async`-safe and is also the supported way for downstream users to
-test code that drives `claude_wrapper`. Integration tests run against the
+test code that drives `claude_wrapper`. Evidenced execution is covered with
+fake runners and fake collector runs (`evidenced_execution_test.exs`,
+`runner/collector_test.exs`, `runner/forcola_evidence_test.exs`); the
+real-Forcola suite is tagged `:forcola_evidence` and runs by default,
+requiring Forcola 0.7 and a matching shim. Missing required evidence support
+fails the suite rather than excluding these tests. Runner raises, throws and
+catchable exits on the evidenced path return typed `:io` errors and one
+terminal record with bounded observed stdout and the first native ID;
+unreported cleanup stays unknown. Collector observer failures disable the
+observer and drain the owned native run before returning a typed `:io` error.
+Reply-conversion failures return `:io` with `{:reply_failed, kind, reason}`
+and keep the collected native facts. With one valid `:execution_observer`,
+preflight rejections (unknown options, other invalid observers) still send
+one not-started record. Legacy execution keeps its existing exception behavior. Integration tests run
+against the
 real `claude` binary and against real `~/.claude` data (for the read-side
 modules), so they are environment-dependent and excluded by default.
 

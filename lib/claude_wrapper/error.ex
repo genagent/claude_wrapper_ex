@@ -24,6 +24,26 @@ defmodule ClaudeWrapper.Error do
       `rate_limit_observer: {local_pid, reference}`
     * `:observation_unsupported` -- the configured runner does not implement
       observed one-shot execution (`:reason` is the runner module)
+    * `:invalid_execution_observer` -- evidenced execution needs
+      `execution_observer: {local_pid, reference}`
+    * `:invalid_runner_options` -- runner options were rejected before
+      spawning: an invalid or unknown option (`:reason` is `{key, value}` or
+      `{:unknown, key}`), or a path that cannot honor runner options
+      (`:reason` is `{:unsupported_mode, mode}`, where `mode` is
+      `:command`, `:raw` or `:duplex`)
+    * `:evidence_unsupported` -- the runner, or the dependency behind it,
+      cannot provide evidenced execution; rejected before spawning
+      (`:reason` is `%{runner:, reason:}`)
+    * `:output_limit` -- an output bound cancelled an evidenced run
+      (`:reason` is `%{limit: :max_output_bytes | :observer_overflow,
+      max_output_bytes:}`); partial output is in the execution evidence
+    * Evidenced runner callback raises, throws and catchable exits are `:io`
+      with `:reason` `{:runner_failed, kind, reason}`. Collector observer
+      failures use `{:observer_failed, kind, reason}`; helper death uses
+      `{:helper_down, reason}`. A failure converting the runner's outcome
+      into a reply uses `{:reply_failed, kind, reason}`. Terminal evidence
+      retains available partial facts without claiming unknown native
+      cleanup.
     * `:binary_not_found` -- the `claude` binary could not be launched
     * `:command_failed` -- the CLI exited non-zero (`:exit_code`,
       `:stdout`, `:stderr`)
@@ -91,6 +111,10 @@ defmodule ClaudeWrapper.Error do
           :invalid_session_observer
           | :invalid_rate_limit_observer
           | :observation_unsupported
+          | :invalid_execution_observer
+          | :invalid_runner_options
+          | :evidence_unsupported
+          | :output_limit
           | :binary_not_found
           | :command_failed
           | :io
@@ -184,6 +208,18 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :observation_unsupported, reason: runner}),
     do: "runner #{inspect(runner)} does not support observed execution"
+
+  defp default_message(%{kind: :invalid_execution_observer}),
+    do: "execution_observer must be a {local_pid, reference} pair"
+
+  defp default_message(%{kind: :invalid_runner_options, reason: reason}),
+    do: "invalid runner options: #{inspect(reason)}"
+
+  defp default_message(%{kind: :evidence_unsupported, reason: reason}),
+    do: "evidenced execution is unsupported: #{inspect(reason)}"
+
+  defp default_message(%{kind: :output_limit, reason: reason}),
+    do: "claude output exceeded a bound: #{inspect(reason)}"
 
   defp default_message(%{kind: :binary_not_found, reason: bin}),
     do: "claude binary not found: #{inspect(bin)}"
