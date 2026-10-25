@@ -148,27 +148,15 @@ defmodule ClaudeWrapper.Commands.Auth do
   end
 
   @doc """
-  Set up an API token directly.
+  Reject the legacy token-from-stdin operation without spawning a process.
+
+  The CLI has no `auth setup-token` command. Its top-level `setup-token`
+  generates a long-lived credential interactively; it does not configure a
+  supplied token. This arity is retained to return an explicit error instead
+  of sending caller credentials to an unrelated authentication flow.
   """
-  @spec setup_token(Config.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def setup_token(%Config{} = config, token) do
-    args = Config.base_args(config) ++ ["auth", "setup-token"]
-
-    # Token is passed via stdin, so we use Port instead of System.cmd
-    port_opts =
-      [:binary, :exit_status, {:args, args}] ++
-        if(config.working_dir, do: [{:cd, String.to_charlist(config.working_dir)}], else: [])
-
-    port = Port.open({:spawn_executable, config.binary}, port_opts)
-    Port.command(port, token <> "\n")
-
-    receive do
-      {^port, {:exit_status, 0}} -> {:ok, "token configured"}
-      {^port, {:exit_status, code}} -> {:error, Error.command_failed(code, "")}
-    after
-      30_000 ->
-        send(port, {self(), :close})
-        {:error, Error.timeout(30_000)}
-    end
+  @spec setup_token(Config.t(), String.t()) :: {:error, Error.t()}
+  def setup_token(%Config{}, _token) do
+    {:error, Error.new(:unsupported_command, reason: :setup_token_from_stdin)}
   end
 end

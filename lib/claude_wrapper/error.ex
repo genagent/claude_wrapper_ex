@@ -44,6 +44,7 @@ defmodule ClaudeWrapper.Error do
       into a reply uses `{:reply_failed, kind, reason}`. Terminal evidence
       retains available partial facts without claiming unknown native
       cleanup.
+    * `:unsupported_command` -- an operation the native CLI cannot perform
     * `:binary_not_found` -- the `claude` binary could not be launched
     * `:command_failed` -- the CLI exited non-zero (`:exit_code`,
       `:stdout`, `:stderr`)
@@ -116,6 +117,7 @@ defmodule ClaudeWrapper.Error do
           | :evidence_unsupported
           | :output_limit
           | :binary_not_found
+          | :unsupported_command
           | :command_failed
           | :io
           | :timeout
@@ -199,6 +201,10 @@ defmodule ClaudeWrapper.Error do
   def io(reason), do: %__MODULE__{kind: :io, reason: reason}
 
   # --- default messages ---------------------------------------------
+
+  defp default_message(%{kind: :unsupported_command, reason: :setup_token_from_stdin}),
+    do:
+      "the CLI cannot configure a supplied token through stdin; choose an explicit supported authentication flow"
 
   defp default_message(%{kind: :invalid_session_observer}),
     do: "session_observer must be a {local_pid, reference} pair"
