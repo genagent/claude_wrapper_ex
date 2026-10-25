@@ -1,0 +1,52 @@
+#!/bin/sh
+# Deterministic stand-in for the `claude` executable in one-shot
+# `--print --output-format json` mode. It never execs a real CLI, reads no
+# credentials and makes no network calls.
+#
+# FAKE_CLAUDE_SCENARIO selects the output. FAKE_CLAUDE_CALLS, when set, gets
+# one line per invocation (the NUL-free argv) so tests can assert how many
+# processes were started.
+#
+# All scenarios are synthetic. Field names follow the terminal `result`
+# object that ClaudeWrapper.Result.from_json/1 parses; values are not
+# captured from a provider.
+
+if [ -n "$FAKE_CLAUDE_CALLS" ]; then
+  printf '%s\n' "$*" >> "$FAKE_CLAUDE_CALLS"
+fi
+
+base='"type":"result","session_id":"fake-session","duration_ms":1,"num_turns":1,"total_cost_usd":0'
+
+case "$FAKE_CLAUDE_SCENARIO" in
+  object)
+    printf '{%s,"subtype":"success","is_error":false,"result":"","structured_output":{"name":"Ada Lovelace"}}\n' "$base"
+    ;;
+  array)
+    printf '{%s,"subtype":"success","is_error":false,"result":"","structured_output":[{"name":"Ada"},{"name":"Grace"}]}\n' "$base"
+    ;;
+  missing)
+    printf '{%s,"subtype":"success","is_error":false,"result":"plain text"}\n' "$base"
+    ;;
+  null)
+    printf '{%s,"subtype":"success","is_error":false,"result":"","structured_output":null}\n' "$base"
+    ;;
+  scalar)
+    printf '{%s,"subtype":"success","is_error":false,"result":"","structured_output":"Ada Lovelace"}\n' "$base"
+    ;;
+  native_error)
+    # A native failure that still carries a partial object.
+    printf '{%s,"subtype":"error_max_structured_output_retries","is_error":true,"result":"","structured_output":{"name":"partial"}}\n' "$base"
+    exit 1
+    ;;
+  malformed)
+    printf '{%s,"subtype":"success","is_error":false,"structured_output":{"name":\n' "$base"
+    ;;
+  crash)
+    printf 'fake claude: synthetic crash\n' >&2
+    exit 2
+    ;;
+  *)
+    printf 'fake claude: unknown FAKE_CLAUDE_SCENARIO %s\n' "$FAKE_CLAUDE_SCENARIO" >&2
+    exit 64
+    ;;
+esac

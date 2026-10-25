@@ -247,9 +247,18 @@ defmodule ClaudeWrapper.Query do
   @spec max_turns(t(), pos_integer()) :: t()
   def max_turns(%__MODULE__{} = q, n), do: %{q | max_turns: n}
 
-  @doc "Set JSON schema for structured output."
-  @spec json_schema(t(), String.t()) :: t()
-  def json_schema(%__MODULE__{} = q, schema), do: %{q | json_schema: schema}
+  @doc """
+  Set the JSON schema for structured output (claude's `--json-schema`).
+
+  Accepts an encoded JSON string, or a map or list that is encoded with
+  `Jason.encode!/1` (raising `Jason.EncodeError` if it cannot be encoded).
+  """
+  @spec json_schema(t(), String.t() | map() | list()) :: t()
+  def json_schema(%__MODULE__{} = q, schema) when is_binary(schema),
+    do: %{q | json_schema: schema}
+
+  def json_schema(%__MODULE__{} = q, schema) when is_map(schema) or is_list(schema),
+    do: %{q | json_schema: Jason.encode!(schema)}
 
   @doc "Continue the most recent session."
   @spec continue_session(t()) :: t()
