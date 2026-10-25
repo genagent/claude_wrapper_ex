@@ -65,6 +65,13 @@ defmodule ClaudeWrapper.QueryTest do
       assert q.name == "my session"
       assert q.setting_sources == "user,project"
     end
+
+    test "json_schema/2 encodes a map schema and keeps strings verbatim" do
+      q = Query.new("x") |> Query.json_schema(%{"type" => "object"})
+      assert q.json_schema == ~s({"type":"object"})
+      assert Query.apply_opts(Query.new("x"), json_schema: ~s({"a":1})).json_schema == ~s({"a":1})
+      assert "--json-schema" in Query.build_args(q)
+    end
   end
 
   describe "apply_opts/2 -- boolean flags" do

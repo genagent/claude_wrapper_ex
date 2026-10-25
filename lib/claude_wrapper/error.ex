@@ -106,6 +106,13 @@ defmodule ClaudeWrapper.Error do
     * `:no_structured_output` -- a `ClaudeWrapper.Structured` run produced a
       result with no structured output, i.e. no `--json-schema` took effect
       (`:reason` is the `%ClaudeWrapper.Result{}`)
+    * `:structured_result_error` -- a structured result was a native error
+      (`is_error: true`) (`:reason` is the `%ClaudeWrapper.Result{}`)
+    * `:invalid_structured_output` -- a result's structured output was
+      neither a JSON object nor an array (`:reason` is the
+      `%ClaudeWrapper.Result{}`)
+    * `:invalid_parse_result` -- a structured parser returned neither
+      `{:ok, _}` nor `{:error, _}` (`:reason` is the returned value)
   """
 
   @type kind ::
@@ -147,6 +154,9 @@ defmodule ClaudeWrapper.Error do
           | :auth
           | :invalid_render
           | :no_structured_output
+          | :structured_result_error
+          | :invalid_structured_output
+          | :invalid_parse_result
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -313,6 +323,15 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :no_structured_output}),
     do: "the result carried no structured_output (no JSON schema took effect)"
+
+  defp default_message(%{kind: :structured_result_error, reason: %{extra: extra}}),
+    do: "the structured result was a native error (subtype #{inspect(extra["subtype"])})"
+
+  defp default_message(%{kind: :invalid_structured_output}),
+    do: "the result's structured_output was neither a JSON object nor an array"
+
+  defp default_message(%{kind: :invalid_parse_result, reason: value}),
+    do: "Structured parser returned #{inspect(value)}; expected {:ok, _} or {:error, _}"
 
   defp default_message(%{kind: kind}), do: "claude_wrapper error: #{kind}"
 end

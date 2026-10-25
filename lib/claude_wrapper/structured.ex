@@ -101,24 +101,60 @@ defmodule ClaudeWrapper.Structured do
 
   `opts` are forwarded to `ClaudeWrapper.query/2` (e.g. `:model`,
   `:working_dir`, `:timeout`); `:json_schema` is set from `schema/0`.
+  The returned result is decoded with `decode/2`.
 
-  Error reasons:
+  Error reasons, in addition to those from `decode/2`:
 
     * a `ClaudeWrapper.Error` -- `render/1` returned a non-prompt
-      (`:invalid_render`), the prompt failed to render, the CLI call
-      failed, or the result carried no `structured_output`
-      (`:no_structured_output`)
+      (`:invalid_render`), the prompt failed to render, or the CLI call
+      failed (`:command_failed`, `:json`, `:timeout`, a rail stop, ...)
     * a `Jason` encode error -- `schema/0` was not JSON-encodable
-    * whatever `parse/1` returned on `{:error, _}`
   """
   @spec run(module(), term(), keyword()) :: {:ok, term(), Result.t()} | {:error, term()}
   def run(module, input, opts \\ []) when is_atom(module) and is_list(opts) do
     with {:ok, rendered} <- render_input(module, input),
          {:ok, schema_json} <- Jason.encode(module.schema()),
          {:ok, result} <-
-           ClaudeWrapper.query(rendered, Keyword.put(opts, :json_schema, schema_json)),
-         {:ok, output} <- extract_output(result),
-         {:ok, parsed} <- parse_output(module, output) do
+           ClaudeWrapper.query(rendered, Keyword.put(opts, :json_schema, schema_json)) do
+      decode(module, result)
+    end
+  end
+
+  @doc """
+  Decode the structured output of a result the caller already holds.
+
+  Use this for a `ClaudeWrapper.DuplexSession.send/3` turn started with a
+  `:json_schema`, or to re-decode an earlier `ClaudeWrapper.query/2`
+  result. It never calls the CLI.
+
+  `parser` is a `Structured` module (its optional `parse/1` is used; without
+  one the object is returned unchanged) or a 1-arity function returning
+  `{:ok, value}` or `{:error, reason}`.
+
+  Returns `{:ok, parsed, result}` or `{:error, reason}`, checked in order:
+
+    * `:structured_result_error` -- the result is a native error
+      (`is_error: true`), even if it carries a `structured_output`. The
+      native subtype, e.g. `"error_max_structured_output_retries"`, stays
+      readable as `result.extra["subtype"]`. `:reason` is the result.
+    * `:no_structured_output` -- `structured_output` is absent or null, i.e.
+      no `--json-schema` took effect. `:reason` is the result.
+    * `:invalid_structured_output` -- `structured_output` is present but is
+      neither a JSON object nor an array. `:reason` is the result.
+    * whatever the parser returned as `{:error, reason}` -- the output did
+      not have the expected domain shape
+    * `:invalid_parse_result` -- the parser returned something other than
+      `{:ok, _}` or `{:error, _}`. `:reason` is the returned value.
+
+  Native `--json-schema` validation happens inside the CLI; this function
+  does not re-validate the object against the schema. The parser is the
+  caller-side check.
+  """
+  @spec decode(module() | (term() -> {:ok, term()} | {:error, term()}), Result.t()) ::
+          {:ok, term(), Result.t()} | {:error, term()}
+  def decode(parser, %Result{} = result) when is_atom(parser) or is_function(parser, 1) do
+    with {:ok, output} <- extract_output(result),
+         {:ok, parsed} <- parse_output(parser, output) do
       {:ok, parsed, result}
     end
   end
@@ -131,16 +167,31 @@ defmodule ClaudeWrapper.Structured do
     end
   end
 
-  # Read the schema-validated object via the typed accessor (#142).
-  defp extract_output(%Result{} = result) do
-    case Result.structured_output(result) do
+  defp extract_output(%Result{is_error: true} = result),
+    do: {:error, Error.new(:structured_result_error, reason: result)}
+
+  defp extract_output(%Result{extra: extra} = result) do
+    case Map.get(extra, "structured_output") do
       nil -> {:error, Error.new(:no_structured_output, reason: result)}
-      output -> {:ok, output}
+      output when is_map(output) or is_list(output) -> {:ok, output}
+      _other -> {:error, Error.new(:invalid_structured_output, reason: result)}
     end
   end
 
-  defp parse_output(module, output) do
-    if function_exported?(module, :parse, 1) do
+  defp parse_output(parser, output) do
+    case apply_parser(parser, output) do
+      {:ok, _parsed} = ok -> ok
+      {:error, _reason} = error -> error
+      other -> {:error, Error.new(:invalid_parse_result, reason: other)}
+    end
+  end
+
+  defp apply_parser(parser, output) when is_function(parser, 1), do: parser.(output)
+
+  # decode/2 may be the first reference to the module, so load it before
+  # checking for the optional callback.
+  defp apply_parser(module, output) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :parse, 1) do
       module.parse(output)
     else
       {:ok, output}

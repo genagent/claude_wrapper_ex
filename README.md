@@ -401,7 +401,7 @@ The `PATH` / `CLAUDE_CLI` default is unchanged for everyone else. See `ClaudeWra
 |---|---|
 | `ClaudeWrapper.Prompt` | Composable prompt builder with deferred file/git expansion |
 | `ClaudeWrapper.Stream` | Lazy `Stream` combinators over a `DuplexSession` turn |
-| `ClaudeWrapper.Structured` | Typed structured-output tasks |
+| `ClaudeWrapper.Structured` | Typed structured-output tasks; `decode/2` for results already in hand (e.g. a `DuplexSession` turn) |
 
 **Subprocess execution & transport**
 
