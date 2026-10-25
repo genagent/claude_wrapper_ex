@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.16.0...v0.17.0) (2026-10-25)
+
+
+### Features
+
+* decode structured output from existing results ([#297](https://github.com/genagent/claude_wrapper_ex/issues/297)) ([22b849d](https://github.com/genagent/claude_wrapper_ex/commit/22b849d02e44f80411ea645095a28edeff1f3dd4))
+
+
+### Bug Fixes
+
+* align Claude CLI 2.1.309 compatibility ([#294](https://github.com/genagent/claude_wrapper_ex/issues/294)) ([126377d](https://github.com/genagent/claude_wrapper_ex/commit/126377de060060d68adb7e4a355f51328ef95ce2))
+
 ## [0.16.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.15.3...v0.16.0) (2026-10-23)
 
 

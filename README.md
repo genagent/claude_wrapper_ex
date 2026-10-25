@@ -37,7 +37,7 @@ cannot configure a supplied token through stdin.
 ```elixir
 def deps do
   [
-    {:claude_wrapper, "~> 0.16.0"}
+    {:claude_wrapper, "~> 0.17.0"}
   ]
 end
 ```
