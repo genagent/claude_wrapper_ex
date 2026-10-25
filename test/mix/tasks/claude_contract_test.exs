@@ -40,9 +40,12 @@ defmodule Mix.Tasks.Claude.ContractTest do
 
   defp fake_cli(hidden_reply \\ "error: option '--system-prompt-file <file>' argument missing") do
     dir =
-      Path.join(System.tmp_dir!(), "claude-contract-test-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "claude-contract-test-#{System.pid()}-#{System.unique_integer([:positive])}"
+      )
 
-    File.mkdir_p!(dir)
+    File.mkdir!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     binary = Path.join(dir, "claude")
     marker = Path.join(dir, "invoked")

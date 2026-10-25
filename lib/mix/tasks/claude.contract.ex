@@ -125,8 +125,13 @@ defmodule Mix.Tasks.Claude.Contract do
   end
 
   defp capture(fun) do
-    dir = Path.join(System.tmp_dir!(), "claude-contract-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "claude-contract-#{System.pid()}-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir!(dir)
     binary = Path.join(dir, "capture")
     args_path = Path.join(dir, "args")
 
