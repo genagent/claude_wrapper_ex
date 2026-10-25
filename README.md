@@ -14,6 +14,23 @@ Drive the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) from
 
 The long-lived mode speaks the same duplex protocol the official `@anthropic-ai/claude-agent-sdk` uses internally and that the `@agentclientprotocol/claude-agent-acp` bridge relies on for IDE integrations like Zed's agent panel, so an OTP host can use `claude` the way an IDE backend does.
 
+## Native CLI compatibility
+
+The emitted query/resident and command argv are checked against Claude Code
+2.1.220 and 2.1.309 in pinned PR CI. Run `mix claude.contract` with
+`CLAUDE_CONTRACT_BIN` selecting an executable and optionally
+`CLAUDE_CONTRACT_VERSION` requiring its exact reported version. The task uses
+only native version/help and missing-operand parsing; its command construction
+uses a task-local fake executable and never the selected provider binary.
+
+These are verified compatibility points, not a bisected minimum or a promise of
+full native semantics. Existing caller-selected `CliVersion` windows remain unchanged.
+Controlled fake binaries verify the checker can reject missing flags and commands.
+
+`Auth.setup_token/2` now rejects token-from-stdin setup with `:unsupported_command`
+before spawning. The CLI's top-level `setup-token` generates a credential; it
+cannot configure a supplied token through stdin.
+
 ## Installation
 
 <!-- x-release-please-start-version -->

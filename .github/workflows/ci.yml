@@ -91,3 +91,31 @@ jobs:
 
       - name: Build docs
         run: mix docs --warnings-as-errors
+
+  contract:
+    name: CLI contract (claude ${{ matrix.claude }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        claude: ["2.1.220", "2.1.309"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install pinned native CLI
+        run: |
+          npm install --prefix "$RUNNER_TEMP/claude-cli" --ignore-scripts --no-audit --no-fund "@anthropic-ai/claude-code@${{ matrix.claude }}"
+          echo "CLAUDE_CONTRACT_BIN=$RUNNER_TEMP/claude-cli/node_modules/@anthropic-ai/claude-code-linux-x64/claude" >> "$GITHUB_ENV"
+      - name: Install dependencies
+        run: mix deps.get
+      - name: Check native emitted flags without inference
+        env:
+          CLAUDE_CONTRACT_VERSION: ${{ matrix.claude }}
+        run: mix claude.contract
