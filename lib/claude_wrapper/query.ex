@@ -1428,6 +1428,12 @@ defmodule ClaudeWrapper.Query do
   defp format_output_format(other),
     do: invalid_enum!(:output_format, other, [:text, :json, :stream_json])
 
+  # The CLI spelling of a permission mode atom; shared with
+  # DuplexSession.set_permission_mode/2.
+  @doc false
+  @spec permission_mode_arg(permission_mode()) :: String.t()
+  def permission_mode_arg(mode) when not is_nil(mode), do: format_permission_mode(mode)
+
   defp format_permission_mode(nil), do: nil
   defp format_permission_mode(:default), do: "default"
   defp format_permission_mode(:accept_edits), do: "acceptEdits"

@@ -516,6 +516,131 @@ defmodule ClaudeWrapper.DuplexSession do
     GenServer.call(server, {:control, request}, timeout)
   end
 
+  # --- Typed control requests -------------------------------------------
+  #
+  # Thin wrappers over control/3, checked against CLI 2.1.312. Each returns
+  # the same errors as control/3.
+
+  @doc """
+  Switch the model for subsequent turns. Returns the model id the CLI
+  resolved (`"sonnet"` resolves to a full model id).
+  """
+  @spec set_model(GenServer.server(), String.t(), timeout()) ::
+          {:ok, String.t() | nil} | {:error, Error.t()}
+  def set_model(server, model, timeout \\ 10_000) when is_binary(model) do
+    with {:ok, response} <- control(server, %{subtype: "set_model", model: model}, timeout) do
+      {:ok, response["model"]}
+    end
+  end
+
+  @doc """
+  Switch the permission mode. `mode` is a `t:ClaudeWrapper.Query.permission_mode/0`
+  atom. The CLI also emits a `system`/`status` event with the new mode.
+  """
+  @spec set_permission_mode(GenServer.server(), Query.permission_mode(), timeout()) ::
+          :ok | {:error, Error.t()}
+  def set_permission_mode(server, mode, timeout \\ 10_000) when is_atom(mode) do
+    request = %{subtype: "set_permission_mode", mode: Query.permission_mode_arg(mode)}
+
+    with {:ok, _} <- control(server, request, timeout), do: :ok
+  end
+
+  @doc """
+  Set the extended-thinking token budget for subsequent turns, or clear it
+  with `nil`.
+  """
+  @spec set_max_thinking_tokens(GenServer.server(), non_neg_integer() | nil, timeout()) ::
+          :ok | {:error, Error.t()}
+  def set_max_thinking_tokens(server, tokens, timeout \\ 10_000)
+      when is_nil(tokens) or (is_integer(tokens) and tokens >= 0) do
+    request = %{subtype: "set_max_thinking_tokens", max_thinking_tokens: tokens}
+
+    with {:ok, _} <- control(server, request, timeout), do: :ok
+  end
+
+  @doc """
+  The session's MCP servers as the CLI reports them: one map per server with
+  `name`, `status` (`"connected"`, `"pending"`, `"failed"`, `"disabled"`),
+  `transport`, `scope`, and when connected, `serverInfo` and `tools`.
+  """
+  @spec mcp_status(GenServer.server(), timeout()) :: {:ok, [map()]} | {:error, Error.t()}
+  def mcp_status(server, timeout \\ 10_000) do
+    with {:ok, response} <- control(server, %{subtype: "mcp_status"}, timeout) do
+      {:ok, Map.get(response, "mcpServers", [])}
+    end
+  end
+
+  @doc "Enable or disable an MCP server for this session."
+  @spec mcp_toggle(GenServer.server(), String.t(), boolean(), timeout()) ::
+          :ok | {:error, Error.t()}
+  def mcp_toggle(server, name, enabled, timeout \\ 10_000)
+      when is_binary(name) and is_boolean(enabled) do
+    request = %{subtype: "mcp_toggle", serverName: name, enabled: enabled}
+
+    with {:ok, _} <- control(server, request, timeout), do: :ok
+  end
+
+  @doc """
+  Reconnect a configured MCP server. The CLI rejects this for in-process
+  (`:sdk_mcp_servers`) servers.
+  """
+  @spec mcp_reconnect(GenServer.server(), String.t(), timeout()) :: :ok | {:error, Error.t()}
+  def mcp_reconnect(server, name, timeout \\ 30_000) when is_binary(name) do
+    with {:ok, _} <- control(server, %{subtype: "mcp_reconnect", serverName: name}, timeout),
+         do: :ok
+  end
+
+  @doc """
+  Replace the session's dynamically configured MCP servers with `servers`
+  (a `.mcp.json`-style `mcpServers` map). Returns the CLI's summary with
+  `"added"`, `"removed"` and `"errors"`.
+  """
+  @spec mcp_set_servers(GenServer.server(), map(), timeout()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def mcp_set_servers(server, servers, timeout \\ 30_000) when is_map(servers) do
+    control(server, %{subtype: "mcp_set_servers", servers: servers}, timeout)
+  end
+
+  @doc "Stop a running background task by id."
+  @spec stop_task(GenServer.server(), String.t(), timeout()) :: :ok | {:error, Error.t()}
+  def stop_task(server, task_id, timeout \\ 10_000) when is_binary(task_id) do
+    with {:ok, _} <- control(server, %{subtype: "stop_task", task_id: task_id}, timeout), do: :ok
+  end
+
+  @doc """
+  Rewind files changed since the user message `user_message_id`. The CLI
+  answers with an error when it holds no file checkpoint for that message.
+  Options: `:dry_run` (boolean) is sent as `dryRun`.
+  """
+  @spec rewind_files(GenServer.server(), String.t(), keyword(), timeout()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def rewind_files(server, user_message_id, opts \\ [], timeout \\ 30_000)
+      when is_binary(user_message_id) do
+    request =
+      %{subtype: "rewind_files", user_message_id: user_message_id}
+      |> then(fn req ->
+        case Keyword.fetch(opts, :dry_run) do
+          {:ok, dry_run} when is_boolean(dry_run) -> Map.put(req, :dryRun, dry_run)
+          :error -> req
+        end
+      end)
+
+    control(server, request, timeout)
+  end
+
+  @doc "The session's settings as the CLI reports them (`applied`, `effective`, ...)."
+  @spec get_settings(GenServer.server(), timeout()) :: {:ok, map()} | {:error, Error.t()}
+  def get_settings(server, timeout \\ 10_000),
+    do: control(server, %{subtype: "get_settings"}, timeout)
+
+  @doc "Send the `apply_flag_settings` control request with a settings map."
+  @spec apply_flag_settings(GenServer.server(), map(), timeout()) :: :ok | {:error, Error.t()}
+  def apply_flag_settings(server, settings, timeout \\ 10_000) when is_map(settings) do
+    with {:ok, _} <-
+           control(server, %{subtype: "apply_flag_settings", settings: settings}, timeout),
+         do: :ok
+  end
+
   @doc """
   Stop the session: shut down the GenServer, which calls the adapter's
   `close/1` on the port during `terminate/2`.

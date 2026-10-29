@@ -610,4 +610,86 @@ defmodule ClaudeWrapper.DuplexSession.ControlTest do
                )
     end
   end
+
+  describe "typed control helpers" do
+    # {call, expected request on the wire, CLI response body, expected return}
+    defp helper_cases do
+      [
+        {&DuplexSession.set_model(&1, "sonnet"), %{"subtype" => "set_model", "model" => "sonnet"},
+         %{"model" => "claude-sonnet"}, {:ok, "claude-sonnet"}},
+        {&DuplexSession.set_permission_mode(&1, :accept_edits),
+         %{"subtype" => "set_permission_mode", "mode" => "acceptEdits"},
+         %{"mode" => "acceptEdits"}, :ok},
+        {&DuplexSession.set_max_thinking_tokens(&1, 1024),
+         %{"subtype" => "set_max_thinking_tokens", "max_thinking_tokens" => 1024}, nil, :ok},
+        {&DuplexSession.set_max_thinking_tokens(&1, nil),
+         %{"subtype" => "set_max_thinking_tokens", "max_thinking_tokens" => nil}, nil, :ok},
+        {&DuplexSession.mcp_status/1, %{"subtype" => "mcp_status"},
+         %{"mcpServers" => [%{"name" => "app"}]}, {:ok, [%{"name" => "app"}]}},
+        {&DuplexSession.mcp_toggle(&1, "app", false),
+         %{"subtype" => "mcp_toggle", "serverName" => "app", "enabled" => false}, nil, :ok},
+        {&DuplexSession.mcp_reconnect(&1, "app"),
+         %{"subtype" => "mcp_reconnect", "serverName" => "app"}, nil, :ok},
+        {&DuplexSession.mcp_set_servers(&1, %{"x" => %{"command" => "true"}}),
+         %{"subtype" => "mcp_set_servers", "servers" => %{"x" => %{"command" => "true"}}},
+         %{"added" => ["x"]}, {:ok, %{"added" => ["x"]}}},
+        {&DuplexSession.stop_task(&1, "t-1"), %{"subtype" => "stop_task", "task_id" => "t-1"},
+         nil, :ok},
+        {&DuplexSession.rewind_files(&1, "u-1"),
+         %{"subtype" => "rewind_files", "user_message_id" => "u-1"}, %{}, {:ok, %{}}},
+        {&DuplexSession.rewind_files(&1, "u-1", dry_run: true),
+         %{"subtype" => "rewind_files", "user_message_id" => "u-1", "dryRun" => true},
+         %{"n" => 1}, {:ok, %{"n" => 1}}},
+        {&DuplexSession.get_settings/1, %{"subtype" => "get_settings"}, %{"applied" => %{}},
+         {:ok, %{"applied" => %{}}}},
+        {&DuplexSession.apply_flag_settings(&1, %{"model" => "haiku"}),
+         %{"subtype" => "apply_flag_settings", "settings" => %{"model" => "haiku"}}, nil, :ok}
+      ]
+    end
+
+    test "each helper sends its request and maps the response" do
+      for {call, expected_request, body, expected_return} <- helper_cases() do
+        {pid, handle} = start()
+        parent = self()
+        spawn_link(fn -> send(parent, {:helper_result, call.(pid)}) end)
+
+        assert_receive {:wire_out,
+                        %{"type" => "control_request", "request_id" => id, "request" => request}}
+
+        assert request == expected_request
+
+        response = %{subtype: "success", request_id: id}
+        response = if body, do: Map.put(response, :response, body), else: response
+        cli_says(pid, handle, %{type: "control_response", response: response})
+
+        assert_receive {:helper_result, ^expected_return}
+      end
+    end
+
+    test "a CLI error comes back as :duplex_control_failed" do
+      {pid, handle} = start()
+      parent = self()
+
+      spawn_link(fn ->
+        send(parent, {:helper_result, DuplexSession.set_permission_mode(pid, :plan)})
+      end)
+
+      assert_receive {:wire_out, %{"request_id" => id}}
+
+      cli_says(pid, handle, %{
+        type: "control_response",
+        response: %{subtype: "error", request_id: id, error: "Cannot set permission mode"}
+      })
+
+      assert_receive {:helper_result,
+                      {:error,
+                       %Error{kind: :duplex_control_failed, reason: "Cannot set permission mode"}}}
+    end
+
+    test "an unknown permission mode raises before anything is sent" do
+      {pid, _handle} = start()
+      assert_raise ArgumentError, fn -> DuplexSession.set_permission_mode(pid, :nope) end
+      refute_received {:wire_out, _}
+    end
+  end
 end
