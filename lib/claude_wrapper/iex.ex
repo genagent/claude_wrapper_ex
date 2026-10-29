@@ -74,7 +74,7 @@ defmodule ClaudeWrapper.IEx do
   @config_key :claude_wrapper_iex_config
   @history_key :claude_wrapper_iex_history
 
-  @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug]
+  @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug, :runner, :runner_options]
   @composition_keys [:attach, :git_diff, :git_log, :git_status, :prepend, :append, :vars]
 
   @typedoc "A session row as returned by `sessions/0`."

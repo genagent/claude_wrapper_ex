@@ -196,7 +196,9 @@ defmodule ClaudeWrapper do
   `:allowed_tools`, `:disallowed_tools`, `:add_dir`, `:files`, `:mcp_config`,
   `:plugin_dirs`, `:worktree`, `:fork_session`, `:setting_sources`,
   `:json_schema`, `:betas`) -- see `ClaudeWrapper.Query.apply_opts/2` for the
-  authoritative full list.
+  authoritative full list. An option that is neither a config option, an
+  execution observer, nor a `Query.apply_opts/2` option raises
+  `ArgumentError`.
   """
   @spec query(String.t(), keyword()) :: {:ok, Result.t()} | {:error, term()}
   def query(prompt, opts \\ []) do
