@@ -130,6 +130,8 @@ end
 {:ok, %{"mcpServers" => _}} = ClaudeWrapper.DuplexSession.control(pid, %{subtype: "mcp_status"})
 ```
 
+Typed helpers cover the requests checked against the CLI: `set_model/2`, `set_permission_mode/2`, `set_max_thinking_tokens/2`, `mcp_status/1`, `mcp_toggle/3`, `mcp_reconnect/2`, `mcp_set_servers/2`, `stop_task/2`, `rewind_files/3`, `get_settings/1` and `apply_flag_settings/2`.
+
 **In-process MCP tools.** `:sdk_mcp_servers` serves MCP from inside the BEAM over the session's own stdio: no port, no subprocess, no config file. A server is any JSON-RPC handler function; `DuplexSession.SdkMcp.tool_server/2` builds one from a list of tools. `:initialize` sends the protocol's `initialize` request (with hooks or other fields) and `initialize_response/2` returns the CLI's answer.
 
 ```elixir

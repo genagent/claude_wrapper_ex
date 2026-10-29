@@ -667,7 +667,7 @@ defmodule ClaudeWrapper.IntegrationTest do
 
     @control_args ["--strict-mcp-config", "--no-session-persistence", "--model", "haiku"]
 
-    test "initialize, mcp_status, set_permission_mode and set_model", %{config: config} do
+    test "initialize, raw control requests and the typed helpers", %{config: config} do
       {:ok, pid} =
         DuplexSession.start_link(
           config: config,
@@ -687,10 +687,19 @@ defmodule ClaudeWrapper.IntegrationTest do
         assert {:ok, %{"mode" => "plan"}} =
                  DuplexSession.control(pid, %{subtype: "set_permission_mode", mode: "plan"})
 
-        assert {:ok, %{"model" => model}} =
-                 DuplexSession.control(pid, %{subtype: "set_model", model: "sonnet"})
-
+        assert :ok = DuplexSession.set_permission_mode(pid, :accept_edits)
+        assert {:ok, model} = DuplexSession.set_model(pid, "sonnet")
         assert model =~ "sonnet"
+        assert :ok = DuplexSession.set_max_thinking_tokens(pid, 1024)
+        assert {:ok, [%{"name" => "app"}]} = DuplexSession.mcp_status(pid)
+        assert :ok = DuplexSession.mcp_toggle(pid, "app", false)
+        assert {:ok, [%{"status" => "disabled"}]} = DuplexSession.mcp_status(pid)
+        assert :ok = DuplexSession.mcp_toggle(pid, "app", true)
+        assert {:ok, %{"applied" => %{}}} = DuplexSession.get_settings(pid)
+        assert :ok = DuplexSession.stop_task(pid, "no-such-task")
+
+        assert {:error, %ClaudeWrapper.Error{kind: :duplex_control_failed}} =
+                 DuplexSession.rewind_files(pid, "no-such-message", dry_run: true)
 
         assert {:error, %ClaudeWrapper.Error{kind: :duplex_control_failed}} =
                  DuplexSession.control(pid, %{subtype: "no_such_request"})
