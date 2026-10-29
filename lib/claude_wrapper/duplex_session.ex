@@ -849,10 +849,10 @@ defmodule ClaudeWrapper.DuplexSession do
 
     # A `%Query{}`'s spawn-time knobs come first; explicit `:extra_args`
     # follow as the escape hatch (and win on any repeated flag).
-    query_args =
+    {query_args, config} =
       case Keyword.get(opts, :query) do
-        %Query{} = query -> Query.spawn_args(query)
-        nil -> []
+        %Query{} = query -> {Query.spawn_args(query), Query.with_spawn_env(query, config)}
+        nil -> {[], config}
       end
 
     sdk_mcp_servers = fetch_sdk_mcp_servers!(opts)

@@ -33,6 +33,10 @@ case "$FAKE_CLAUDE_SCENARIO" in
   scalar)
     printf '{%s,"subtype":"success","is_error":false,"result":"","structured_output":"Ada Lovelace"}\n' "$base"
     ;;
+  env_probe)
+    # Reports the auto-memory switch hermetic sets (#327) as the result text.
+    printf '{%s,"subtype":"success","is_error":false,"result":"auto_memory_off=%s"}\n' "$base" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}"
+    ;;
   native_error)
     # A native failure that still carries a partial object.
     printf '{%s,"subtype":"error_max_structured_output_retries","is_error":true,"result":"","structured_output":{"name":"partial"}}\n' "$base"

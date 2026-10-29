@@ -428,6 +428,19 @@ defmodule ClaudeWrapper.Query do
     * `:project` -> `--setting-sources user` -- seals project + local
       ambient config, keeps the user's global `~/.claude`.
 
+  Both scopes also turn off Claude Code's auto-memory by setting
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` on the spawned process. Without it,
+  `--setting-sources ""` still loads `~/.claude/projects/<slug>/memory/MEMORY.md`
+  into the prompt and tells the agent to write memory files there (checked
+  on Claude Code 2.1.312, #327). The variable applies to `execute/2,3`,
+  `stream/2` and a `DuplexSession` started with this query. A caller that
+  sets the same variable in `Config.env` keeps its own value.
+
+  With `setting_sources/2` set to `"project"` and a working directory under
+  `$HOME`, Claude Code's ancestor walk also reads `~/.claude/CLAUDE.md` and
+  `~/.claude/rules/` as project instructions. Hermetic never emits
+  `project`.
+
   Hermetic seals the promptspace WITHOUT changing auth: it never emits
   `--bare` (which would force `ANTHROPIC_API_KEY` billing). OAuth /
   keychain / subscription auth is untouched.
@@ -589,6 +602,8 @@ defmodule ClaudeWrapper.Query do
   """
   @spec execute(t(), Config.t()) :: {:ok, Result.t()} | {:error, Error.t()}
   def execute(%__MODULE__{} = query, %Config{} = config) do
+    config = with_spawn_env(query, config)
+
     if Runner.options(config) == [] do
       query = %{query | output_format: :json}
 
@@ -673,6 +688,8 @@ defmodule ClaudeWrapper.Query do
   def execute(%__MODULE__{} = query, %Config{} = config, []), do: execute(query, config)
 
   def execute(%__MODULE__{} = query, %Config{} = config, opts) do
+    config = with_spawn_env(query, config)
+
     # The execution observer is extracted first so every later preflight
     # rejection (unknown or duplicate keys, other invalid observers) still
     # delivers its not-started terminal record.
@@ -1189,6 +1206,7 @@ defmodule ClaudeWrapper.Query do
   @spec stream(t(), Config.t()) :: Enumerable.t()
   def stream(%__MODULE__{} = query, %Config{} = config) do
     query = %{query | output_format: :stream_json}
+    config = with_spawn_env(query, config)
 
     Telemetry.span_stream(query, fn -> do_stream(query, config) end)
   end
@@ -1384,6 +1402,20 @@ defmodule ClaudeWrapper.Query do
         exclude_dynamic_system_prompt_sections: true
     }
   end
+
+  @doc false
+  # The environment a query needs on top of `Config.env`, added to the
+  # config at each spawn site. A caller's own entry for the same name wins.
+  @spec with_spawn_env(t(), Config.t()) :: Config.t()
+  def with_spawn_env(%__MODULE__{} = q, %Config{env: env} = config) do
+    added = Enum.reject(spawn_env(q), fn {name, _} -> List.keymember?(env, name, 0) end)
+    if added == [], do: config, else: %{config | env: env ++ added}
+  end
+
+  # Auto-memory is ambient per-project state that --setting-sources does not
+  # seal (#327).
+  defp spawn_env(%__MODULE__{hermetic: nil}), do: []
+  defp spawn_env(%__MODULE__{}), do: [{"CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"}]
 
   defp hermetic_setting_sources(:full), do: ""
   defp hermetic_setting_sources(:project), do: "user"
