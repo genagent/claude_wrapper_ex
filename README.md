@@ -224,7 +224,7 @@ The CLI's own rail-stop caps are typed, recoverable errors, distinct from a genu
 
 ### Leak-free execution (opt-in)
 
-By default a timeout, halted stream, closed session, or BEAM death closes the Erlang port or shuts down a `Task`, which closes the pipes but sends **no signal** to the OS process, so `claude` and every stdio MCP server it spawned can keep running (see [#185](https://github.com/genagent/claude_wrapper_ex/issues/185)). Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death):
+On the default Port paths, a timeout, halted stream, closed session, owner death or BEAM death stops `claude` itself: a small `/bin/sh` supervisor (one-shot and streaming) or a lifeline port (`DuplexSession`) sends SIGINT, then SIGTERM 2 s later, then SIGKILL 1 s after that ([#303](https://github.com/genagent/claude_wrapper_ex/issues/303)). A closed duplex session first gets 1 s to exit on its own stdin EOF. Only the `claude` pid is signalled, so processes it started (stdio MCP servers, tool commands) are stopped only if `claude` stops them, and a pid recycled in the moment between `claude`'s exit and a signal is a residual risk. `ClaudeWrapper.Config.exec/2`, used by the `Commands.*` subcommand wrappers, still sends no signal on timeout. Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death), which also reaches the CLI's descendants in its group:
 
 ```elixir
 # mix.exs:  {:forcola, "~> 0.7.0"}

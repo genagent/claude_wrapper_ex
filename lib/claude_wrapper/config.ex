@@ -201,6 +201,10 @@ defmodule ClaudeWrapper.Config do
   (the default) is unbounded, exactly as before. A spawn failure (missing
   binary) still crashes the caller via the task link, as the direct call did.
 
+  Killing the task on timeout closes the pipes but sends no signal to the
+  subcommand, unlike the `Runner.Port` paths (#303); subcommands are short
+  and do not run model turns.
+
   This helper calls `System.cmd/3` directly and does not dispatch through
   `config.runner`. Because it cannot honor runner options (for example
   `env_mode: :replace`), it raises `ArgumentError` before spawning when the

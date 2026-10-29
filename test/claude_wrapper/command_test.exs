@@ -82,15 +82,8 @@ defmodule ClaudeWrapper.CommandTest do
 
   describe "launcher_args/2 (#196, #305)" do
     test "passes the binary and each argument as positional parameters" do
-      assert Command.launcher_args("claude", ["--setting-sources", ""]) ==
-               [
-                 "-c",
-                 ~S(exec "$@" </dev/null),
-                 "claude-wrapper",
-                 "claude",
-                 "--setting-sources",
-                 ""
-               ]
+      assert ["-c", _script, "claude-wrapper", "claude", "--setting-sources", ""] =
+               Command.launcher_args("claude", ["--setting-sources", ""])
     end
 
     test "an empty arg stays a distinct token" do

@@ -4,12 +4,13 @@ defmodule ClaudeWrapper.Runner do
 
   Two shapes cover the non-duplex paths: a bounded one-shot `run/4` and
   an NDJSON `stream_lines/4`. The default implementation is
-  `ClaudeWrapper.Runner.Port`, the `System.cmd`/`Port` code the library
-  has always used.
+  `ClaudeWrapper.Runner.Port`, which runs the CLI under a `/bin/sh`
+  supervisor that signals it (SIGINT, SIGTERM, SIGKILL) when a timeout, a
+  halted stream or BEAM death ends the run early.
 
-  For leak-free execution -- where a timeout, a halted stream, or BEAM
-  death kills the whole `claude` process group (the CLI and every stdio
-  MCP server it spawned) rather than abandoning it -- add
+  For leak-free execution -- where those events kill the whole `claude`
+  process group (the CLI and every stdio MCP server it spawned) rather than
+  only the CLI -- add
   [`forcola`](https://hex.pm/packages/forcola) to your deps and select
   its runner:
 

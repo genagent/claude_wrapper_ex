@@ -645,15 +645,16 @@ defmodule ClaudeWrapper.DuplexSession do
   Stop the session: shut down the GenServer, which calls the adapter's
   `close/1` on the port during `terminate/2`.
 
-  With the default `ClaudeWrapper.DuplexSession.Adapter.Port`, close severs
-  the stdio pipes without sending any signal to the OS process and without
-  reaping it, so the `claude` child (and any stdio MCP servers it spawned)
-  is orphaned rather than terminated (see #185). This function does *not*
-  wait for the child to exit; `timeout` is only the `GenServer.stop/3`
+  With the default `ClaudeWrapper.DuplexSession.Adapter.Port`, close
+  closes `claude`'s stdin, which an idle `claude` exits on, and its lifeline
+  port: after 1 s a `claude` that is still running gets SIGINT, then SIGTERM
+  2 s later, then SIGKILL (#303). Only the `claude` pid is signalled; stdio
+  MCP servers it spawned stop only if `claude` stops them. This function does
+  *not* wait for the child to exit; `timeout` is only the `GenServer.stop/3`
   terminate deadline.
 
-  For SIGTERM-then-SIGKILL group termination that actually reaps the child,
-  configure `ClaudeWrapper.DuplexSession.Adapter.Forcola`
+  For SIGTERM-then-SIGKILL group termination that reaps the child and its
+  process group, configure `ClaudeWrapper.DuplexSession.Adapter.Forcola`
   (`config :claude_wrapper, duplex_adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola`).
 
   See also `close/1` for a short-form alias.

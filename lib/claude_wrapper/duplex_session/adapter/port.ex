@@ -11,7 +11,7 @@ defmodule ClaudeWrapper.DuplexSession.Adapter.Port do
 
   @behaviour ClaudeWrapper.DuplexSession.Adapter
 
-  alias ClaudeWrapper.Config
+  alias ClaudeWrapper.{Command, Config}
 
   @impl true
   def open(opts) do
@@ -23,7 +23,27 @@ defmodule ClaudeWrapper.DuplexSession.Adapter.Port do
         env_opts(config) ++
         cd_opts(config)
 
-    {:ok, Port.open({:spawn_executable, config.binary}, port_opts)}
+    port = Port.open({:spawn_executable, config.binary}, port_opts)
+    open_lifeline(port)
+    {:ok, port}
+  end
+
+  # A second port that signals claude when the session closes its transport
+  # or the BEAM dies (#303); see ClaudeWrapper.Command.lifeline_args/1. It is
+  # opened by, and so closes with, the session process; the adapter callbacks
+  # run in that process, so the lifeline is kept in its dictionary.
+  defp open_lifeline(port) do
+    with {:os_pid, os_pid} <- Port.info(port, :os_pid) do
+      lifeline =
+        Port.open(
+          {:spawn_executable, "/bin/sh"},
+          [:binary, {:args, Command.lifeline_args(os_pid)}]
+        )
+
+      Process.put({__MODULE__, :lifeline, port}, lifeline)
+    end
+  rescue
+    ErlangError -> :ok
   end
 
   @impl true
@@ -35,7 +55,20 @@ defmodule ClaudeWrapper.DuplexSession.Adapter.Port do
   @impl true
   def close(port) do
     if is_port(port) and Port.info(port) != nil, do: Port.close(port)
+
+    case Process.delete({__MODULE__, :lifeline, port}) do
+      lifeline when is_port(lifeline) -> close_port(lifeline)
+      nil -> :ok
+    end
+
     :ok
+  end
+
+  defp close_port(port) do
+    if Port.info(port) != nil, do: Port.close(port)
+    :ok
+  rescue
+    ArgumentError -> :ok
   end
 
   defp env_opts(%Config{env: []}), do: []

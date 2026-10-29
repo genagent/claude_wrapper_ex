@@ -1246,9 +1246,9 @@ defmodule ClaudeWrapper.Query do
   and each gap between frames), a non-zero exit, or a spawn failure -- the
   stream ends with a terminal
   `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` so the
-  truncation is observable. Note the default runner orphans a stalled
-  subprocess; use the `ClaudeWrapper.Runner.Forcola` runner for leak-free
-  termination.
+  truncation is observable. The default runner signals the CLI when the
+  stream ends early (SIGINT, then SIGTERM and SIGKILL); use the
+  `ClaudeWrapper.Runner.Forcola` runner to also stop its process group.
 
   The runner is `ClaudeWrapper.Runner.impl/1` for `config`. Streaming cannot
   honor runner options, so when `ClaudeWrapper.Runner.options/1` is non-empty
@@ -1320,8 +1320,8 @@ defmodule ClaudeWrapper.Query do
         "message" =>
           "the stream ended without a terminal `result` event (timeout, " <>
             "non-zero exit, or spawn failure); the run may be incomplete. The " <>
-            "default runner also orphans a stalled subprocess -- use the Forcola " <>
-            "runner for leak-free termination."
+            "default runner signals only the CLI process -- use the Forcola " <>
+            "runner to also stop its process group."
       },
       raw: nil
     }
