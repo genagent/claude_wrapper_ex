@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.18.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.17.0...v0.18.0) (2026-10-29)
+
+
+### Features
+
+* **duplex:** generic control request channel ([#299](https://github.com/genagent/claude_wrapper_ex/issues/299)) ([86fa233](https://github.com/genagent/claude_wrapper_ex/commit/86fa23342402b2fdd857bf87e00e650c957c5f71)), closes [#298](https://github.com/genagent/claude_wrapper_ex/issues/298)
+* **duplex:** initialize request and in-process SDK MCP servers ([#301](https://github.com/genagent/claude_wrapper_ex/issues/301)) ([47235af](https://github.com/genagent/claude_wrapper_ex/commit/47235afb091c67f3253bb560dff86fb4c1f3a478)), closes [#298](https://github.com/genagent/claude_wrapper_ex/issues/298)
+* **duplex:** typed helpers for control requests ([#302](https://github.com/genagent/claude_wrapper_ex/issues/302)) ([65e79c5](https://github.com/genagent/claude_wrapper_ex/commit/65e79c503bb32d288ea4ec702519dccb6489ddbf)), closes [#298](https://github.com/genagent/claude_wrapper_ex/issues/298)
+
 ## [0.17.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.16.0...v0.17.0) (2026-10-25)
 
 
