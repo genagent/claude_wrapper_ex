@@ -92,6 +92,22 @@ defmodule ClaudeWrapper.DuplexSession do
   cancels a request with `control_cancel_request`, a pending deferral is
   dropped and subscribers receive `{:control_cancel, request_id}`.
 
+  ## Initialize and in-process MCP servers
+
+  `:initialize` sends the protocol's `initialize` request at start; pass
+  `true`, or a map of extra fields (`hooks`, `agents`, ...) sent as given.
+  `initialize_response/2` returns the CLI's answer (commands, models,
+  account, permission mode, version). Hooks registered this way arrive as
+  `hook_callback` requests at `:on_control_request`.
+
+  `:sdk_mcp_servers` maps a server name to a `t:sdk_mcp_handler/0`. Each
+  server is declared to the CLI as a `type: "sdk"` entry in its own
+  `--mcp-config`, named in `initialize`, and its `mcp_message` requests are
+  routed to the handler, which runs in its own process. Messages for other
+  server names go to `:on_control_request`. The CLI connects these servers
+  shortly after `initialize`. `ClaudeWrapper.DuplexSession.SdkMcp` builds
+  a tool server from a list of tools.
+
   ## Subscriber events
 
   Subscribers receive plain messages of the form `{:claude, event}`:
@@ -201,12 +217,23 @@ defmodule ClaudeWrapper.DuplexSession do
   """
   @type control_handler :: (String.t(), map(), String.t() -> control_reply())
 
+  @typedoc """
+  An in-process MCP server: called with one decoded JSON-RPC message and
+  returns the JSON-RPC response map, or `nil` for a notification. It runs
+  in its own process, so a slow tool call does not block the session.
+  `ClaudeWrapper.DuplexSession.SdkMcp.tool_server/2` builds one from a
+  list of tools.
+  """
+  @type sdk_mcp_handler :: (map() -> map() | nil)
+
   @type option ::
           {:config, Config.t()}
           | {:query, Query.t()}
           | {:extra_args, [String.t()]}
           | {:on_permission, permission_handler()}
           | {:on_control_request, control_handler()}
+          | {:initialize, boolean() | map()}
+          | {:sdk_mcp_servers, %{String.t() => sdk_mcp_handler()}}
           | {:adapter, module()}
           | {:adapter_opts, keyword()}
           | {:owner, pid()}
@@ -246,6 +273,10 @@ defmodule ClaudeWrapper.DuplexSession do
           stderr_capture_bytes: non_neg_integer(),
           deferred_permissions: MapSet.t(String.t()),
           deferred_controls: MapSet.t(String.t()),
+          initialize: :not_requested | :pending | {:ok, map()} | {:error, Error.t()},
+          initialize_waiters: [GenServer.from()],
+          sdk_mcp_servers: %{String.t() => sdk_mcp_handler()},
+          mcp_tasks: %{pid() => {reference(), String.t()}},
           turn_span: {integer(), map()} | nil,
           session_monotonic: integer() | nil
         }
@@ -270,7 +301,11 @@ defmodule ClaudeWrapper.DuplexSession do
     stderr: <<>>,
     stderr_capture_bytes: @default_stderr_capture_bytes,
     deferred_permissions: MapSet.new(),
-    deferred_controls: MapSet.new()
+    deferred_controls: MapSet.new(),
+    initialize: :not_requested,
+    initialize_waiters: [],
+    sdk_mcp_servers: %{},
+    mcp_tasks: %{}
   ]
 
   # --- Public API ------------------------------------------------------
@@ -296,6 +331,10 @@ defmodule ClaudeWrapper.DuplexSession do
       (default `deny_all/2`).
     * `:on_control_request` -- `t:control_handler/0` for every other
       inbound control request (default `unsupported_control/3`).
+    * `:initialize` -- `true` or a map of extra fields: send `initialize`
+      at start (see `initialize_response/2`). Implied by `:sdk_mcp_servers`.
+    * `:sdk_mcp_servers` -- `%{name => t:sdk_mcp_handler/0}` in-process
+      MCP servers.
     * `:adapter` -- transport module (default `Adapter.Port`).
     * `:adapter_opts` -- transport-specific options. The Forcola adapter
       accepts explicit output bounds, stderr capture size, and an
@@ -428,6 +467,24 @@ defmodule ClaudeWrapper.DuplexSession do
 
   def respond_to_control(server, request_id, reply) when is_binary(request_id) do
     GenServer.call(server, {:respond_to_control, request_id, validate_control_reply!(reply)})
+  end
+
+  @doc """
+  The CLI's response to the `initialize` request sent at start.
+
+  Available when the session was started with `:initialize` or
+  `:sdk_mcp_servers`. Waits for the response if it has not arrived yet.
+  The response describes the session: `commands`, `agents`, `models`,
+  `account`, `output_style`, `current_permission_mode`, the CLI version
+  and more, as the CLI reports them.
+
+  Returns `{:error, %Error{kind: :not_found, reason:
+  :initialize_not_requested}}` when no `initialize` was sent.
+  """
+  @spec initialize_response(GenServer.server(), timeout()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def initialize_response(server, timeout \\ 10_000) do
+    GenServer.call(server, :initialize_response, timeout)
   end
 
   @doc """
@@ -673,7 +730,10 @@ defmodule ClaudeWrapper.DuplexSession do
         nil -> []
       end
 
-    extra_args = query_args ++ Keyword.get(opts, :extra_args, [])
+    sdk_mcp_servers = fetch_sdk_mcp_servers!(opts)
+
+    extra_args =
+      query_args ++ Keyword.get(opts, :extra_args, []) ++ sdk_mcp_args(sdk_mcp_servers)
 
     # Tests substitute a fake binary (e.g. `cat`) that does not understand
     # the duplex flag set; they pass `:args_override` to bypass defaults.
@@ -706,17 +766,19 @@ defmodule ClaudeWrapper.DuplexSession do
       {:ok, handle} ->
         session_monotonic = Telemetry.duplex_session_start(%{command: :duplex_session})
 
-        {:ok,
-         %__MODULE__{
-           port: handle,
-           adapter: adapter,
-           config: config,
-           on_permission: on_permission,
-           on_control_request: on_control_request,
-           owner_ref: owner_ref,
-           stderr_capture_bytes: stderr_capture_bytes,
-           session_monotonic: session_monotonic
-         }}
+        state = %__MODULE__{
+          port: handle,
+          adapter: adapter,
+          config: config,
+          on_permission: on_permission,
+          on_control_request: on_control_request,
+          sdk_mcp_servers: sdk_mcp_servers,
+          owner_ref: owner_ref,
+          stderr_capture_bytes: stderr_capture_bytes,
+          session_monotonic: session_monotonic
+        }
+
+        {:ok, maybe_initialize(state, Keyword.get(opts, :initialize, false))}
 
       {:error, reason} ->
         {:stop, reason}
@@ -727,6 +789,69 @@ defmodule ClaudeWrapper.DuplexSession do
     case Keyword.get(opts, :on_control_request, &__MODULE__.unsupported_control/3) do
       handler when is_function(handler, 3) -> handler
       _ -> raise ArgumentError, ":on_control_request must be a 3-arity function"
+    end
+  end
+
+  defp fetch_sdk_mcp_servers!(opts) do
+    servers = Keyword.get(opts, :sdk_mcp_servers, %{})
+
+    valid? =
+      is_map(servers) and
+        Enum.all?(servers, fn {name, handler} -> is_binary(name) and is_function(handler, 1) end)
+
+    unless valid? do
+      raise ArgumentError, ":sdk_mcp_servers must map server names to 1-arity functions"
+    end
+
+    servers
+  end
+
+  # In-process servers are declared to the CLI as `type: "sdk"` entries in
+  # their own --mcp-config; the CLI merges it with any other --mcp-config.
+  defp sdk_mcp_args(servers) when map_size(servers) == 0, do: []
+
+  defp sdk_mcp_args(servers) do
+    entries = Map.new(servers, fn {name, _} -> {name, %{type: "sdk", name: name}} end)
+    ["--mcp-config", Jason.encode!(%{mcpServers: entries})]
+  end
+
+  # Send `initialize` when asked for, or when SDK MCP servers need it to be
+  # registered. Its response is held for initialize_response/2.
+  defp maybe_initialize(%{sdk_mcp_servers: servers} = state, false)
+       when map_size(servers) == 0,
+       do: state
+
+  defp maybe_initialize(state, initialize) do
+    fields =
+      case initialize do
+        map when is_map(map) ->
+          Map.new(map, fn {key, value} -> {to_string(key), value} end)
+
+        flag when is_boolean(flag) ->
+          %{}
+
+        other ->
+          raise ArgumentError, ":initialize must be a boolean or a map, got: #{inspect(other)}"
+      end
+
+    names = Enum.uniq(Map.get(fields, "sdkMcpServers", []) ++ Map.keys(state.sdk_mcp_servers))
+    fields = if names == [], do: fields, else: Map.put(fields, "sdkMcpServers", names)
+    request = Map.put(fields, "subtype", "initialize")
+
+    request_id = generate_request_id()
+    msg = %{type: "control_request", request_id: request_id, request: request}
+
+    case state.adapter.command(state.port, [Jason.encode!(msg), ?\n]) do
+      :ok ->
+        %{
+          state
+          | initialize: :pending,
+            pending_control: Map.put(state.pending_control, request_id, :initialize)
+        }
+
+      {:error, reason} ->
+        error = Error.new(:terminated, reason: {:transport_write, reason})
+        %{state | initialize: {:error, error}}
     end
   end
 
@@ -823,6 +948,16 @@ defmodule ClaudeWrapper.DuplexSession do
     end
   end
 
+  def handle_call(:initialize_response, from, %{initialize: :pending} = state) do
+    {:noreply, %{state | initialize_waiters: [from | state.initialize_waiters]}}
+  end
+
+  def handle_call(:initialize_response, _from, %{initialize: :not_requested} = state) do
+    {:reply, {:error, Error.new(:not_found, reason: :initialize_not_requested)}, state}
+  end
+
+  def handle_call(:initialize_response, _from, state), do: {:reply, state.initialize, state}
+
   def handle_call({:control, _request}, _from, %{port: nil} = state) do
     {:reply, {:error, Error.new(:duplex_closed)}, state}
   end
@@ -905,6 +1040,27 @@ defmodule ClaudeWrapper.DuplexSession do
      %{state | exit_status: {:failed, {:transport_error, {:puller_down, reason}}}}}
   end
 
+  def handle_info({:mcp_reply, pid, response}, state) do
+    case Map.pop(state.mcp_tasks, pid) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {{ref, id}, rest} ->
+        Process.demonitor(ref, [:flush])
+        write_control_reply(state, id, {:ok, %{mcp_response: response}})
+        {:noreply, %{state | mcp_tasks: rest}}
+    end
+  end
+
+  # An MCP handler process died without replying (it was killed): answer
+  # the CLI so it does not wait on the request.
+  def handle_info({:DOWN, _ref, :process, pid, reason}, %{mcp_tasks: tasks} = state)
+      when is_map_key(tasks, pid) do
+    {{_ref, id}, rest} = Map.pop(tasks, pid)
+    write_control_reply(state, id, {:error, "MCP handler exited: #{inspect(reason)}"})
+    {:noreply, %{state | mcp_tasks: rest}}
+  end
+
   def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
     case Map.get(state.subscribers, pid) do
       ^ref -> {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
@@ -920,6 +1076,7 @@ defmodule ClaudeWrapper.DuplexSession do
       if is_nil(port), do: {state.transport_terminal, state}, else: close_transport(state)
 
     state = fail_pending(state, :terminated)
+    Enum.each(Map.keys(state.mcp_tasks), &Process.exit(&1, :kill))
     notify_exit_waiters(state, final_exit_status(state, reason))
 
     Telemetry.duplex_session_stop(state.session_monotonic, %{
@@ -1045,6 +1202,31 @@ defmodule ClaudeWrapper.DuplexSession do
     end
   end
 
+  # An mcp_message for an in-process server runs its handler in a separate
+  # process; the reply is written when it finishes (see handle_info
+  # {:mcp_reply, ...}). Messages for other server names fall through to
+  # on_control_request.
+  defp dispatch(
+         %{
+           "type" => "control_request",
+           "request_id" => id,
+           "request" => %{"subtype" => "mcp_message", "server_name" => name} = req
+         },
+         %{sdk_mcp_servers: servers} = state
+       )
+       when is_map_key(servers, name) do
+    handler = Map.fetch!(servers, name)
+    message = req["message"] || %{}
+    session = self()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Kernel.send(session, {:mcp_reply, self(), run_mcp_handler(handler, message)})
+      end)
+
+    %{state | mcp_tasks: Map.put(state.mcp_tasks, pid, {ref, id})}
+  end
+
   # Any other inbound control request goes to the on_control_request
   # handler. Every path answers it unless the handler defers, so the CLI is
   # never left waiting on a request nobody handles.
@@ -1100,15 +1282,11 @@ defmodule ClaudeWrapper.DuplexSession do
       {nil, _} ->
         state
 
-      {from, rest} ->
-        reply =
-          case resp do
-            %{"subtype" => "success"} -> {:ok, resp["response"] || %{}}
-            %{"subtype" => "error", "error" => err} -> {:error, control_failed(err)}
-            other -> {:error, control_failed(other)}
-          end
+      {:initialize, rest} ->
+        settle_initialize(%{state | pending_control: rest}, control_reply(resp))
 
-        GenServer.reply(from, reply)
+      {from, rest} ->
+        GenServer.reply(from, control_reply(resp))
         %{state | pending_control: rest}
     end
   end
@@ -1223,11 +1401,49 @@ defmodule ClaudeWrapper.DuplexSession do
   defp fail_pending_control(%{pending_control: pending} = state, reason) do
     error = fail_reason_to_error(reason)
 
-    Enum.each(pending, fn {_id, from} ->
-      GenServer.reply(from, {:error, error})
-    end)
+    Enum.reduce(pending, %{state | pending_control: %{}}, fn
+      {_id, :initialize}, acc ->
+        settle_initialize(acc, {:error, error})
 
-    %{state | pending_control: %{}}
+      {_id, from}, acc ->
+        GenServer.reply(from, {:error, error})
+        acc
+    end)
+  end
+
+  defp control_reply(%{"subtype" => "success"} = resp), do: {:ok, resp["response"] || %{}}
+
+  defp control_reply(%{"subtype" => "error", "error" => err}),
+    do: {:error, control_failed(err)}
+
+  defp control_reply(other), do: {:error, control_failed(other)}
+
+  defp settle_initialize(state, result) do
+    Enum.each(state.initialize_waiters, &GenServer.reply(&1, result))
+    %{state | initialize: result, initialize_waiters: []}
+  end
+
+  # Runs in the handler process. Every outcome becomes a JSON-RPC message so
+  # the CLI always gets an answer.
+  defp run_mcp_handler(handler, message) do
+    case handler.(message) do
+      %{} = response -> response
+      nil -> %{"jsonrpc" => "2.0", "result" => %{}}
+      other -> jsonrpc_error(message, "MCP handler returned #{inspect(other)}")
+    end
+  rescue
+    e -> jsonrpc_error(message, Exception.message(e))
+  catch
+    kind, reason -> jsonrpc_error(message, "#{kind}: #{inspect(reason)}")
+  end
+
+  defp jsonrpc_error(message, text) do
+    error = %{"jsonrpc" => "2.0", "error" => %{"code" => -32_603, "message" => text}}
+
+    case message do
+      %{"id" => id} -> Map.put(error, "id", id)
+      _ -> error
+    end
   end
 
   # Map the internal fail-pending reasons to the canonical Error. A clean

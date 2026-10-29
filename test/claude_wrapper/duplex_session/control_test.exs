@@ -8,7 +8,7 @@ defmodule ClaudeWrapper.DuplexSession.ControlTest.WireAdapter do
   def open(opts) do
     test_pid = Keyword.fetch!(opts, :test_pid)
     handle = {:wire, make_ref(), test_pid}
-    send(test_pid, {:wire_open, handle})
+    send(test_pid, {:wire_open, handle, Keyword.fetch!(opts, :args)})
     {:ok, handle}
   end
 
@@ -42,7 +42,7 @@ defmodule ClaudeWrapper.DuplexSession.ControlTest do
           ]
       )
 
-    assert_receive {:wire_open, handle}
+    assert_receive {:wire_open, handle, _args}
     {pid, handle}
   end
 
@@ -329,6 +329,285 @@ defmodule ClaudeWrapper.DuplexSession.ControlTest do
       assert :ok = DuplexSession.respond_to_control(pid, "c-1", {:ok, %{}})
       :sys.get_state(pid)
       refute_received {:wire_out, _}
+    end
+  end
+
+  describe "initialize" do
+    test "is not sent by default" do
+      {pid, _handle} = start()
+
+      refute_received {:wire_out, _}
+
+      assert {:error, %Error{kind: :not_found, reason: :initialize_not_requested}} =
+               DuplexSession.initialize_response(pid)
+    end
+
+    test "sends the given fields and holds the response for waiters" do
+      {pid, handle} = start(initialize: %{promptSuggestions: true})
+
+      assert_receive {:wire_out,
+                      %{
+                        "type" => "control_request",
+                        "request_id" => id,
+                        "request" =>
+                          %{"subtype" => "initialize", "promptSuggestions" => true} = req
+                      }}
+
+      refute Map.has_key?(req, "sdkMcpServers")
+
+      parent = self()
+      spawn_link(fn -> send(parent, {:init, DuplexSession.initialize_response(pid)}) end)
+      refute_receive {:init, _}, 50
+
+      cli_says(pid, handle, %{
+        type: "control_response",
+        response: %{subtype: "success", request_id: id, response: %{models: [], pid: 1}}
+      })
+
+      assert_receive {:init, {:ok, %{"models" => [], "pid" => 1}}}
+      assert {:ok, %{"pid" => 1}} = DuplexSession.initialize_response(pid)
+    end
+
+    test "an error response is returned to waiters" do
+      {pid, handle} = start(initialize: true)
+      assert_receive {:wire_out, %{"request_id" => id, "request" => %{"subtype" => "initialize"}}}
+
+      cli_says(pid, handle, %{
+        type: "control_response",
+        response: %{subtype: "error", request_id: id, error: "bad init"}
+      })
+
+      assert {:error, %Error{kind: :duplex_control_failed, reason: "bad init"}} =
+               DuplexSession.initialize_response(pid)
+    end
+
+    test "a transport exit while pending fails waiters" do
+      Process.flag(:trap_exit, true)
+      {pid, handle} = start(initialize: true)
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      parent = self()
+      spawn(fn -> send(parent, {:init, DuplexSession.initialize_response(pid)}) end)
+      :sys.get_state(pid)
+      send(pid, {handle, {:exit_status, 1}})
+
+      assert_receive {:init, {:error, %Error{kind: :terminated}}}
+    end
+
+    test "a non-boolean, non-map value raises at start" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {%ArgumentError{}, _}} =
+               DuplexSession.start_link(
+                 config: Config.new(binary: "unused"),
+                 adapter: WireAdapter,
+                 adapter_opts: [test_pid: self()],
+                 initialize: "yes"
+               )
+    end
+  end
+
+  describe "sdk_mcp_servers" do
+    defp mcp_request(id, server, message),
+      do: inbound(id, %{subtype: "mcp_message", server_name: server, message: message})
+
+    test "declares the servers in --mcp-config and initialize" do
+      {:ok, _pid} =
+        DuplexSession.start_link(
+          config: Config.new(binary: "unused"),
+          adapter: WireAdapter,
+          adapter_opts: [test_pid: self()],
+          initialize: %{sdkMcpServers: ["other"]},
+          sdk_mcp_servers: %{"app" => fn _ -> nil end}
+        )
+
+      assert_receive {:wire_open, _handle, args}
+      [config_json] = for {"--mcp-config", json} <- Enum.zip(args, tl(args) ++ [nil]), do: json
+
+      assert Jason.decode!(config_json) == %{
+               "mcpServers" => %{"app" => %{"type" => "sdk", "name" => "app"}}
+             }
+
+      assert_receive {:wire_out,
+                      %{"request" => %{"subtype" => "initialize", "sdkMcpServers" => names}}}
+
+      assert Enum.sort(names) == ["app", "other"]
+    end
+
+    test "routes a message to its handler in another process and writes the reply" do
+      parent = self()
+
+      handler = fn message ->
+        send(parent, {:handler_ran, self(), message})
+        %{"jsonrpc" => "2.0", "id" => message["id"], "result" => %{"tools" => []}}
+      end
+
+      {pid, handle} = start(sdk_mcp_servers: %{"app" => handler})
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      cli_says(
+        pid,
+        handle,
+        mcp_request("m-1", "app", %{jsonrpc: "2.0", id: 1, method: "tools/list"})
+      )
+
+      assert_receive {:handler_ran, handler_pid, %{"method" => "tools/list", "id" => 1}}
+      refute handler_pid == pid
+
+      assert_receive {:wire_out,
+                      %{
+                        "type" => "control_response",
+                        "response" => %{
+                          "subtype" => "success",
+                          "request_id" => "m-1",
+                          "response" => %{
+                            "mcp_response" => %{"id" => 1, "result" => %{"tools" => []}}
+                          }
+                        }
+                      }}
+    end
+
+    test "a blocked handler does not block the session" do
+      parent = self()
+
+      handler = fn message ->
+        send(parent, {:blocked, self()})
+
+        receive do
+          :go -> %{"jsonrpc" => "2.0", "id" => message["id"], "result" => %{}}
+        end
+      end
+
+      {pid, handle} = start(sdk_mcp_servers: %{"app" => handler})
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      cli_says(
+        pid,
+        handle,
+        mcp_request("m-2", "app", %{jsonrpc: "2.0", id: 2, method: "tools/call"})
+      )
+
+      assert_receive {:blocked, handler_pid}
+
+      # The session still answers other traffic while the handler waits.
+      cli_says(pid, handle, inbound("x-1", %{subtype: "hook_callback"}))
+      assert_receive {:wire_out, %{"response" => %{"request_id" => "x-1", "subtype" => "error"}}}
+
+      send(handler_pid, :go)
+
+      assert_receive {:wire_out,
+                      %{"response" => %{"request_id" => "m-2", "subtype" => "success"}}}
+    end
+
+    test "a raising handler becomes a JSON-RPC error with the request id" do
+      {pid, handle} = start(sdk_mcp_servers: %{"app" => fn _ -> raise "kaput" end})
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      cli_says(pid, handle, mcp_request("m-3", "app", %{jsonrpc: "2.0", id: 7, method: "x"}))
+
+      assert_receive {:wire_out,
+                      %{
+                        "response" => %{
+                          "request_id" => "m-3",
+                          "response" => %{
+                            "mcp_response" => %{
+                              "id" => 7,
+                              "error" => %{"code" => -32_603, "message" => "kaput"}
+                            }
+                          }
+                        }
+                      }}
+    end
+
+    test "a nil reply to a notification is acknowledged" do
+      {pid, handle} = start(sdk_mcp_servers: %{"app" => fn _ -> nil end})
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      cli_says(
+        pid,
+        handle,
+        mcp_request("m-4", "app", %{jsonrpc: "2.0", method: "notifications/initialized"})
+      )
+
+      assert_receive {:wire_out,
+                      %{
+                        "response" => %{
+                          "request_id" => "m-4",
+                          "response" => %{"mcp_response" => %{"result" => %{}}}
+                        }
+                      }}
+    end
+
+    test "a message for an unknown server goes to on_control_request" do
+      {pid, handle} = start(sdk_mcp_servers: %{"app" => fn _ -> nil end})
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      cli_says(pid, handle, mcp_request("m-5", "nope", %{jsonrpc: "2.0", id: 1, method: "ping"}))
+
+      assert_receive {:wire_out,
+                      %{
+                        "response" => %{
+                          "request_id" => "m-5",
+                          "subtype" => "error",
+                          "error" => "Unsupported control request subtype: mcp_message"
+                        }
+                      }}
+    end
+
+    test "a killed handler is answered with an error" do
+      parent = self()
+
+      handler = fn _ ->
+        send(parent, {:blocked, self()})
+        Process.sleep(:infinity)
+      end
+
+      {pid, handle} = start(sdk_mcp_servers: %{"app" => handler})
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      cli_says(pid, handle, mcp_request("m-6", "app", %{jsonrpc: "2.0", id: 1, method: "x"}))
+      assert_receive {:blocked, handler_pid}
+      Process.exit(handler_pid, :kill)
+
+      assert_receive {:wire_out,
+                      %{
+                        "response" => %{
+                          "request_id" => "m-6",
+                          "subtype" => "error",
+                          "error" => "MCP handler exited: :killed"
+                        }
+                      }}
+    end
+
+    test "stopping the session kills handlers still running" do
+      parent = self()
+
+      handler = fn _ ->
+        send(parent, {:blocked, self()})
+        Process.sleep(:infinity)
+      end
+
+      {pid, handle} = start(sdk_mcp_servers: %{"app" => handler})
+      assert_receive {:wire_out, %{"request" => %{"subtype" => "initialize"}}}
+
+      cli_says(pid, handle, mcp_request("m-7", "app", %{jsonrpc: "2.0", id: 1, method: "x"}))
+      assert_receive {:blocked, handler_pid}
+      ref = Process.monitor(handler_pid)
+
+      DuplexSession.stop(pid)
+      assert_receive {:DOWN, ^ref, :process, ^handler_pid, :killed}
+    end
+
+    test "invalid server maps raise at start" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {%ArgumentError{}, _}} =
+               DuplexSession.start_link(
+                 config: Config.new(binary: "unused"),
+                 adapter: WireAdapter,
+                 adapter_opts: [test_pid: self()],
+                 sdk_mcp_servers: %{"app" => fn _, _ -> nil end}
+               )
     end
   end
 end
