@@ -550,10 +550,10 @@ defmodule ClaudeWrapper.Query do
     :mcp_config
   ]
 
-  @known_opts MapSet.new(@value_opts ++ @bool_opts ++ @list_opts ++ [:worktree, :hermetic])
+  @known_opts @value_opts ++ @bool_opts ++ @list_opts ++ [:worktree, :hermetic]
 
   @doc false
-  @spec known_opts() :: MapSet.t(atom())
+  @spec known_opts() :: [atom()]
   def known_opts, do: @known_opts
 
   defp check_opt_names!(opts) do
@@ -563,7 +563,7 @@ defmodule ClaudeWrapper.Query do
         {key, _value} when is_atom(key) -> key
         other -> raise ArgumentError, "expected a keyword list of options, got: #{inspect(other)}"
       end)
-      |> Enum.reject(&MapSet.member?(@known_opts, &1))
+      |> Enum.reject(&(&1 in @known_opts))
       |> Enum.uniq()
 
     if unknown != [] do
