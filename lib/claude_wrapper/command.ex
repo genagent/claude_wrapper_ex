@@ -51,19 +51,18 @@ defmodule ClaudeWrapper.Command do
     end
   end
 
-  # Build the `:args` list for a `Port.open({:spawn_executable, "/bin/sh"}, ...)`
-  # call that runs `binary` with `args` and redirects stdin from `/dev/null`.
-  # Used by streaming paths (`Query.stream/2`) to prevent the CLI from
-  # blocking on an inherited-but-empty stdin pipe. `System.cmd`-based
-  # callers (the non-streaming `execute` path) close stdin automatically
-  # and do not need this.
+  @launcher_script ~S(exec "$@" </dev/null)
+
   @doc false
-  @spec shell_cmd_args(String.t(), [String.t()]) :: [String.t()]
-  def shell_cmd_args(binary, args) do
-    escaped_args = Enum.map_join(args, " ", &shell_escape/1)
-    shell_cmd = "#{shell_escape(binary)} #{escaped_args} < /dev/null"
-    ["-c", shell_cmd]
-  end
+  # The `:args` for `Port.open({:spawn_executable, "/bin/sh"}, ...)` that runs
+  # `binary` with `args` and stdin from /dev/null. The binary and every
+  # argument are positional parameters run as "$@", so nothing is quoted and
+  # each one is a separate argv string: Linux's 128 KiB per-string limit
+  # applies to each argument, not to the joined command (#305). An empty
+  # stdin matters in print mode: Claude Code 2.1.312 waits 3 s for data on an
+  # open stdin pipe before it starts (#304).
+  @spec launcher_args(String.t(), [String.t()]) :: [String.t()]
+  def launcher_args(binary, args), do: ["-c", @launcher_script, "claude-wrapper", binary | args]
 
   # A conservative allowlist of shell-safe characters. Anything else -- and the
   # empty string -- gets single-quoted below.

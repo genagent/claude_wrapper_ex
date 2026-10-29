@@ -68,35 +68,64 @@ defmodule ClaudeWrapper.CommandTest do
       ]
 
       fmt = String.duplicate("%s\\n", length(argv))
-      ["-c", shell_cmd] = Command.shell_cmd_args("printf", [fmt | argv])
 
-      {out, 0} = System.cmd("/bin/sh", ["-c", shell_cmd])
+      {out, 0} =
+        System.cmd(
+          "/bin/sh",
+          Command.launcher_args(System.find_executable("printf"), [fmt | argv])
+        )
 
       received = out |> String.split("\n", trim: false) |> Enum.take(length(argv))
       assert received == argv
     end
   end
 
-  describe "shell_cmd_args/2 (#196)" do
-    test "an empty arg (e.g. hermetic's --setting-sources \"\") stays a distinct token" do
-      assert Command.shell_cmd_args("claude", ["--setting-sources", ""]) ==
-               ["-c", "claude --setting-sources '' < /dev/null"]
+  describe "launcher_args/2 (#196, #305)" do
+    test "passes the binary and each argument as positional parameters" do
+      assert Command.launcher_args("claude", ["--setting-sources", ""]) ==
+               [
+                 "-c",
+                 ~S(exec "$@" </dev/null),
+                 "claude-wrapper",
+                 "claude",
+                 "--setting-sources",
+                 ""
+               ]
+    end
+
+    test "an empty arg stays a distinct token" do
+      binary = executable_fixture("argv")
+
+      assert {"--setting-sources\n\nnext\n", 0} =
+               System.cmd(
+                 "/bin/sh",
+                 Command.launcher_args(binary, ["--setting-sources", "", "next"])
+               )
     end
 
     test "executes a binary whose path contains spaces" do
       binary = executable_fixture("claude runner")
-      ["-c", shell_cmd] = Command.shell_cmd_args(binary, ["first arg", "second"])
 
-      assert {"first arg\nsecond\n", 0} = System.cmd("/bin/sh", ["-c", shell_cmd])
+      assert {"first arg\nsecond\n", 0} =
+               System.cmd("/bin/sh", Command.launcher_args(binary, ["first arg", "second"]))
     end
 
     test "treats shell metacharacters in the binary path literally" do
       for name <- ["claude$HOME", "claude;echo injected", "claude's CLI"] do
         binary = executable_fixture(name)
-        ["-c", shell_cmd] = Command.shell_cmd_args(binary, ["literal"])
 
-        assert {"literal\n", 0} = System.cmd("/bin/sh", ["-c", shell_cmd])
+        assert {"literal\n", 0} =
+                 System.cmd("/bin/sh", Command.launcher_args(binary, ["literal"]))
       end
+    end
+
+    test "gives the binary an empty stdin" do
+      dir = Path.dirname(executable_fixture("unused"))
+      binary = Path.join(dir, "read_stdin")
+      File.write!(binary, "#!/bin/sh\ncat\necho eof\n")
+      File.chmod!(binary, 0o755)
+
+      assert {"eof\n", 0} = System.cmd("/bin/sh", Command.launcher_args(binary, []))
     end
   end
 

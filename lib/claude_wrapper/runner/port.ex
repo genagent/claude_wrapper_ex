@@ -1,17 +1,24 @@
 defmodule ClaudeWrapper.Runner.Port do
   @moduledoc """
-  Default runner: `System.cmd/3` for one-shot calls and a `/bin/sh`
-  `Port` for NDJSON streaming.
+  Default runner: a `/bin/sh` `Port` for both one-shot calls and NDJSON
+  streaming.
 
-  This is the execution path the library has always used. On a timeout
-  it shuts down the `Task` (one-shot) or closes the port (streaming),
-  which closes the pipes but sends no signal to the OS process. The CLI
-  and any subprocess it spawned may keep running until they next touch a
-  closed pipe. For strict termination, use `ClaudeWrapper.Runner.Forcola`
-  (see `ClaudeWrapper.Runner` and #185).
+  Both paths start the CLI through `/bin/sh -c 'exec "$@" </dev/null'`,
+  which passes the binary and arguments as positional parameters (no
+  quoting, one argv string each) and gives the CLI an empty stdin. A
+  missing or non-executable binary is reported as `:binary_not_found`
+  before anything is spawned.
+
+  On a timeout it shuts down the `Task` (one-shot) or closes the port
+  (streaming), which closes the pipes but sends no signal to the OS
+  process. The CLI and any subprocess it spawned may keep running until
+  they next touch a closed pipe. For strict termination, use
+  `ClaudeWrapper.Runner.Forcola` (see `ClaudeWrapper.Runner` and #185).
   """
 
   @behaviour ClaudeWrapper.Runner
+
+  import Bitwise, only: [&&&: 2]
 
   alias ClaudeWrapper.{Command, Config}
 
@@ -19,47 +26,66 @@ defmodule ClaudeWrapper.Runner.Port do
   @stream_idle_timeout_ms 300_000
 
   @impl true
-  def run(binary, args, opts, nil) do
-    {stdout, code} = System.cmd(binary, args, opts)
-    {:ok, {stdout, code}}
-  rescue
-    e in ErlangError -> {:error, launch_error(e)}
-  end
-
   def run(binary, args, opts, timeout) do
-    # Rescue INSIDE the task: a missing/unlaunchable binary raises here, and
-    # `Task.async` links, so an un-rescued raise crashes the *caller* (the outer
-    # rescue below could not catch that linked exit -- the previous code did, so
-    # a missing binary on the timeout path crashed the job). Wrap the outcome so
-    # both success and failure come back through `Task.yield`.
-    task =
-      Task.async(fn ->
-        try do
-          {:ok, System.cmd(binary, args, opts)}
-        rescue
-          e in ErlangError -> {:error, launch_error(e)}
-        end
-      end)
+    with {:ok, path} <- resolve_executable(binary) do
+      # The port is owned by the task, so shutting the task down on timeout
+      # closes it. Errors are returned, not raised, so nothing crashes the
+      # linked caller.
+      task = Task.async(fn -> run_port(path, args, opts) end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task) do
-      {:ok, {:ok, {stdout, code}}} -> {:ok, {stdout, code}}
-      {:ok, {:error, reason}} -> {:error, reason}
-      nil -> {:error, :timeout}
+      case Task.yield(task, timeout || :infinity) || Task.shutdown(task) do
+        {:ok, reply} -> reply
+        nil -> {:error, :timeout}
+      end
     end
   end
 
-  # A missing or non-executable binary fails the OS spawn with `:enoent` /
-  # `:eacces`; surface it as the typed `:binary_not_found` signal (run_cmd turns
-  # it into a `%Error{kind: :binary_not_found}`) rather than a generic `:io`,
-  # which the classifier would retry to exhaustion.
-  defp launch_error(%ErlangError{original: reason}) when reason in [:enoent, :eacces],
-    do: {:binary_not_found, reason}
+  defp run_port(path, args, opts) do
+    port_opts =
+      [:binary, :exit_status, :use_stdio, {:args, Command.launcher_args(path, args)}] ++
+        stderr_opts(opts) ++ env_opts(opts) ++ cd_opts(opts)
 
-  defp launch_error(e), do: {:io, e}
+    port = Port.open({:spawn_executable, "/bin/sh"}, port_opts)
+    collect(port, [])
+  rescue
+    e in ErlangError -> {:error, {:io, e}}
+  end
+
+  defp collect(port, acc) do
+    receive do
+      {^port, {:data, data}} -> collect(port, [acc | data])
+      {^port, {:exit_status, code}} -> {:ok, {IO.iodata_to_binary(acc), code}}
+    end
+  end
+
+  # Through a shell a missing binary would only show up as exit status 127,
+  # so check it here and keep the typed `:binary_not_found` signal (#200)
+  # that run_cmd turns into `%Error{kind: :binary_not_found}`. A path with a
+  # `/` is resolved against the VM's working directory, as `System.cmd/3`
+  # did; a bare name is looked up on `PATH`.
+  defp resolve_executable(binary) do
+    if String.contains?(binary, "/") do
+      path = Path.expand(binary)
+
+      case File.stat(path) do
+        {:ok, %File.Stat{type: :regular, mode: mode}} when (mode &&& 0o111) != 0 -> {:ok, path}
+        {:ok, _stat} -> {:error, {:binary_not_found, :eacces}}
+        {:error, _reason} -> {:error, {:binary_not_found, :enoent}}
+      end
+    else
+      case System.find_executable(binary) do
+        nil -> {:error, {:binary_not_found, :enoent}}
+        path -> {:ok, path}
+      end
+    end
+  end
+
+  defp stderr_opts(opts),
+    do: if(Keyword.get(opts, :stderr_to_stdout, false), do: [:stderr_to_stdout], else: [])
 
   @impl true
   def stream_lines(binary, args, opts, timeout) do
-    shell_args = Command.shell_cmd_args(binary, args)
+    shell_args = Command.launcher_args(binary, args)
     idle_timeout = timeout || @stream_idle_timeout_ms
 
     port_opts =
