@@ -13,7 +13,7 @@ defmodule ClaudeWrapper.Runner.Port do
 
   @behaviour ClaudeWrapper.Runner
 
-  alias ClaudeWrapper.Command
+  alias ClaudeWrapper.{Command, Config}
 
   # Safety timeout for a hung streaming producer when no deadline is set.
   @stream_idle_timeout_ms 300_000
@@ -129,12 +129,9 @@ defmodule ClaudeWrapper.Runner.Port do
   defp env_opts(opts) do
     case Keyword.get(opts, :env, []) do
       [] -> []
-      env -> [{:env, Enum.map(env, fn {key, value} -> {to_charlist(key), env_value(value)} end)}]
+      env -> [{:env, Config.port_env(env)}]
     end
   end
-
-  defp env_value(false), do: false
-  defp env_value(value), do: to_charlist(value)
 
   defp cd_opts(opts) do
     case Keyword.get(opts, :cd) do
