@@ -29,13 +29,22 @@ defmodule ClaudeWrapper.DuplexSessionTest do
   # Port.command writes raw bytes to its stdin, which `cat` echoes back
   # to stdout. The duplex_session reads and dispatches them as if they
   # came from real claude.
-  defp start_with_fake_claude do
+  defp start_with_fake_claude(opts \\ []) do
     config = Config.new(binary: System.find_executable("cat"))
     # cat does not understand the duplex flags, so override args entirely
-    # via the test-only :args_override hook.
-    {:ok, pid} = DuplexSession.start_link(config: config, args_override: [])
+    # via the test-only :args_override hook. cat also echoes every line the
+    # session writes, so an outbound control_request comes back as an inbound
+    # one; deferring those keeps the echo from answering the session's own
+    # request. Tests of inbound handling pass their own handler.
+    {:ok, pid} =
+      DuplexSession.start_link(
+        opts ++ [config: config, args_override: [], on_control_request: &defer_control/3]
+      )
+
     pid
   end
+
+  defp defer_control(_subtype, _request, _request_id), do: :defer
 
   defp inject(pid, term) do
     state = :sys.get_state(pid)
@@ -795,7 +804,14 @@ defmodule ClaudeWrapper.DuplexSessionTest do
     # caller crashes when we kill the session.
     Process.flag(:trap_exit, true)
     config = Config.new(binary: System.find_executable("cat"))
-    {:ok, pid} = DuplexSession.start_link(config: config, args_override: [])
+
+    {:ok, pid} =
+      DuplexSession.start_link(
+        config: config,
+        args_override: [],
+        on_control_request: &defer_control/3
+      )
+
     pid
   end
 

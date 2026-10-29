@@ -123,6 +123,13 @@ end
 {:ok, pid} = ClaudeWrapper.DuplexSession.start_link(config: config, on_permission: on_permission)
 ```
 
+**Control requests.** `control/3` sends any stream-json control request and returns the CLI's response; `:on_control_request` answers inbound ones other than `can_use_tool` (defer with `:defer` and reply later through `respond_to_control/3`). Without a handler, inbound requests are answered with an error rather than left waiting.
+
+```elixir
+{:ok, %{"model" => _}} = ClaudeWrapper.DuplexSession.control(pid, %{subtype: "set_model", model: "sonnet"})
+{:ok, %{"mcpServers" => _}} = ClaudeWrapper.DuplexSession.control(pid, %{subtype: "mcp_status"})
+```
+
 **Supervise it.** Each session owns one Port; pair it with a `DynamicSupervisor` for per-conversation isolation, named registration, and OTP restart semantics. See `ClaudeWrapper.DuplexSession` for the full API and message vocabulary.
 
 ### REPL helpers

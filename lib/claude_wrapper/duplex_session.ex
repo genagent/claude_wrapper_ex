@@ -74,6 +74,24 @@ defmodule ClaudeWrapper.DuplexSession do
   Without an explicit callback or one of the CLI's other permission
   modes (`plan`, `bypass_permissions`, etc.) tool use will not work.
 
+  ## Control requests
+
+  The stream-json protocol carries `control_request` messages in both
+  directions. `can_use_tool` is handled by `:on_permission` above; this
+  session also exposes the rest of the channel as primitives:
+
+    * `control/3` sends any outbound request (`%{subtype: "set_model",
+      model: "sonnet"}`, `%{subtype: "mcp_status"}`, ...) and returns the
+      CLI's response map. `interrupt/2` is built on it.
+    * `:on_control_request` receives every other inbound request as
+      `(subtype, request, request_id)` and returns a `t:control_reply/0`.
+      Returning `:defer` leaves the request open for `respond_to_control/3`.
+
+  The default inbound handler, `unsupported_control/3`, replies with an
+  error, so an unhandled request never leaves the CLI waiting. If the CLI
+  cancels a request with `control_cancel_request`, a pending deferral is
+  dropped and subscribers receive `{:control_cancel, request_id}`.
+
   ## Subscriber events
 
   Subscribers receive plain messages of the form `{:claude, event}`:
@@ -86,6 +104,8 @@ defmodule ClaudeWrapper.DuplexSession do
     * `{:result, %ClaudeWrapper.Result{}}` -- the parsed turn boundary
     * `{:transport_terminal, %ClaudeWrapper.DuplexSession.TransportTerminal{}}`
       -- Forcola's terminal evidence and bounded stderr tail
+    * `{:control_cancel, request_id}` -- the CLI cancelled an inbound
+      control request it had sent
 
   Subscribers are monitored; if a subscriber crashes or exits, it is
   automatically removed.
@@ -165,11 +185,28 @@ defmodule ClaudeWrapper.DuplexSession do
           (String.t(), tool_input() -> permission_decision())
           | (String.t(), tool_input(), String.t() -> permission_decision())
 
+  @typedoc """
+  Reply to an inbound control request:
+
+    * `{:ok, response}` -- a `success` control_response carrying `response`
+    * `{:error, message}` -- an `error` control_response the CLI reports
+    * `:defer` -- no reply now; answer later with `respond_to_control/3`
+  """
+  @type control_reply :: {:ok, map()} | {:error, String.t()} | :defer
+
+  @typedoc """
+  Handler for inbound control requests other than `can_use_tool`. Called
+  with the request `subtype`, the full decoded `request` map (string keys),
+  and the `request_id`.
+  """
+  @type control_handler :: (String.t(), map(), String.t() -> control_reply())
+
   @type option ::
           {:config, Config.t()}
           | {:query, Query.t()}
           | {:extra_args, [String.t()]}
           | {:on_permission, permission_handler()}
+          | {:on_control_request, control_handler()}
           | {:adapter, module()}
           | {:adapter_opts, keyword()}
           | {:owner, pid()}
@@ -200,6 +237,7 @@ defmodule ClaudeWrapper.DuplexSession do
           pending_control: %{String.t() => GenServer.from()},
           subscribers: %{pid() => reference()},
           on_permission: permission_handler(),
+          on_control_request: control_handler(),
           exit_status: exit_status(),
           exit_waiters: %{reference() => pid()},
           owner_ref: reference() | nil,
@@ -207,6 +245,7 @@ defmodule ClaudeWrapper.DuplexSession do
           stderr: binary(),
           stderr_capture_bytes: non_neg_integer(),
           deferred_permissions: MapSet.t(String.t()),
+          deferred_controls: MapSet.t(String.t()),
           turn_span: {integer(), map()} | nil,
           session_monotonic: integer() | nil
         }
@@ -217,6 +256,7 @@ defmodule ClaudeWrapper.DuplexSession do
     :config,
     :session_id,
     :on_permission,
+    :on_control_request,
     :owner_ref,
     :turn_span,
     :session_monotonic,
@@ -229,7 +269,8 @@ defmodule ClaudeWrapper.DuplexSession do
     transport_terminal: nil,
     stderr: <<>>,
     stderr_capture_bytes: @default_stderr_capture_bytes,
-    deferred_permissions: MapSet.new()
+    deferred_permissions: MapSet.new(),
+    deferred_controls: MapSet.new()
   ]
 
   # --- Public API ------------------------------------------------------
@@ -251,6 +292,10 @@ defmodule ClaudeWrapper.DuplexSession do
     * `:extra_args` -- extra CLI flags to append, applied after the
       `:query` flags (e.g. `["--permission-mode", "plan"]`). The
       escape hatch for flags not yet on `Query`.
+    * `:on_permission` -- `t:permission_handler/0` for `can_use_tool`
+      (default `deny_all/2`).
+    * `:on_control_request` -- `t:control_handler/0` for every other
+      inbound control request (default `unsupported_control/3`).
     * `:adapter` -- transport module (default `Adapter.Port`).
     * `:adapter_opts` -- transport-specific options. The Forcola adapter
       accepts explicit output bounds, stderr capture size, and an
@@ -369,6 +414,52 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   @doc """
+  Answer a deferred inbound control request.
+
+  Used after the `:on_control_request` handler returned `:defer` for
+  `request_id`. `reply` is `{:ok, response}` or `{:error, message}`.
+  A `request_id` the session has no open deferral for (never deferred,
+  already answered, or cancelled by the CLI) is a no-op returning `:ok`.
+  """
+  @spec respond_to_control(GenServer.server(), String.t(), control_reply()) ::
+          :ok | {:error, Error.t()}
+  def respond_to_control(_server, _request_id, :defer),
+    do: {:error, Error.new(:cannot_defer_again)}
+
+  def respond_to_control(server, request_id, reply) when is_binary(request_id) do
+    GenServer.call(server, {:respond_to_control, request_id, validate_control_reply!(reply)})
+  end
+
+  @doc """
+  Send an outbound `control_request` and wait for the CLI's response.
+
+  `request` is a map with a `subtype` (atom or string key); the other
+  fields are sent as given. Returns `{:ok, response}` with the CLI's
+  response body (`%{}` when it sends none), `{:error, %Error{kind:
+  :duplex_control_failed}}` when the CLI answers with an error, or
+  `{:error, %Error{kind: :duplex_closed}}` when the transport is gone.
+
+      {:ok, %{"model" => _}} =
+        DuplexSession.control(pid, %{subtype: "set_model", model: "sonnet"})
+
+      {:ok, %{"mcpServers" => servers}} =
+        DuplexSession.control(pid, %{subtype: "mcp_status"})
+
+  The request is not validated against the CLI's schema; an unknown
+  subtype comes back as `:duplex_control_failed` with the CLI's message.
+  """
+  @spec control(GenServer.server(), map(), timeout()) :: {:ok, map()} | {:error, Error.t()}
+  def control(server, request, timeout \\ 10_000) when is_map(request) do
+    subtype = Map.get(request, :subtype) || Map.get(request, "subtype")
+
+    unless is_binary(subtype) do
+      raise ArgumentError, "control request needs a string :subtype, got: #{inspect(request)}"
+    end
+
+    GenServer.call(server, {:control, request}, timeout)
+  end
+
+  @doc """
   Stop the session: shut down the GenServer, which calls the adapter's
   `close/1` on the port during `terminate/2`.
 
@@ -439,7 +530,10 @@ defmodule ClaudeWrapper.DuplexSession do
   """
   @spec interrupt(GenServer.server(), timeout()) :: :ok | {:error, term()}
   def interrupt(server, timeout \\ 10_000) do
-    GenServer.call(server, :interrupt, timeout)
+    case control(server, %{subtype: "interrupt"}, timeout) do
+      {:ok, _response} -> :ok
+      {:error, _} = error -> error
+    end
   end
 
   @doc """
@@ -569,6 +663,7 @@ defmodule ClaudeWrapper.DuplexSession do
   defp open_session(opts, config) do
     Process.flag(:trap_exit, true)
     on_permission = Keyword.get(opts, :on_permission, &__MODULE__.deny_all/2)
+    on_control_request = fetch_control_handler!(opts)
 
     # A `%Query{}`'s spawn-time knobs come first; explicit `:extra_args`
     # follow as the escape hatch (and win on any repeated flag).
@@ -617,6 +712,7 @@ defmodule ClaudeWrapper.DuplexSession do
            adapter: adapter,
            config: config,
            on_permission: on_permission,
+           on_control_request: on_control_request,
            owner_ref: owner_ref,
            stderr_capture_bytes: stderr_capture_bytes,
            session_monotonic: session_monotonic
@@ -624,6 +720,13 @@ defmodule ClaudeWrapper.DuplexSession do
 
       {:error, reason} ->
         {:stop, reason}
+    end
+  end
+
+  defp fetch_control_handler!(opts) do
+    case Keyword.get(opts, :on_control_request, &__MODULE__.unsupported_control/3) do
+      handler when is_function(handler, 3) -> handler
+      _ -> raise ArgumentError, ":on_control_request must be a 3-arity function"
     end
   end
 
@@ -709,21 +812,32 @@ defmodule ClaudeWrapper.DuplexSession do
     end
   end
 
-  def handle_call(:interrupt, _from, %{port: nil} = state) do
+  def handle_call({:respond_to_control, request_id, reply}, _from, state) do
+    if MapSet.member?(state.deferred_controls, request_id) do
+      write_control_reply(state, request_id, reply)
+
+      {:reply, :ok,
+       %{state | deferred_controls: MapSet.delete(state.deferred_controls, request_id)}}
+    else
+      {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:control, _request}, _from, %{port: nil} = state) do
     {:reply, {:error, Error.new(:duplex_closed)}, state}
   end
 
-  def handle_call(:interrupt, from, state) do
+  def handle_call({:control, request}, from, state) do
     request_id = generate_request_id()
+    msg = %{type: "control_request", request_id: request_id, request: request}
 
-    msg = %{
-      type: "control_request",
-      request_id: request_id,
-      request: %{subtype: "interrupt"}
-    }
+    case state.adapter.command(state.port, [Jason.encode!(msg), ?\n]) do
+      :ok ->
+        {:noreply, %{state | pending_control: Map.put(state.pending_control, request_id, from)}}
 
-    state.adapter.command(state.port, [Jason.encode!(msg), ?\n])
-    {:noreply, %{state | pending_control: Map.put(state.pending_control, request_id, from)}}
+      {:error, reason} ->
+        {:reply, {:error, Error.new(:terminated, reason: {:transport_write, reason})}, state}
+    end
   end
 
   @impl true
@@ -842,6 +956,16 @@ defmodule ClaudeWrapper.DuplexSession do
   @spec deny_all(String.t(), tool_input()) :: permission_decision()
   def deny_all(_tool_name, _input), do: {:deny, "no permission handler installed"}
 
+  @doc """
+  Default inbound control handler. Answers every request with an error in
+  the CLI's own wording, so an unhandled request does not wait forever.
+
+  Public so a custom handler can fall back to it for subtypes it ignores.
+  """
+  @spec unsupported_control(String.t(), map(), String.t()) :: control_reply()
+  def unsupported_control(subtype, _request, _request_id),
+    do: {:error, "Unsupported control request subtype: #{subtype}"}
+
   # Manual newline splitting on raw binary. We deliberately avoid Port
   # `:line` mode because stream-json messages can carry tool results
   # larger than any reasonable line cap; `:line` reports {:noeol, partial}
@@ -921,6 +1045,50 @@ defmodule ClaudeWrapper.DuplexSession do
     end
   end
 
+  # Any other inbound control request goes to the on_control_request
+  # handler. Every path answers it unless the handler defers, so the CLI is
+  # never left waiting on a request nobody handles.
+  defp dispatch(
+         %{
+           "type" => "control_request",
+           "request_id" => id,
+           "request" => %{"subtype" => subtype} = req
+         },
+         state
+       ) do
+    reply =
+      try do
+        state.on_control_request.(subtype, req, id)
+      rescue
+        e ->
+          Logger.error(
+            "DuplexSession: on_control_request raised for #{inspect(subtype)}: #{inspect(e)}"
+          )
+
+          {:error, "control handler raised: #{Exception.message(e)}"}
+      end
+
+    case normalize_control_reply(reply) do
+      :defer ->
+        %{state | deferred_controls: MapSet.put(state.deferred_controls, id)}
+
+      reply ->
+        write_control_reply(state, id, reply)
+        state
+    end
+  end
+
+  # The CLI withdrew a request it sent. A late answer becomes a no-op.
+  defp dispatch(%{"type" => "control_cancel_request", "request_id" => id}, state) do
+    broadcast(state, {:control_cancel, id})
+
+    %{
+      state
+      | deferred_controls: MapSet.delete(state.deferred_controls, id),
+        deferred_permissions: MapSet.delete(state.deferred_permissions, id)
+    }
+  end
+
   # Reply to an outbound control_request we sent (e.g. interrupt).
   # The CLI may also emit control_responses with no matching pending
   # request_id (e.g. delayed cancellations); those are dropped.
@@ -935,7 +1103,7 @@ defmodule ClaudeWrapper.DuplexSession do
       {from, rest} ->
         reply =
           case resp do
-            %{"subtype" => "success"} -> :ok
+            %{"subtype" => "success"} -> {:ok, resp["response"] || %{}}
             %{"subtype" => "error", "error" => err} -> {:error, control_failed(err)}
             other -> {:error, control_failed(other)}
           end
@@ -1100,6 +1268,37 @@ defmodule ClaudeWrapper.DuplexSession do
     state.adapter.command(state.port, [Jason.encode!(msg), ?\n])
     :ok
   end
+
+  defp write_control_reply(%{port: nil}, _request_id, _reply), do: :ok
+
+  defp write_control_reply(state, request_id, reply) do
+    response =
+      case reply do
+        {:ok, body} -> %{subtype: "success", request_id: request_id, response: body}
+        {:error, message} -> %{subtype: "error", request_id: request_id, error: message}
+      end
+
+    msg = %{type: "control_response", response: response}
+    state.adapter.command(state.port, [Jason.encode!(msg), ?\n])
+    :ok
+  end
+
+  # A handler return outside the documented shapes becomes an error reply
+  # rather than a crash or a request left unanswered.
+  defp normalize_control_reply({:ok, body} = reply) when is_map(body), do: reply
+  defp normalize_control_reply({:error, message} = reply) when is_binary(message), do: reply
+  defp normalize_control_reply(:defer), do: :defer
+
+  defp normalize_control_reply(other) do
+    Logger.error("DuplexSession: on_control_request returned an invalid reply: #{inspect(other)}")
+    {:error, "control handler returned an invalid reply"}
+  end
+
+  defp validate_control_reply!({:ok, body} = reply) when is_map(body), do: reply
+  defp validate_control_reply!({:error, message} = reply) when is_binary(message), do: reply
+
+  defp validate_control_reply!(other),
+    do: raise(ArgumentError, "expected {:ok, map} or {:error, string}, got: #{inspect(other)}")
 
   defp decision_to_permission_response(:allow),
     do: %{behavior: "allow"}
