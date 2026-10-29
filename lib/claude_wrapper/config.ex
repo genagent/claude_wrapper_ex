@@ -166,13 +166,14 @@ defmodule ClaudeWrapper.Config do
   end
 
   @doc false
-  # `Config.env` as `Port.open/2` takes it: charlist pairs, with `false`
-  # kept to unset a variable. Shared by Runner.Port and Adapter.Port.
-  @spec port_env([{String.t(), String.t() | false}]) :: [{charlist(), charlist() | false}]
+  # `Config.env` as `Port.open/2` takes it: charlist pairs, with `false` (or
+  # `nil`, which `System.cmd/3` treats as unset) unsetting a variable. Shared
+  # by Runner.Port and Adapter.Port.
+  @spec port_env([{String.t(), String.t() | false | nil}]) :: [{charlist(), charlist() | false}]
   def port_env(env),
     do: Enum.map(env, fn {key, value} -> {to_charlist(key), port_value(value)} end)
 
-  defp port_value(false), do: false
+  defp port_value(unset) when unset in [false, nil], do: false
   defp port_value(value), do: to_charlist(value)
 
   @doc """
