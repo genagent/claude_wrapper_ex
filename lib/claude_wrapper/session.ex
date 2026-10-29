@@ -211,8 +211,20 @@ defmodule ClaudeWrapper.Session do
   defp resolve_prompt(prompt) when is_binary(prompt), do: {:ok, prompt}
   defp resolve_prompt(%Prompt{} = prompt), do: Prompt.render(prompt)
 
+  # Options that pick which conversation a turn runs in. Once the session has
+  # an id, `--resume <id>` is the only selector; carrying these too would send
+  # a second one (#326): Claude Code 2.1.312 rejects `--session-id` with
+  # `--resume`, and `--continue` with `--resume` picks the newest
+  # conversation in the directory.
+  @selector_opts [:session_id, :continue_session, :resume]
+
   defp build_query(session, prompt, per_call_opts) do
     merged_opts = Keyword.merge(session.query_opts, per_call_opts)
+
+    merged_opts =
+      if is_binary(session.session_id),
+        do: Keyword.drop(merged_opts, @selector_opts),
+        else: merged_opts
 
     query =
       prompt
