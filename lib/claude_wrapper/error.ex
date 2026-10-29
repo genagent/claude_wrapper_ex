@@ -76,10 +76,11 @@ defmodule ClaudeWrapper.Error do
       the opt-in env var (`:reason` is the env var name)
     * `:duplex_closed` -- the duplex session port was already closed
     * `:turn_in_flight` -- a turn is already running on the session
-    * `:duplex_control_failed` -- an interrupt/permission control
-      message failed (`:reason`)
+    * `:duplex_control_failed` -- the CLI answered a duplex control
+      request with an error (`:reason` is its message)
     * `:terminated` -- the session terminated while a turn was pending
-    * `:cannot_defer_again` -- a permission decision was deferred twice
+    * `:cannot_defer_again` -- a deferred permission or control request
+      was answered with `:defer` again
     * `:no_session` -- a REPL helper was used with no active session
     * `:not_found` -- a requested resource does not exist (`:reason`
       identifies it)
