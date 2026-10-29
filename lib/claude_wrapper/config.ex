@@ -165,6 +165,16 @@ defmodule ClaudeWrapper.Config do
     args
   end
 
+  @doc false
+  # `Config.env` as `Port.open/2` takes it: charlist pairs, with `false`
+  # kept to unset a variable. Shared by Runner.Port and Adapter.Port.
+  @spec port_env([{String.t(), String.t() | false}]) :: [{charlist(), charlist() | false}]
+  def port_env(env),
+    do: Enum.map(env, fn {key, value} -> {to_charlist(key), port_value(value)} end)
+
+  defp port_value(false), do: false
+  defp port_value(value), do: to_charlist(value)
+
   @doc """
   Build the cmd options (working dir, env) for System.cmd/Port.
   """
