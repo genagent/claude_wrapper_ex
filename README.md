@@ -202,9 +202,12 @@ Every operational failure is `{:error, %ClaudeWrapper.Error{}}`, a raisable exce
 case ClaudeWrapper.query("...", max_turns: 1) do
   {:ok, result} -> result
   {:error, %ClaudeWrapper.Error{kind: :max_turns_exceeded}} -> :hit_limit
+  {:error, %ClaudeWrapper.Error{kind: :api_error, reason: %{category: :rate_limit}}} -> :back_off
   {:error, %ClaudeWrapper.Error{kind: kind}} -> {:failed, kind}
 end
 ```
+
+A turn that ends on an API error (HTTP 429, 529, 5xx, a refused connection) is `{:error, %Error{kind: :api_error}}` with `reason: %{status:, category:, num_turns:, session_id:, ...}`; a 401 is `:auth` with reason `:invalid_credentials`. Before 0.19 these came back as `{:ok, %Result{is_error: true}}`.
 
 For streaming calls, `timeout: ms` bounds both the total run and each gap
 between output frames. A stream that ends before its terminal result emits a
@@ -344,7 +347,7 @@ Port runner.
 
 ### Retry, telemetry, budget
 
-- **`ClaudeWrapper.Retry`**: exponential backoff around a `Query`. The default retries timeouts, plain non-zero exits, and rate limits; other auth failures and rail stops are not retried.
+- **`ClaudeWrapper.Retry`**: exponential backoff around a `Query`. The default retries timeouts, plain non-zero exits, rate limits, and API errors that ended a turn before any tool ran (`:api_error` with category `:rate_limit`, `:overloaded`, `:server_error` or `:connection`); other auth failures, client API errors and rail stops are not retried.
 
   ```elixir
   ClaudeWrapper.Retry.execute(query, config, max_retries: 3, base_delay_ms: 1_000)

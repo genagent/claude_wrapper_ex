@@ -210,6 +210,11 @@ defmodule ClaudeWrapper.Auth do
   Returns the matching `t:auth_error_kind/0` atom only when the patterns
   are confident enough to risk relabeling, and `nil` otherwise.
 
+  `ClaudeWrapper.Query` calls this only for a non-zero exit with no JSON
+  result. An API error the CLI reports in its result is classified from
+  that result's structured fields instead (`:api_error`, or `:auth` for a
+  401).
+
   `exit_code` is accepted for parity with the Rust signature and future
   use; the current heuristics match only against the lowercased
   `stdout`/`stderr` text. The patterns are intentionally narrow:
@@ -218,10 +223,14 @@ defmodule ClaudeWrapper.Auth do
       id is a typo, not a credential problem, even with a 403/404 status)
     * "not authenticated" / "not logged in" / "claude login" /
       "run /login" / "no credentials" / "no auth" -> `:not_authenticated`
-    * "expired" / "session has expired" / "token expired" -> `:expired`
-    * "invalid api key" / "invalid token" / "401" / "unauthorized" /
-      "403" / "forbidden" -> `:invalid_credentials`
-    * "rate limit" / "too many requests" / "429" / "quota" -> `:rate_limit`
+    * "session has expired" / "session expired" / "token expired" /
+      "token has expired" / "credentials expired" / "api key expired" ->
+      `:expired`
+    * "invalid api key" / "invalid token" / "http 401" / "status 401" /
+      "unauthorized" / "http 403" / "status 403" / "forbidden" ->
+      `:invalid_credentials`
+    * "rate limit" / "too many requests" / "http 429" / "status 429" /
+      "usage limit" / "usage quota" -> `:rate_limit`
     * "bedrock" or "vertex" alongside an auth signal -> `:provider_error`
     * a bare "auth" / "credential" mention in stderr -> `:other`
   """

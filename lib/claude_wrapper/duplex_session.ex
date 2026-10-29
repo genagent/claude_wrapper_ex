@@ -1426,7 +1426,9 @@ defmodule ClaudeWrapper.DuplexSession do
   defp dispatch(%{"type" => "result"} = msg, %{pending_turn: {from, _events}} = state) do
     result = Result.from_json(msg)
     broadcast(state, {:result, result})
-    GenServer.reply(from, {:ok, result})
+    # An API-error result is returned as a typed error (#316); subscribers
+    # still see the result itself.
+    GenServer.reply(from, Query.classify_api_error(result, nil, nil, nil))
 
     Telemetry.duplex_turn_stop(state.turn_span, %{
       command: :duplex_turn,
