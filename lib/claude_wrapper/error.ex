@@ -66,6 +66,13 @@ defmodule ClaudeWrapper.Error do
       `nil`); `:cap` is the reported cap, not the actual spend, since
       claude checks the budget post-hoc and a run can overspend before
       tripping
+    * `:api_error` -- the turn ended on an API error the CLI reported in
+      its result (`terminal_reason: "api_error"`). `:reason` is a
+      `%{status:, category:, api_error:, message:, num_turns:,
+      session_id:, cost_usd:}` map. `:category` is `:rate_limit` (429),
+      `:overloaded` (529), `:server_error` (other 5xx), `:connection` (no
+      HTTP status, e.g. a refused connection) or `:client_error` (other
+      4xx). A 401 is returned as `:auth` with reason `:invalid_credentials`
     * `:version_mismatch` -- the CLI is older than a required minimum
       (`:reason` is `%{found:, minimum:}`)
     * `:invalid_version` -- a version string could not be parsed
@@ -132,6 +139,7 @@ defmodule ClaudeWrapper.Error do
           | :json
           | :max_turns_exceeded
           | :max_budget_exceeded
+          | :api_error
           | :version_mismatch
           | :invalid_version
           | :budget_exceeded
@@ -265,6 +273,13 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :max_budget_exceeded}),
     do: "claude reached its maximum budget"
+
+  defp default_message(%{kind: :api_error, reason: %{category: category, status: status}})
+       when is_integer(status),
+       do: "claude's turn ended on an API error (#{status}, #{category})"
+
+  defp default_message(%{kind: :api_error, reason: %{category: category}}),
+    do: "claude's turn ended on an API error (#{category})"
 
   defp default_message(%{kind: :version_mismatch, reason: %{found: found, minimum: min}}),
     do: "claude #{found} is older than the required minimum #{min}"

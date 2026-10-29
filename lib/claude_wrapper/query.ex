@@ -1056,7 +1056,7 @@ defmodule ClaudeWrapper.Query do
     case terminal_result(stdout) do
       nil when code == 0 -> {:error, Error.json(:missing_result, stdout)}
       nil -> classify_command_failure(code, stdout, stderr)
-      result when code == 0 -> {:ok, result}
+      result when code == 0 -> classify_api_error(result, code, stdout, stderr)
       result -> nonzero_result(result, code, stdout, stderr)
     end
   end
@@ -1085,7 +1085,8 @@ defmodule ClaudeWrapper.Query do
 
     case run_cmd(Runner.impl(config), config.binary, args, opts, config.timeout) do
       {:ok, stdout} ->
-        parse_json_output(stdout)
+        with {:ok, result} <- parse_json_output(stdout),
+             do: classify_api_error(result, 0, stdout, nil)
 
       {:error, %Error{kind: :command_failed, exit_code: code, stdout: stdout}} ->
         handle_nonzero_exit(code, stdout)
@@ -1096,10 +1097,11 @@ defmodule ClaudeWrapper.Query do
   end
 
   # A non-zero CLI exit that still emits valid JSON is not always a hard
-  # failure: the CLI reports its rail-stop caps (--max-turns and
-  # --max-budget-usd) this way, and we surface each as its own typed
-  # error carrying the run's cost/turn figures; any other valid-JSON
-  # result keeps its `is_error` flag and returns `{:ok, %Result{}}`.
+  # failure: the CLI reports API errors and its rail-stop caps
+  # (--max-turns and --max-budget-usd) this way, and we surface each as
+  # its own typed error carrying the run's cost/turn figures; any other
+  # valid-JSON result keeps its `is_error` flag and returns
+  # `{:ok, %Result{}}`.
   # When the output is not decodable JSON the exit is a genuine command
   # failure -- classified as an auth error first when it looks
   # auth-shaped, otherwise plain.
@@ -1119,7 +1121,7 @@ defmodule ClaudeWrapper.Query do
   defp nonzero_result(result, code, stdout, stderr) do
     case rail_stop_kind(result) do
       nil ->
-        {:ok, result}
+        classify_api_error(result, code, stdout, stderr)
 
       {kind, cap} ->
         reason = %{
@@ -1132,6 +1134,56 @@ defmodule ClaudeWrapper.Query do
         {:error, Error.new(kind, reason: reason, exit_code: code, stdout: stdout, stderr: stderr)}
     end
   end
+
+  @doc false
+  # A turn that ended on an API error (HTTP 429, 529, 5xx, 401, a refused
+  # connection) is a result with `is_error: true` and `terminal_reason:
+  # "api_error"` (Claude Code 2.1.312, #316). Return it as a typed error;
+  # any other result passes through. Shared with DuplexSession.
+  @spec classify_api_error(Result.t(), integer() | nil, String.t() | nil, String.t() | nil) ::
+          {:ok, Result.t()} | {:error, Error.t()}
+  def classify_api_error(
+        %Result{is_error: true, extra: %{"terminal_reason" => "api_error"} = extra} = result,
+        code,
+        stdout,
+        stderr
+      ) do
+    status = extra["api_error_status"]
+
+    case api_error_category(status) do
+      :auth ->
+        {:error,
+         Error.new(:auth,
+           reason: :invalid_credentials,
+           exit_code: code,
+           stdout: stdout,
+           stderr: stderr
+         )}
+
+      category ->
+        reason = %{
+          status: status,
+          category: category,
+          api_error: extra["api_error"],
+          message: result.result,
+          num_turns: result.num_turns,
+          session_id: result.session_id,
+          cost_usd: result.cost_usd
+        }
+
+        {:error,
+         Error.new(:api_error, reason: reason, exit_code: code, stdout: stdout, stderr: stderr)}
+    end
+  end
+
+  def classify_api_error(%Result{} = result, _code, _stdout, _stderr), do: {:ok, result}
+
+  defp api_error_category(429), do: :rate_limit
+  defp api_error_category(529), do: :overloaded
+  defp api_error_category(401), do: :auth
+  defp api_error_category(nil), do: :connection
+  defp api_error_category(status) when is_integer(status) and status >= 500, do: :server_error
+  defp api_error_category(_status), do: :client_error
 
   # Classify a terminal `result` event by its rail-stop subtype,
   # returning `{error_kind, parsed_cap}` or `nil`. The cap is pulled

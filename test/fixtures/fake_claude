@@ -37,6 +37,20 @@ case "$FAKE_CLAUDE_SCENARIO" in
     # Reports the auto-memory switch hermetic sets (#327) as the result text.
     printf '{%s,"subtype":"success","is_error":false,"result":"auto_memory_off=%s"}\n' "$base" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}"
     ;;
+  api_429|api_529|api_503|api_401|api_403)
+    # Claude Code 2.1.312's result for a turn that hit an HTTP API error.
+    status=${FAKE_CLAUDE_SCENARIO#api_}
+    printf '{"type":"result","session_id":"fake-session","duration_ms":1,"num_turns":%s,"total_cost_usd":0,"subtype":"success","is_error":true,"api_error_status":%s,"terminal_reason":"api_error","result":"API Error: synthetic %s"}\n' "${FAKE_CLAUDE_NUM_TURNS:-1}" "$status" "$status"
+    exit 1
+    ;;
+  max_turns)
+    printf '{%s,"subtype":"error_max_turns","is_error":true,"result":"Reached maximum number of turns (1)"}\n' "$base"
+    exit 1
+    ;;
+  api_connection)
+    printf '{%s,"subtype":"success","is_error":true,"terminal_reason":"api_error","result":"API Error: Connection error."}\n' "$base"
+    exit 1
+    ;;
   native_error)
     # A native failure that still carries a partial object.
     printf '{%s,"subtype":"error_max_structured_output_retries","is_error":true,"result":"","structured_output":{"name":"partial"}}\n' "$base"
