@@ -88,6 +88,14 @@ ClaudeWrapper.DuplexSession.Adapter.Forcola   # opt-in leak-free (process-group 
 ClaudeWrapper.DuplexSession.Adapter.Test      # per-session controllable double (ClaudeWrapper.Test)
 ```
 
+`DuplexSession` exposes the stream-json control channel as primitives:
+`control/3` (any outbound request), `:on_control_request` +
+`respond_to_control/3` (inbound requests other than `can_use_tool`),
+`:initialize` + `initialize_response/2`, and `:sdk_mcp_servers` (in-process
+MCP servers routed over `mcp_message`; `DuplexSession.SdkMcp.tool_server/2`
+builds one from a tool list). Unhandled inbound requests get an error
+reply rather than none.
+
 The default adapter is chosen from `config :claude_wrapper, duplex_adapter:
 ...` (default `Adapter.Port`); an explicit `adapter:` option on
 `start_link/1` still wins. `Adapter.Forcola` wraps `Forcola.Duplex` in a

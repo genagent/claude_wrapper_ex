@@ -130,6 +130,27 @@ end
 {:ok, %{"mcpServers" => _}} = ClaudeWrapper.DuplexSession.control(pid, %{subtype: "mcp_status"})
 ```
 
+**In-process MCP tools.** `:sdk_mcp_servers` serves MCP from inside the BEAM over the session's own stdio: no port, no subprocess, no config file. A server is any JSON-RPC handler function; `DuplexSession.SdkMcp.tool_server/2` builds one from a list of tools. `:initialize` sends the protocol's `initialize` request (with hooks or other fields) and `initialize_response/2` returns the CLI's answer.
+
+```elixir
+alias ClaudeWrapper.DuplexSession.SdkMcp
+
+lookup = %{
+  name: "lookup_user",
+  description: "Look up a user by email",
+  input_schema: %{"type" => "object", "properties" => %{"email" => %{"type" => "string"}}},
+  call: fn %{"email" => email} -> {:ok, MyApp.Users.describe(email)} end
+}
+
+{:ok, pid} =
+  ClaudeWrapper.DuplexSession.start_link(
+    config: config,
+    sdk_mcp_servers: %{"app" => SdkMcp.tool_server("app", [lookup])},
+    on_permission: fn _tool, _input -> :allow end
+  )
+# The model sees the tool as mcp__app__lookup_user.
+```
+
 **Supervise it.** Each session owns one Port; pair it with a `DynamicSupervisor` for per-conversation isolation, named registration, and OTP restart semantics. See `ClaudeWrapper.DuplexSession` for the full API and message vocabulary.
 
 ### REPL helpers

@@ -7,6 +7,7 @@ defmodule ClaudeWrapper.IntegrationTest do
   use ExUnit.Case, async: false
 
   alias ClaudeWrapper.{Config, DuplexSession, Query, Session, SessionServer}
+  alias ClaudeWrapper.DuplexSession.SdkMcp
 
   @moduletag :integration
 
@@ -644,6 +645,96 @@ defmodule ClaudeWrapper.IntegrationTest do
 
     test "version", %{config: config} do
       assert {:ok, _version_info} = Version.execute(config)
+    end
+  end
+
+  describe "DuplexSession control channel" do
+    defp await_mcp_server(pid, name, attempts \\ 50) do
+      {:ok, %{"mcpServers" => servers}} = DuplexSession.control(pid, %{subtype: "mcp_status"})
+
+      case Enum.find(servers, &(&1["name"] == name)) do
+        %{"status" => "connected"} = server ->
+          server
+
+        _ when attempts > 1 ->
+          Process.sleep(100)
+          await_mcp_server(pid, name, attempts - 1)
+
+        other ->
+          other
+      end
+    end
+
+    @control_args ["--strict-mcp-config", "--no-session-persistence", "--model", "haiku"]
+
+    test "initialize, mcp_status, set_permission_mode and set_model", %{config: config} do
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          extra_args: @control_args,
+          sdk_mcp_servers: %{"app" => SdkMcp.tool_server("app", [])}
+        )
+
+      try do
+        assert {:ok, %{"claude_code_version" => version, "models" => [_ | _]}} =
+                 DuplexSession.initialize_response(pid, 30_000)
+
+        assert is_binary(version)
+
+        # The CLI connects SDK servers asynchronously after initialize.
+        assert %{"status" => "connected", "transport" => "sdk"} = await_mcp_server(pid, "app")
+
+        assert {:ok, %{"mode" => "plan"}} =
+                 DuplexSession.control(pid, %{subtype: "set_permission_mode", mode: "plan"})
+
+        assert {:ok, %{"model" => model}} =
+                 DuplexSession.control(pid, %{subtype: "set_model", model: "sonnet"})
+
+        assert model =~ "sonnet"
+
+        assert {:error, %ClaudeWrapper.Error{kind: :duplex_control_failed}} =
+                 DuplexSession.control(pid, %{subtype: "no_such_request"})
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "the model calls an in-process SDK MCP tool", %{config: config} do
+      parent = self()
+
+      echo = %{
+        name: "echo",
+        description: "Return the given text unchanged",
+        input_schema: %{
+          "type" => "object",
+          "properties" => %{"text" => %{"type" => "string"}},
+          "required" => ["text"]
+        },
+        call: fn %{"text" => text} ->
+          send(parent, {:echo_called, text})
+          {:ok, "echo: " <> text}
+        end
+      }
+
+      {:ok, pid} =
+        DuplexSession.start_link(
+          config: config,
+          extra_args: @control_args ++ ["--max-turns", "3"],
+          sdk_mcp_servers: %{"app" => SdkMcp.tool_server("app", [echo])},
+          on_permission: fn _tool, _input -> :allow end
+        )
+
+      try do
+        assert {:ok, %ClaudeWrapper.Result{}} =
+                 DuplexSession.send(
+                   pid,
+                   "Call the mcp__app__echo tool once with text \"ping-7\", then reply with its output."
+                 )
+
+        assert_received {:echo_called, "ping-7"}
+      after
+        DuplexSession.stop(pid)
+      end
     end
   end
 end
