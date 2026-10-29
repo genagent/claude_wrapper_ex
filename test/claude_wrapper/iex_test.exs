@@ -162,4 +162,28 @@ defmodule ClaudeWrapper.IExTest do
       assert CIEx.config()[:attach] == glob
     end
   end
+
+  describe "config options (#325)" do
+    @fake Path.expand("../fixtures/fake_claude", __DIR__)
+
+    test ":runner and :runner_options are config, not query options" do
+      output =
+        capture_io(fn ->
+          CIEx.chat("hi",
+            binary: @fake,
+            env: [{"FAKE_CLAUDE_SCENARIO", "missing"}],
+            runner: ClaudeWrapper.Runner.Port,
+            runner_options: []
+          )
+        end)
+
+      assert output =~ "plain text"
+    end
+
+    test "a misspelled option raises instead of being dropped" do
+      assert_raise ArgumentError, ~r/:permision_mode/, fn ->
+        capture_io(fn -> CIEx.chat("hi", binary: @fake, permision_mode: :plan) end)
+      end
+    end
+  end
 end

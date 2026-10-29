@@ -198,7 +198,6 @@ defmodule Mix.Tasks.Claude.Contract do
       plugin_dirs: ["/tmp/plugin"],
       plugin_urls: ["https://example.invalid/plugin"],
       safe_mode: true,
-      continue_session: true,
       no_session_persistence: true,
       dangerously_skip_permissions: true,
       include_partial_messages: true,
@@ -219,12 +218,16 @@ defmodule Mix.Tasks.Claude.Contract do
   defp specs do
     query = maximal_query()
     query_args = Query.build_args(query)
+    # build_args/1 rejects --continue with --resume, so --continue is checked
+    # on its own query.
+    continue_args =
+      "contract prompt" |> Query.new() |> Query.continue_session() |> Query.build_args()
 
     spawn_args =
       Query.spawn_args(query) ++
         ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
 
-    [{[], query_args}, {[], spawn_args}] ++ command_specs()
+    [{[], query_args}, {[], continue_args}, {[], spawn_args}] ++ command_specs()
   end
 
   defp command_specs do

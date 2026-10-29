@@ -104,7 +104,7 @@ defmodule ClaudeWrapper.QueryTest do
       assert q.safe_mode
     end
 
-    test "false (or any non-true) leaves the flag unchanged" do
+    test "false or nil leaves the flag unchanged" do
       q =
         "p"
         |> Query.new()
@@ -112,13 +112,25 @@ defmodule ClaudeWrapper.QueryTest do
           dangerously_skip_permissions: false,
           worktree: false,
           brief: nil,
-          fork_session: 0
+          hermetic: nil
         )
 
       refute q.dangerously_skip_permissions
       refute q.worktree
       refute q.brief
-      refute q.fork_session
+      assert q.hermetic == nil
+    end
+
+    test "any other value for a boolean flag raises (#325)" do
+      for value <- [0, "true", :yes] do
+        assert_raise ArgumentError, ~r/invalid value .* for option :fork_session/, fn ->
+          Query.apply_opts(Query.new("p"), fork_session: value)
+        end
+      end
+
+      assert_raise ArgumentError, ~r/:strict_mcp_config/, fn ->
+        Query.apply_opts(Query.new("p"), strict_mcp_config: "true")
+      end
     end
   end
 
@@ -170,21 +182,79 @@ defmodule ClaudeWrapper.QueryTest do
     end
   end
 
-  describe "apply_opts/2 -- robustness" do
-    test "unknown opts are silently ignored" do
-      q =
-        "p"
-        |> Query.new()
-        |> Query.apply_opts(
-          unknown_thing: 42,
-          some_future_opt: "value",
-          model: "sonnet"
-        )
+  describe "session selectors (#325)" do
+    defp selector_args(opts),
+      do: "p" |> Query.new() |> Query.apply_opts(opts) |> Query.build_args()
 
-      # Known ones still apply.
-      assert q.model == "sonnet"
-      # Struct integrity preserved.
-      assert %Query{} = q
+    test "valid combinations build" do
+      assert "--resume" in selector_args(resume: "a")
+      assert "--continue" in selector_args(continue_session: true)
+      assert "--session-id" in selector_args(session_id: "u")
+      args = selector_args(session_id: "u", resume: "a", fork_session: true)
+      assert "--fork-session" in args and "--session-id" in args
+      assert "--fork-session" in selector_args(continue_session: true, fork_session: true)
+    end
+
+    test "conflicting selectors raise before anything is spawned" do
+      assert_raise ArgumentError, ~r/either :resume or :continue_session/, fn ->
+        selector_args(resume: "a", continue_session: true)
+      end
+
+      assert_raise ArgumentError, ~r/:fork_session needs/, fn ->
+        selector_args(fork_session: true)
+      end
+
+      assert_raise ArgumentError, ~r/:session_id with :resume/, fn ->
+        selector_args(session_id: "u", resume: "a")
+      end
+
+      assert_raise ArgumentError, ~r/:session_id with :resume/, fn ->
+        selector_args(session_id: "u", continue_session: true)
+      end
+    end
+  end
+
+  describe "apply_opts/2 -- robustness" do
+    test "unknown opts raise, naming every unknown key (#325)" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Query.apply_opts(Query.new("p"),
+            permision_mode: :plan,
+            hermetc: true,
+            permision_mode: :plan,
+            model: "sonnet"
+          )
+        end
+
+      assert error.message =~ ":permision_mode, :hermetc"
+    end
+
+    test "a non-keyword entry raises" do
+      assert_raise ArgumentError, ~r/keyword list/, fn ->
+        Query.apply_opts(Query.new("p"), [{"model", "sonnet"}])
+      end
+    end
+
+    test "list options take a list or one string; anything else raises" do
+      q = Query.apply_opts(Query.new("p"), allowed_tools: "Read", disallowed_tools: ["Bash"])
+      args = Query.build_args(q)
+      assert "Read" in args
+      assert "Bash" in args
+
+      assert_raise ArgumentError, ~r/:allowed_tools/, fn ->
+        Query.apply_opts(Query.new("p"), allowed_tools: :read)
+      end
+    end
+
+    test "no known option name is reported as unknown" do
+      for key <- Query.known_opts() do
+        try do
+          Query.apply_opts(Query.new("p"), [{key, nil}])
+        rescue
+          e in ArgumentError -> refute e.message =~ "unknown option", inspect(key)
+          FunctionClauseError -> :ok
+        end
+      end
     end
 
     test "empty opts list is a no-op" do
@@ -239,6 +309,7 @@ defmodule ClaudeWrapper.QueryTest do
           json_schema: ~s({"type":"object"}),
           session_id: "sess-1",
           resume: "prior",
+          fork_session: true,
           fallback_model: "haiku",
           strict_mcp_config: true,
           no_session_persistence: true
@@ -374,14 +445,12 @@ defmodule ClaudeWrapper.QueryTest do
       refute "--bare" in args
     end
 
-    test "an invalid scope is ignored, leaving no seal" do
-      q = "p" |> Query.new() |> Query.apply_opts(hermetic: :bogus)
-      assert q.hermetic == nil
-
-      args = Query.build_args(q)
-      refute "--setting-sources" in args
-      refute "--strict-mcp-config" in args
-      refute "--exclude-dynamic-system-prompt-sections" in args
+    test "an invalid scope raises (#325)" do
+      for value <- [:bogus, "full"] do
+        assert_raise ArgumentError, ~r/:hermetic/, fn ->
+          Query.apply_opts(Query.new("p"), hermetic: value)
+        end
+      end
     end
 
     test "no hermetic opt leaves the surface untouched" do

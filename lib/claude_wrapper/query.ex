@@ -280,7 +280,9 @@ defmodule ClaudeWrapper.Query do
   Resume a session linked to a PR (`--from-pr <number|url>`).
 
   Analogous to `resume/2` but keyed on a pull request rather than a
-  session id. The value is a PR number or URL.
+  session id. The value is a PR number or URL. In print mode, Claude Code
+  2.1.312 starts a new conversation, without a message, when no
+  conversation is linked to the PR.
   """
   @spec from_pr(t(), String.t()) :: t()
   def from_pr(%__MODULE__{} = q, pr), do: %{q | from_pr: pr}
@@ -453,7 +455,14 @@ defmodule ClaudeWrapper.Query do
 
   @doc """
   Apply a keyword list of options to a query, calling the equivalent
-  `Query` setter for each known key. Unknown keys are silently ignored.
+  `Query` setter for each known key.
+
+  Raises `ArgumentError` for an option name this function does not know
+  (all unknown names are listed together) and for a known option whose
+  value has the wrong shape: a value other than `true`, `false` or `nil`
+  for a boolean flag, an unknown `:hermetic` scope, or a list option that
+  is neither a list nor a single string. A key may repeat; the later entry wins for single-value options
+  and list options accumulate.
 
   This is the shared mapping used by `ClaudeWrapper.query/2`,
   `ClaudeWrapper.stream/2`, and `ClaudeWrapper.Session.send/3`. It
@@ -461,9 +470,10 @@ defmodule ClaudeWrapper.Query do
   being duplicated across each surface.
 
   Boolean opts (e.g. `:worktree`, `:dangerously_skip_permissions`)
-  are applied when the value is `true` and ignored when `false`. List
+  are applied when the value is `true` and ignored when `false` or `nil`. List
   opts (e.g. `:allowed_tools`, `:add_dir`) reduce over their list,
-  applying the per-item setter for each entry.
+  applying the per-item setter for each entry; a single string is one
+  entry.
 
   ## Examples
 
@@ -478,73 +488,98 @@ defmodule ClaudeWrapper.Query do
   """
   @spec apply_opts(t(), keyword()) :: t()
   def apply_opts(%__MODULE__{} = query, opts) when is_list(opts) do
+    check_opt_names!(opts)
     Enum.reduce(opts, query, &apply_opt/2)
   end
 
-  defp apply_opt({:model, v}, q), do: model(q, v)
-  defp apply_opt({:system_prompt, v}, q), do: system_prompt(q, v)
-  defp apply_opt({:append_system_prompt, v}, q), do: append_system_prompt(q, v)
-  defp apply_opt({:system_prompt_file, v}, q), do: system_prompt_file(q, v)
-  defp apply_opt({:append_system_prompt_file, v}, q), do: append_system_prompt_file(q, v)
-  defp apply_opt({:permission_prompt_tool, v}, q), do: permission_prompt_tool(q, v)
-  defp apply_opt({:max_thinking_tokens, v}, q), do: max_thinking_tokens(q, v)
-  defp apply_opt({:max_turns, v}, q), do: max_turns(q, v)
-  defp apply_opt({:max_budget_usd, v}, q), do: max_budget_usd(q, v)
-  defp apply_opt({:permission_mode, v}, q), do: permission_mode(q, v)
-  defp apply_opt({:effort, v}, q), do: effort(q, v)
-  defp apply_opt({:json_schema, v}, q), do: json_schema(q, v)
-  defp apply_opt({:agent, v}, q), do: agent(q, v)
-  defp apply_opt({:agents_json, v}, q), do: agents_json(q, v)
-  defp apply_opt({:session_id, v}, q), do: session_id(q, v)
-  defp apply_opt({:resume, v}, q), do: resume(q, v)
-  defp apply_opt({:fallback_model, v}, q), do: fallback_model(q, v)
-  defp apply_opt({:from_pr, v}, q), do: from_pr(q, v)
-  defp apply_opt({:output_format, v}, q), do: output_format(q, v)
-  defp apply_opt({:input_format, v}, q), do: input_format(q, v)
-  defp apply_opt({:settings, v}, q), do: settings(q, v)
-  defp apply_opt({:debug_filter, v}, q), do: debug_filter(q, v)
-  defp apply_opt({:debug_file, v}, q), do: debug_file(q, v)
-  defp apply_opt({:betas, v}, q), do: betas(q, v)
-  defp apply_opt({:name, v}, q), do: name(q, v)
-  defp apply_opt({:setting_sources, v}, q), do: setting_sources(q, v)
+  @value_opts [
+    :model,
+    :system_prompt,
+    :append_system_prompt,
+    :system_prompt_file,
+    :append_system_prompt_file,
+    :permission_prompt_tool,
+    :max_thinking_tokens,
+    :max_turns,
+    :max_budget_usd,
+    :permission_mode,
+    :effort,
+    :json_schema,
+    :agent,
+    :agents_json,
+    :session_id,
+    :resume,
+    :fallback_model,
+    :from_pr,
+    :output_format,
+    :input_format,
+    :settings,
+    :debug_filter,
+    :debug_file,
+    :betas,
+    :name,
+    :setting_sources
+  ]
 
-  # Boolean flags: only apply on true.
-  defp apply_opt({:dangerously_skip_permissions, true}, q), do: dangerously_skip_permissions(q)
-  defp apply_opt({:dangerously_skip_permissions, _}, q), do: q
-  defp apply_opt({:continue_session, true}, q), do: continue_session(q)
-  defp apply_opt({:continue_session, _}, q), do: q
-  defp apply_opt({:no_session_persistence, true}, q), do: no_session_persistence(q)
-  defp apply_opt({:no_session_persistence, _}, q), do: q
+  @bool_opts [
+    :dangerously_skip_permissions,
+    :continue_session,
+    :no_session_persistence,
+    :brief,
+    :fork_session,
+    :strict_mcp_config,
+    :include_partial_messages,
+    :tmux,
+    :prompt_suggestions,
+    :replay_user_messages,
+    :bare,
+    :disable_slash_commands,
+    :include_hook_events,
+    :safe_mode,
+    :exclude_dynamic_system_prompt_sections
+  ]
+
+  @list_opts [
+    :allowed_tools,
+    :disallowed_tools,
+    :tools,
+    :add_dir,
+    :files,
+    :plugin_dirs,
+    :plugin_urls,
+    :mcp_config
+  ]
+
+  @known_opts MapSet.new(@value_opts ++ @bool_opts ++ @list_opts ++ [:worktree, :hermetic])
+
+  @doc false
+  @spec known_opts() :: MapSet.t(atom())
+  def known_opts, do: @known_opts
+
+  defp check_opt_names!(opts) do
+    unknown =
+      opts
+      |> Enum.map(fn
+        {key, _value} when is_atom(key) -> key
+        other -> raise ArgumentError, "expected a keyword list of options, got: #{inspect(other)}"
+      end)
+      |> Enum.reject(&MapSet.member?(@known_opts, &1))
+      |> Enum.uniq()
+
+    if unknown != [] do
+      raise ArgumentError,
+            "unknown option(s) #{Enum.map_join(unknown, ", ", &inspect/1)}; " <>
+              "see ClaudeWrapper.Query.apply_opts/2 for the supported options"
+    end
+  end
+
+  # Boolean flags: apply on true, ignore false, raise on anything else.
+  defp apply_opt({key, true}, q) when key in @bool_opts, do: apply(__MODULE__, key, [q])
+  defp apply_opt({key, unset}, q) when key in @bool_opts and unset in [false, nil], do: q
+
   defp apply_opt({:worktree, true}, q), do: worktree(q)
   defp apply_opt({:worktree, name}, q) when is_binary(name), do: worktree(q, name)
-  defp apply_opt({:worktree, _}, q), do: q
-  defp apply_opt({:brief, true}, q), do: brief(q)
-  defp apply_opt({:brief, _}, q), do: q
-  defp apply_opt({:fork_session, true}, q), do: fork_session(q)
-  defp apply_opt({:fork_session, _}, q), do: q
-  defp apply_opt({:strict_mcp_config, true}, q), do: strict_mcp_config(q)
-  defp apply_opt({:strict_mcp_config, _}, q), do: q
-  defp apply_opt({:include_partial_messages, true}, q), do: include_partial_messages(q)
-  defp apply_opt({:include_partial_messages, _}, q), do: q
-  defp apply_opt({:tmux, true}, q), do: tmux(q)
-  defp apply_opt({:tmux, _}, q), do: q
-  defp apply_opt({:prompt_suggestions, true}, q), do: prompt_suggestions(q)
-  defp apply_opt({:prompt_suggestions, _}, q), do: q
-  defp apply_opt({:replay_user_messages, true}, q), do: replay_user_messages(q)
-  defp apply_opt({:replay_user_messages, _}, q), do: q
-  defp apply_opt({:bare, true}, q), do: bare(q)
-  defp apply_opt({:bare, _}, q), do: q
-  defp apply_opt({:disable_slash_commands, true}, q), do: disable_slash_commands(q)
-  defp apply_opt({:disable_slash_commands, _}, q), do: q
-  defp apply_opt({:include_hook_events, true}, q), do: include_hook_events(q)
-  defp apply_opt({:include_hook_events, _}, q), do: q
-  defp apply_opt({:safe_mode, true}, q), do: safe_mode(q)
-  defp apply_opt({:safe_mode, _}, q), do: q
-
-  defp apply_opt({:exclude_dynamic_system_prompt_sections, true}, q),
-    do: exclude_dynamic_system_prompt_sections(q)
-
-  defp apply_opt({:exclude_dynamic_system_prompt_sections, _}, q), do: q
+  defp apply_opt({:worktree, unset}, q) when unset in [false, nil], do: q
 
   # Hermetic preset: `true` means the full seal; a scope atom is passed through.
   defp apply_opt({:hermetic, true}, q), do: hermetic(q, :full)
@@ -552,39 +587,35 @@ defmodule ClaudeWrapper.Query do
   defp apply_opt({:hermetic, scope}, q) when scope in [:full, :project],
     do: hermetic(q, scope)
 
-  defp apply_opt({:hermetic, _}, q), do: q
+  defp apply_opt({:hermetic, unset}, q) when unset in [false, nil], do: q
 
   # List opts (or single value, where it makes sense).
-  defp apply_opt({:allowed_tools, tools}, q) when is_list(tools),
-    do: Enum.reduce(tools, q, &allowed_tool(&2, &1))
+  # A single string is one entry.
+  defp apply_opt({key, item}, q) when key in @list_opts and is_binary(item),
+    do: apply_opt({key, [item]}, q)
 
-  defp apply_opt({:disallowed_tools, tools}, q) when is_list(tools),
-    do: Enum.reduce(tools, q, &disallowed_tool(&2, &1))
+  defp apply_opt({key, items}, q) when key in @list_opts and is_list(items) do
+    setter = list_setter(key)
+    Enum.reduce(items, q, &apply(__MODULE__, setter, [&2, &1]))
+  end
 
-  defp apply_opt({:tools, tools}, q) when is_list(tools),
-    do: Enum.reduce(tools, q, &tool(&2, &1))
+  defp apply_opt({key, value}, q) when key in @value_opts,
+    do: apply(__MODULE__, key, [q, value])
 
-  defp apply_opt({:add_dir, dirs}, q) when is_list(dirs),
-    do: Enum.reduce(dirs, q, &add_dir(&2, &1))
+  # A known option whose value has the wrong shape. Unknown names were
+  # rejected by check_opt_names!/1 before this point.
+  defp apply_opt({key, value}, _q) do
+    raise ArgumentError, "invalid value #{inspect(value)} for option #{inspect(key)}"
+  end
 
-  defp apply_opt({:add_dir, dir}, q) when is_binary(dir), do: add_dir(q, dir)
-
-  defp apply_opt({:files, files}, q) when is_list(files),
-    do: Enum.reduce(files, q, &file(&2, &1))
-
-  defp apply_opt({:plugin_dirs, dirs}, q) when is_list(dirs),
-    do: Enum.reduce(dirs, q, &plugin_dir(&2, &1))
-
-  defp apply_opt({:plugin_urls, urls}, q) when is_list(urls),
-    do: Enum.reduce(urls, q, &plugin_url(&2, &1))
-
-  defp apply_opt({:mcp_config, paths}, q) when is_list(paths),
-    do: Enum.reduce(paths, q, &mcp_config(&2, &1))
-
-  defp apply_opt({:mcp_config, path}, q) when is_binary(path), do: mcp_config(q, path)
-
-  # Unknown option: ignore. Documented above.
-  defp apply_opt(_other, q), do: q
+  defp list_setter(:allowed_tools), do: :allowed_tool
+  defp list_setter(:disallowed_tools), do: :disallowed_tool
+  defp list_setter(:tools), do: :tool
+  defp list_setter(:add_dir), do: :add_dir
+  defp list_setter(:files), do: :file
+  defp list_setter(:plugin_dirs), do: :plugin_dir
+  defp list_setter(:plugin_urls), do: :plugin_url
+  defp list_setter(:mcp_config), do: :mcp_config
 
   # --- Execution ---
 
@@ -1364,6 +1395,34 @@ defmodule ClaudeWrapper.Query do
     |> drop_print_flag()
   end
 
+  # Session selector combinations Claude Code 2.1.312 mishandles (#325):
+  # `--continue` with `--resume` silently continues the newest conversation,
+  # `--fork-session` alone starts a fresh one, and `--session-id` with a
+  # resume selector exits 1 unless `--fork-session` is set.
+  defp check_session_selectors!(%__MODULE__{} = q) do
+    case selector_conflict(
+           q.resume != nil,
+           q.continue_session,
+           q.session_id != nil,
+           q.fork_session
+         ) do
+      nil -> :ok
+      message -> raise ArgumentError, message
+    end
+  end
+
+  # (resume?, continue?, session_id?, fork?)
+  defp selector_conflict(true, true, _, _),
+    do: "pass either :resume or :continue_session, not both"
+
+  defp selector_conflict(false, false, _, true),
+    do: ":fork_session needs :resume or :continue_session"
+
+  defp selector_conflict(resume?, continue?, true, false) when resume? or continue?,
+    do: ":session_id with :resume or :continue_session needs :fork_session"
+
+  defp selector_conflict(_, _, _, _), do: nil
+
   # build_args/1 emits a bare leading `--print` and the prompt last (after a
   # `--` separator). A duplex session sends prompts per-turn over stdin, so strip
   # both the leading flag and the trailing `-- <prompt>`.
@@ -1380,6 +1439,7 @@ defmodule ClaudeWrapper.Query do
   @doc false
   @spec build_args(t()) :: [String.t()]
   def build_args(%__MODULE__{} = q) do
+    check_session_selectors!(q)
     q = resolve_hermetic(q)
 
     ["--print"]
