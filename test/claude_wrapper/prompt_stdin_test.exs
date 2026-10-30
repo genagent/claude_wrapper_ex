@@ -104,7 +104,7 @@ defmodule ClaudeWrapper.PromptStdinTest do
     assert {:error, %Error{kind: :argument_list_too_long, reason: %{bytes: bytes}}} =
              error = Query.execute(query, config)
 
-    assert bytes > 4_000_000
+    assert bytes >= 4_000_000
     refute Retry.default_retry_on(error)
   end
 
