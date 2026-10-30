@@ -58,5 +58,12 @@ defmodule ClaudeWrapper.DuplexSession.Adapter do
   @doc "Optionally acknowledge a pull-delivered line after processing it."
   @callback ack(handle(), reference()) :: :ok
 
-  @optional_callbacks shutdown: 1, ack: 2
+  @doc """
+  Optionally return up to `max_bytes` of the child's most recent stderr, for
+  an adapter that captures it outside the message stream. Called before
+  `close/1`.
+  """
+  @callback stderr_tail(handle(), max_bytes :: non_neg_integer()) :: binary()
+
+  @optional_callbacks shutdown: 1, ack: 2, stderr_tail: 2
 end

@@ -237,7 +237,7 @@ Both are opt-in and additive (they compile only when `forcola` is present); POSI
 A single config can also select its own runner without touching application
 config: `Config.new(runner: ClaudeWrapper.Runner.Forcola)` (see
 [Per-config runners](#per-config-runners-and-runner-options)).
-The duplex adapter uses Forcola's bounded pull delivery with separate stderr.
+The duplex adapter uses Forcola's bounded pull delivery with separate stderr. The default `Adapter.Port` also keeps `claude`'s stderr out of the VM's stderr (a bounded tail comes back from `DuplexSession.shutdown/1` and the `{:transport_terminal, _}` event) and bounds each pending line (`:max_line_bytes`, default 1 MiB); `:max_output_bytes` is opt-in there.
 Set per-session bounds with `adapter_opts: [max_line_bytes: ..., max_output_bytes: ...]`;
 the defaults are 1 MiB per line and 64 MiB over the session. A bounded stderr
 tail is returned separately from provider NDJSON by `DuplexSession.shutdown/1`,
