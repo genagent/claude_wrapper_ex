@@ -52,7 +52,9 @@ if Code.ensure_loaded?(Forcola) do
       adapter_opts = Keyword.drop(opts, [:config, :args, :owner])
       validate_opts!(adapter_opts)
 
-      case Forcola.Duplex.open([config.binary | args], duplex_opts(config, adapter_opts)) do
+      {argv, env} = Config.split_env_argv([config.binary | args], config.env)
+
+      case Forcola.Duplex.open(argv, duplex_opts(%{config | env: env}, adapter_opts)) do
         {:ok, session} ->
           puller = spawn(fn -> await_start(owner) end)
           monitor = Process.monitor(puller)
