@@ -54,7 +54,7 @@ if Code.ensure_loaded?(Forcola) do
       * `:shim_path` - a trusted absolute path to a matching Forcola shim
 
     `Config.timeout` is the whole-run bound (24 hours when `nil`) and is not
-    reset by output. `Config.env` entries must be `{name, value}` strings.
+    reset by output. `Config.env` entries are `{name, value}` strings; an entry with a `nil` value is applied by prefixing argv with `/usr/bin/env -u NAME`, since Forcola takes string values only.
 
     The native run executes in an owned helper process; Forcola's
     `:output_observer` frames arrive in the execution caller, which frames
@@ -71,6 +71,7 @@ if Code.ensure_loaded?(Forcola) do
 
     @behaviour ClaudeWrapper.Runner
 
+    alias ClaudeWrapper.Config
     alias ClaudeWrapper.Runner.{Collector, ForcolaEvidence}
 
     # forcola requires a mandatory whole-run bound. When the caller sets
@@ -84,11 +85,13 @@ if Code.ensure_loaded?(Forcola) do
 
     @impl true
     def run(binary, args, opts, timeout) do
+      {argv, opts} = env_argv(binary, args, opts)
+
       forcola_opts =
         [timeout_ms: timeout || @unbounded_ms, merge_stderr: merge_stderr?(opts)] ++
           Keyword.take(opts, [:cd, :env])
 
-      case Forcola.run([binary | args], forcola_opts) do
+      case Forcola.run(argv, forcola_opts) do
         {:ok, %Forcola.Result{status: status, stdout: stdout}} when is_integer(status) ->
           {:ok, {stdout, status}}
 
@@ -121,11 +124,13 @@ if Code.ensure_loaded?(Forcola) do
             | {:error, ClaudeWrapper.Runner.error()}
     @impl true
     def run_observed(binary, args, opts, timeout, observer) do
+      {argv, opts} = env_argv(binary, args, opts)
+
       forcola_opts =
         [timeout_ms: timeout || @unbounded_ms, merge_stderr: false] ++
           Keyword.take(opts, [:cd, :env])
 
-      stream = Forcola.Stream.lines([binary | args], forcola_opts)
+      stream = Forcola.Stream.lines(argv, forcola_opts)
       next = &Enumerable.reduce(stream, &1, fn line, _acc -> {:suspend, line} end)
       collect_observed(next, [], observer)
     end
@@ -194,9 +199,10 @@ if Code.ensure_loaded?(Forcola) do
           ) :: ClaudeWrapper.Runner.evidenced_result()
     @impl true
     def run_evidenced(binary, args, opts, timeout, observer) do
+      {argv, opts} = env_argv(binary, args, opts)
+
       with :ok <- evidence_supported(),
            {:ok, forcola_opts, max_line} <- ForcolaEvidence.build(opts, timeout) do
-        argv = [binary | args]
         run = fn target -> Forcola.run(argv, [{:output_observer, target} | forcola_opts]) end
 
         run
@@ -223,6 +229,8 @@ if Code.ensure_loaded?(Forcola) do
       whole_timeout = if is_integer(timeout), do: timeout, else: @unbounded_ms
       idle_timeout = if is_integer(timeout), do: timeout, else: @stream_idle_timeout_ms
 
+      {argv, opts} = env_argv(binary, args, opts)
+
       forcola_opts =
         [
           timeout_ms: whole_timeout,
@@ -231,7 +239,20 @@ if Code.ensure_loaded?(Forcola) do
 
       # merge_stderr defaults to false: stderr must not be folded into the
       # NDJSON line stream, where it would feed non-JSON to the parser.
-      halting_lines(Forcola.Stream.lines([binary | args], forcola_opts))
+      halting_lines(Forcola.Stream.lines(argv, forcola_opts))
+    end
+
+    # Forcola takes string env values only; unset entries (#309) become an
+    # `env -u` prefix on argv.
+    defp env_argv(binary, args, opts) do
+      case Keyword.get(opts, :env, []) do
+        [] ->
+          {[binary | args], opts}
+
+        env ->
+          {argv, set} = Config.split_env_argv([binary | args], env)
+          {argv, Keyword.put(opts, :env, set)}
+      end
     end
 
     # Forcola.Stream.lines/2 raises Forcola.Stream.Error on a non-clean

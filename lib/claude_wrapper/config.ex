@@ -35,7 +35,7 @@ defmodule ClaudeWrapper.Config do
   @type t :: %__MODULE__{
           binary: String.t(),
           working_dir: String.t() | nil,
-          env: [{String.t(), String.t()}],
+          env: [{String.t(), String.t() | nil}],
           timeout: pos_integer() | nil,
           verbose: boolean(),
           debug: boolean(),
@@ -64,7 +64,11 @@ defmodule ClaudeWrapper.Config do
       bundled binary (`ClaudeWrapper.Bundled.path/0`); install it first
       with `mix claude_wrapper.install`.
     * `:working_dir` - Working directory for the subprocess
-    * `:env` - List of `{key, value}` environment variable tuples
+    * `:env` - List of `{name, value}` environment variable tuples added to
+      the inherited environment. A value of `nil` (or `false`, normalized to
+      `nil`) removes the variable from the child's environment on every
+      spawn path (#309). Names must be non-empty strings without `=`;
+      anything else raises `ArgumentError`.
     * `:timeout` - Command timeout in milliseconds (default `nil`: unbounded).
       Applies to `query/2`, `Command.run/3`, `raw/2`, and the CLI subcommand
       wrappers (via `exec/2`). For `ClaudeWrapper.stream/2`, a finite value
@@ -91,7 +95,7 @@ defmodule ClaudeWrapper.Config do
     %__MODULE__{
       binary: resolve_binary(opts[:binary]),
       working_dir: opts[:working_dir],
-      env: opts[:env] || [],
+      env: validate_env!(opts[:env] || []),
       timeout: opts[:timeout],
       verbose: Keyword.get(opts, :verbose, false),
       debug: Keyword.get(opts, :debug, false),
@@ -183,8 +187,51 @@ defmodule ClaudeWrapper.Config do
   def cmd_opts(%__MODULE__{} = config) do
     opts = [stderr_to_stdout: true]
     opts = if config.working_dir, do: [{:cd, config.working_dir} | opts], else: opts
-    opts = if config.env != [], do: [{:env, config.env} | opts], else: opts
+    opts = if config.env != [], do: [{:env, cmd_env(config.env)} | opts], else: opts
     opts
+  end
+
+  # `System.cmd/3` unsets a variable given `nil`; a struct built without
+  # new/1 may still carry `false`.
+  defp cmd_env(env), do: Enum.map(env, fn {name, value} -> {name, value || nil} end)
+
+  defp validate_env!(env) when is_list(env), do: Enum.map(env, &validate_env_entry!/1)
+
+  defp validate_env!(env),
+    do: raise(ArgumentError, ":env must be a list of {name, value} tuples, got: #{inspect(env)}")
+
+  defp validate_env_entry!({name, value}) when is_binary(name) and name != "" do
+    cond do
+      String.contains?(name, "=") ->
+        raise ArgumentError, "invalid :env name #{inspect(name)}"
+
+      is_binary(value) or is_nil(value) ->
+        {name, value}
+
+      value == false ->
+        {name, nil}
+
+      true ->
+        raise ArgumentError, "invalid :env value for #{inspect(name)}: #{inspect(value)}"
+    end
+  end
+
+  defp validate_env_entry!(entry),
+    do: raise(ArgumentError, "invalid :env entry #{inspect(entry)}")
+
+  @doc false
+  # For a spawner that only takes string values (Forcola): split `Config.env`
+  # into the pairs to set and an argv whose unset names become an
+  # `/usr/bin/env -u NAME ...` prefix. env execs the command, so the pid and
+  # process group are unchanged.
+  @spec split_env_argv([String.t()], list()) :: {[String.t()], [{String.t(), String.t()}]}
+  def split_env_argv(argv, env) do
+    {set, unset} = Enum.split_with(env, fn {_name, value} -> is_binary(value) end)
+
+    case Enum.map(unset, &elem(&1, 0)) do
+      [] -> {argv, set}
+      names -> {["/usr/bin/env" | Enum.flat_map(names, &["-u", &1])] ++ argv, set}
+    end
   end
 
   @doc """
