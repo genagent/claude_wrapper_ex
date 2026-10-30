@@ -173,6 +173,8 @@ iex> cost()
 
 `ClaudeWrapper.Query` is the builder for the full CLI flag surface; `Query.apply_opts/2` takes a keyword list of any setter, and `query/2` / `stream/2` / `Session.send/3` all delegate to it, so the same options work everywhere. An unknown option name, a mis-shaped value (for example `disallowed_tools: :bash`), or conflicting session selectors (`resume` with `continue_session`, `fork_session` without either, `session_id` with either unless `fork_session`) raise `ArgumentError` before anything is spawned. Before 0.19 they were dropped silently.
 
+One-shot and streaming queries on the built-in runners send the prompt to the CLI on stdin, so prompt size is limited by the CLI rather than by `execve`, and the prompt does not appear in the process table (`prompt_input: :argv` restores the old form; a custom runner still gets it in argv). An argument list over the platform limit returns `{:error, %Error{kind: :argument_list_too_long}}` before anything is spawned.
+
 ```elixir
 alias ClaudeWrapper.{Config, Query}
 

@@ -73,6 +73,11 @@ defmodule ClaudeWrapper.Error do
       `:overloaded` (529), `:server_error` (other 5xx), `:connection` (no
       HTTP status, e.g. a refused connection) or `:client_error` (other
       4xx). A 401 is returned as `:auth` with reason `:invalid_credentials`
+    * `:argument_list_too_long` -- the CLI's argv would exceed the
+      platform limit, so nothing was spawned. `:reason` is `%{scope:,
+      bytes:, limit:}`; `:scope` is `:argument` (one string over Linux's
+      128 KiB per-string limit) or `:total` (argv plus environment over
+      `ARG_MAX`)
     * `:version_mismatch` -- the CLI is older than a required minimum
       (`:reason` is `%{found:, minimum:}`)
     * `:invalid_version` -- a version string could not be parsed
@@ -140,6 +145,7 @@ defmodule ClaudeWrapper.Error do
           | :max_turns_exceeded
           | :max_budget_exceeded
           | :api_error
+          | :argument_list_too_long
           | :version_mismatch
           | :invalid_version
           | :budget_exceeded
@@ -280,6 +286,12 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :api_error, reason: %{category: category}}),
     do: "claude's turn ended on an API error (#{category})"
+
+  defp default_message(%{
+         kind: :argument_list_too_long,
+         reason: %{scope: scope, bytes: b, limit: l}
+       }),
+       do: "claude's argument list is too long (#{scope}: #{b} bytes, limit #{l})"
 
   defp default_message(%{kind: :version_mismatch, reason: %{found: found, minimum: min}}),
     do: "claude #{found} is older than the required minimum #{min}"
