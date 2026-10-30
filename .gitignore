@@ -26,3 +26,4 @@ claude_wrapper-*.tar
 
 # Dialyzer PLTs, cached in CI.
 /priv/plts/
+.context

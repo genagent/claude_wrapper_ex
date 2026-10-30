@@ -19,8 +19,6 @@ defmodule ClaudeWrapper.Runner.Port do
 
   @behaviour ClaudeWrapper.Runner
 
-  import Bitwise, only: [&&&: 2]
-
   alias ClaudeWrapper.{Command, Config}
 
   # Safety timeout for a hung streaming producer when no deadline is set.
@@ -28,7 +26,7 @@ defmodule ClaudeWrapper.Runner.Port do
 
   @impl true
   def run(binary, args, opts, timeout) do
-    with {:ok, path} <- resolve_executable(binary) do
+    with {:ok, path} <- Command.resolve_executable(binary) do
       # The port is owned by the task, so shutting the task down on timeout
       # closes it. Errors are returned, not raised, so nothing crashes the
       # linked caller.
@@ -56,28 +54,6 @@ defmodule ClaudeWrapper.Runner.Port do
     receive do
       {^port, {:data, data}} -> collect(port, [acc | data])
       {^port, {:exit_status, code}} -> {:ok, {IO.iodata_to_binary(acc), code}}
-    end
-  end
-
-  # Through a shell a missing binary would only show up as exit status 127,
-  # so check it here and keep the typed `:binary_not_found` signal (#200)
-  # that run_cmd turns into `%Error{kind: :binary_not_found}`. A path with a
-  # `/` is resolved against the VM's working directory, as `System.cmd/3`
-  # did; a bare name is looked up on `PATH`.
-  defp resolve_executable(binary) do
-    if String.contains?(binary, "/") do
-      path = Path.expand(binary)
-
-      case File.stat(path) do
-        {:ok, %File.Stat{type: :regular, mode: mode}} when (mode &&& 0o111) != 0 -> {:ok, path}
-        {:ok, _stat} -> {:error, {:binary_not_found, :eacces}}
-        {:error, _reason} -> {:error, {:binary_not_found, :enoent}}
-      end
-    else
-      case System.find_executable(binary) do
-        nil -> {:error, {:binary_not_found, :enoent}}
-        path -> {:ok, path}
-      end
     end
   end
 

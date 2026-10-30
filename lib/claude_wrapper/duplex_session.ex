@@ -165,6 +165,7 @@ defmodule ClaudeWrapper.DuplexSession do
   alias ClaudeWrapper.DuplexSession.{Adapter, TransportTerminal}
 
   @default_stderr_capture_bytes 16 * 1024
+  @default_max_line_bytes 1_048_576
 
   @type tool_input :: map()
 
@@ -271,6 +272,9 @@ defmodule ClaudeWrapper.DuplexSession do
           transport_terminal: TransportTerminal.t() | nil,
           stderr: binary(),
           stderr_capture_bytes: non_neg_integer(),
+          max_line_bytes: pos_integer() | :infinity,
+          max_output_bytes: pos_integer() | :infinity,
+          output_bytes: non_neg_integer(),
           deferred_permissions: MapSet.t(String.t()),
           deferred_controls: MapSet.t(String.t()),
           initialize: :not_requested | :pending | {:ok, map()} | {:error, Error.t()},
@@ -300,6 +304,9 @@ defmodule ClaudeWrapper.DuplexSession do
     transport_terminal: nil,
     stderr: <<>>,
     stderr_capture_bytes: @default_stderr_capture_bytes,
+    max_line_bytes: @default_max_line_bytes,
+    max_output_bytes: :infinity,
+    output_bytes: 0,
     deferred_permissions: MapSet.new(),
     deferred_controls: MapSet.new(),
     initialize: :not_requested,
@@ -336,9 +343,15 @@ defmodule ClaudeWrapper.DuplexSession do
     * `:sdk_mcp_servers` -- `%{name => t:sdk_mcp_handler/0}` in-process
       MCP servers.
     * `:adapter` -- transport module (default `Adapter.Port`).
-    * `:adapter_opts` -- transport-specific options. The Forcola adapter
-      accepts explicit output bounds, stderr capture size, and an
-      independent terminal recipient; see its module documentation.
+    * `:adapter_opts` -- transport-specific options. Both built-in adapters
+      accept `:max_line_bytes` (default 1 MiB), `:max_output_bytes` and
+      `:stderr_capture_bytes` (default 16 KiB). `:max_output_bytes` defaults
+      to 64 MiB on `Adapter.Forcola` and is unbounded on `Adapter.Port`,
+      where a long-lived session's total output grows across turns. On
+      `Adapter.Port` the session enforces the bounds and ends with
+      `{:failed, {:transport_error, {:output_limit, :line | :output,
+      limit}}}`. The Forcola adapter also takes an independent terminal
+      recipient; see its module documentation.
     * `:owner` -- optional lifecycle owner to monitor.
     * `:name` -- register the GenServer under a name.
 
@@ -682,7 +695,10 @@ defmodule ClaudeWrapper.DuplexSession do
   With `Adapter.Forcola`, the return is `{:ok,
   %ClaudeWrapper.DuplexSession.TransportTerminal{}}` containing the native
   child status, cleanup confirmation, output completeness, and a bounded
-  stderr tail. The default Port adapter has no such evidence and returns
+  stderr tail. The default Port adapter returns a `TransportTerminal` with
+  `evidence: :closed` and the tail of `claude`'s stderr (when the child
+  exits on its own, the `{:transport_terminal, _}` event carries
+  `evidence: {:exit_status, code}`). An adapter with neither returns
   `{:ok, nil}`. `close/1` and `stop/3` retain their `:ok` contract.
 
   A subscriber also receives `{:claude, {:transport_terminal, evidence}}`
@@ -876,6 +892,9 @@ defmodule ClaudeWrapper.DuplexSession do
       raise ArgumentError, ":stderr_capture_bytes must be a non-negative integer"
     end
 
+    max_line_bytes = byte_bound!(adapter_opts, :max_line_bytes, @default_max_line_bytes)
+    max_output_bytes = byte_bound!(adapter_opts, :max_output_bytes, :infinity)
+
     open_opts = [config: config, args: args, owner: self()] ++ adapter_opts
 
     # An optional lifecycle owner (e.g. the IEx evaluator driving DuplexIEx):
@@ -901,6 +920,8 @@ defmodule ClaudeWrapper.DuplexSession do
           sdk_mcp_servers: sdk_mcp_servers,
           owner_ref: owner_ref,
           stderr_capture_bytes: stderr_capture_bytes,
+          max_line_bytes: max_line_bytes,
+          max_output_bytes: max_output_bytes,
           session_monotonic: session_monotonic
         }
 
@@ -1109,10 +1130,30 @@ defmodule ClaudeWrapper.DuplexSession do
     {:noreply, state}
   end
 
+  # Unacknowledged delivery (Adapter.Port, the test adapter): the session
+  # holds the pending line, so it enforces the line and output bounds here
+  # (#311). Adapter.Forcola bounds its own output.
   def handle_info({port, {:data, chunk}}, %{port: port} = state) do
+    output_bytes = state.output_bytes + byte_size(chunk)
     {complete, rest} = split_lines(state.buffer <> chunk)
-    state = Enum.reduce(complete, %{state | buffer: rest}, &handle_line/2)
-    {:noreply, state}
+
+    case output_limit(state, output_bytes, complete, rest) do
+      nil ->
+        state =
+          Enum.reduce(
+            complete,
+            %{state | buffer: rest, output_bytes: output_bytes},
+            &handle_line/2
+          )
+
+        {:noreply, state}
+
+      reason ->
+        state = fail_pending(state, {:transport_error, reason})
+
+        {:stop, :normal,
+         %{state | buffer: <<>>, exit_status: {:failed, {:transport_error, reason}}}}
+    end
   end
 
   def handle_info({port, {:stderr, line, ref}}, %{port: port} = state) do
@@ -1141,13 +1182,13 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
-    state = fail_pending(state, {:port_exit, code})
+    state = state |> exited_terminal({:exit_status, code}) |> fail_pending({:port_exit, code})
     status = derive_exit_status({:port_exit, code})
     {:stop, :normal, %{state | port: nil, exit_status: status}}
   end
 
   def handle_info({:EXIT, port, reason}, %{port: port} = state) do
-    state = fail_pending(state, {:port_exit, reason})
+    state = state |> exited_terminal({:exit, reason}) |> fail_pending({:port_exit, reason})
     status = derive_exit_status({:port_exit, reason})
     {:stop, :normal, %{state | port: nil, exit_status: status}}
   end
@@ -1681,16 +1722,7 @@ defmodule ClaudeWrapper.DuplexSession do
   defp close_transport(%{port: nil} = state), do: {state.transport_terminal, state}
 
   defp close_transport(%{port: port, adapter: adapter} = state) do
-    terminal =
-      if function_exported?(adapter, :shutdown, 1) do
-        case adapter.shutdown(port) do
-          {:ok, evidence} -> %TransportTerminal{evidence: evidence, stderr: state.stderr}
-          {:error, reason} -> %TransportTerminal{evidence: {:error, reason}, stderr: state.stderr}
-        end
-      else
-        :ok = adapter.close(port)
-        nil
-      end
+    terminal = shut_transport(adapter, port, state)
 
     if terminal, do: broadcast(state, {:transport_terminal, terminal})
 
@@ -1703,6 +1735,80 @@ defmodule ClaudeWrapper.DuplexSession do
 
     {terminal, %{state | port: nil, transport_terminal: terminal, exit_status: status}}
   end
+
+  # Close the transport and return its terminal record, if the adapter has one.
+  defp shut_transport(adapter, port, state) do
+    cond do
+      function_exported?(adapter, :shutdown, 1) ->
+        case adapter.shutdown(port) do
+          {:ok, evidence} ->
+            %TransportTerminal{evidence: evidence, stderr: state.stderr}
+
+          {:error, reason} ->
+            %TransportTerminal{evidence: {:error, reason}, stderr: state.stderr}
+        end
+
+      function_exported?(adapter, :stderr_tail, 2) ->
+        stderr = adapter.stderr_tail(port, state.stderr_capture_bytes)
+        :ok = adapter.close(port)
+        %TransportTerminal{evidence: :closed, stderr: stderr}
+
+      true ->
+        :ok = adapter.close(port)
+        nil
+    end
+  end
+
+  # An adapter that captures stderr outside the message stream (Adapter.Port)
+  # reports its tail when the child exits on its own, then releases the
+  # transport's resources.
+  defp exited_terminal(%{port: port, adapter: adapter} = state, evidence) do
+    if function_exported?(adapter, :stderr_tail, 2) do
+      terminal = %TransportTerminal{
+        evidence: evidence,
+        stderr: adapter.stderr_tail(port, state.stderr_capture_bytes)
+      }
+
+      :ok = adapter.close(port)
+      broadcast(state, {:transport_terminal, terminal})
+      %{state | transport_terminal: terminal}
+    else
+      state
+    end
+  end
+
+  defp output_limit(state, output_bytes, complete, rest) do
+    cond do
+      over?(output_bytes, state.max_output_bytes) ->
+        {:output_limit, :output, state.max_output_bytes}
+
+      over?(byte_size(rest), state.max_line_bytes) or
+          Enum.any?(complete, &over?(byte_size(&1), state.max_line_bytes)) ->
+        {:output_limit, :line, state.max_line_bytes}
+
+      true ->
+        nil
+    end
+  end
+
+  defp over?(_bytes, :infinity), do: false
+  defp over?(bytes, limit), do: bytes > limit
+
+  defp byte_bound!(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      :infinity ->
+        :infinity
+
+      bytes when is_integer(bytes) and bytes > 0 ->
+        bytes
+
+      other ->
+        raise ArgumentError,
+              "#{inspect(key)} must be a positive integer or :infinity, got: #{inspect(other)}"
+    end
+  end
+
+  defp terminal_exit_status(:closed), do: :completed
 
   defp terminal_exit_status(%{confirmation: :confirmed, cause: :explicit_close}),
     do: :completed

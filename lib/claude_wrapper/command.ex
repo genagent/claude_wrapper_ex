@@ -139,6 +139,36 @@ defmodule ClaudeWrapper.Command do
     """
   end
 
+  # Through a shell a missing binary would only show up as exit status 127,
+  # so check it here and keep the typed `:binary_not_found` signal (#200)
+  # that run_cmd turns into `%Error{kind: :binary_not_found}`. A path with a
+  # `/` is resolved against the VM's working directory, as `System.cmd/3`
+  # did; a bare name is looked up on `PATH`.
+  @doc false
+  @spec resolve_executable(String.t()) ::
+          {:ok, String.t()} | {:error, {:binary_not_found, :enoent | :eacces}}
+  def resolve_executable(binary) do
+    if String.contains?(binary, "/") do
+      path = Path.expand(binary)
+
+      case File.stat(path) do
+        {:ok, %File.Stat{type: :regular, mode: mode}} when Bitwise.band(mode, 0o111) != 0 ->
+          {:ok, path}
+
+        {:ok, _stat} ->
+          {:error, {:binary_not_found, :eacces}}
+
+        {:error, _reason} ->
+          {:error, {:binary_not_found, :enoent}}
+      end
+    else
+      case System.find_executable(binary) do
+        nil -> {:error, {:binary_not_found, :enoent}}
+        path -> {:ok, path}
+      end
+    end
+  end
+
   @doc false
   # The `:args` for a duplex session's lifeline port (#303). A duplex session
   # uses claude's stdin for the protocol, so the lifeline is a second port
