@@ -9,10 +9,11 @@ defmodule ClaudeWrapper.Runner.Port do
   missing or non-executable binary is reported as `:binary_not_found`
   before anything is spawned.
 
-  On a timeout it shuts down the `Task` (one-shot) or closes the port
-  (streaming), which closes the pipes but sends no signal to the OS
-  process. The CLI and any subprocess it spawned may keep running until
-  they next touch a closed pipe. For strict termination, use
+  The shell is a supervisor (`ClaudeWrapper.Command`): when the port closes
+  (a timeout shuts down the one-shot `Task`, a stream halts) or the BEAM
+  dies, it sends the CLI SIGINT, then SIGTERM after 2 s, then SIGKILL after
+  1 s more (#303). Only the CLI's pid is signalled; subprocesses it started
+  stop only if it stops them. For a process-group kill, use
   `ClaudeWrapper.Runner.Forcola` (see `ClaudeWrapper.Runner` and #185).
   """
 

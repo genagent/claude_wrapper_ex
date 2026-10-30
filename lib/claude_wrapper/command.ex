@@ -51,18 +51,126 @@ defmodule ClaudeWrapper.Command do
     end
   end
 
-  @launcher_script ~S(exec "$@" </dev/null)
+  # Seconds the watchdog waits after SIGINT before SIGTERM, and after SIGTERM
+  # before SIGKILL; and how long a duplex lifeline lets an idle claude exit on
+  # its own stdin EOF before the first signal. Fixed: the cleanup schedule is
+  # not a configuration surface.
+  @int_grace_s 2
+  @term_grace_s 1
+  @close_grace_s 1
 
   @doc false
   # The `:args` for `Port.open({:spawn_executable, "/bin/sh"}, ...)` that runs
-  # `binary` with `args` and stdin from /dev/null. The binary and every
-  # argument are positional parameters run as "$@", so nothing is quoted and
-  # each one is a separate argv string: Linux's 128 KiB per-string limit
-  # applies to each argument, not to the joined command (#305). An empty
-  # stdin matters in print mode: Claude Code 2.1.312 waits 3 s for data on an
-  # open stdin pipe before it starts (#304).
+  # `binary` with `args`, stdin from /dev/null, and stops it when the port
+  # goes away (#303). The binary and every argument are positional
+  # parameters run as "$@", so nothing is quoted and each one is a separate
+  # argv string: Linux's 128 KiB per-string limit applies to each argument,
+  # not to the joined command (#305). An empty stdin matters in print mode:
+  # Claude Code 2.1.312 waits 3 s for data on an open stdin pipe (#304).
+  #
+  # The shell is a small supervisor with three processes, ported from
+  # codex_wrapper_ex (genagent/codex_wrapper_ex#125, #138):
+  #
+  #   * the target, a background job started from "$@";
+  #   * a watchdog subshell that blocks in `read` on the port's stdin, which
+  #     the supervisor saved on fd 3 before backgrounding anything. The BEAM
+  #     holds the only write end and never writes, so EOF means the port was
+  #     closed (timeout, stream halt) or the BEAM died;
+  #   * the supervisor itself, which waits for the target, keeps its exit
+  #     status, and kills and reaps the watchdog.
+  #
+  # On EOF the watchdog signals the target's pid: INT, TERM after
+  # @int_grace_s, KILL after a further @term_grace_s. Only the target is
+  # signalled; descendants it does not stop itself (stdio MCP servers in its
+  # process group) are not, which is what Runner.Forcola's group kill adds.
+  # A POSIX non-interactive shell starts a background job with SIGINT
+  # ignored; a target that installs its own SIGINT handler still gets INT,
+  # one that does not stops at the TERM step.
+  #
+  # Signalling is by pid, so a pid recycled between the target's exit and the
+  # watchdog's kill is a residual risk; the supervisor kills the watchdog as
+  # soon as the target is reaped, which keeps that window short. /bin/sleep
+  # is absolute because callers may replace PATH. TERM keeps its default
+  # action while the watchdog waits in `read`, and the trap that turns a
+  # cancellation into a flag is installed only once escalation starts: a
+  # trapped TERM that arrives just before `read` blocks would otherwise be
+  # deferred until an EOF that never comes (genagent/codex_wrapper_ex#134). A
+  # USR1 handshake makes the supervisor wait until the watchdog runs before a
+  # quick target's exit can cancel it.
   @spec launcher_args(String.t(), [String.t()]) :: [String.t()]
-  def launcher_args(binary, args), do: ["-c", @launcher_script, "claude-wrapper", binary | args]
+  def launcher_args(binary, args),
+    do: ["-c", supervisor_script(), "claude-wrapper", binary | args]
+
+  defp supervisor_script do
+    """
+    watcher_ready=0
+    trap 'watcher_ready=1' USR1
+    supervisor=$$
+    exec 3<&0
+    "$@" </dev/null 3<&- &
+    t=$!
+    (
+      kill -s USR1 "$supervisor" || exit 0
+      while read -r _line; do :; done
+      stopping=0
+      trap 'stopping=1' TERM
+      kill -s INT "$t" || exit 0
+      [ -x /bin/sleep ] || exit 0
+      [ "$stopping" = 0 ] || exit 0
+      /bin/sleep #{@int_grace_s}
+      [ "$stopping" = 0 ] || exit 0
+      kill -s TERM "$t" || exit 0
+      /bin/sleep #{@term_grace_s}
+      [ "$stopping" = 0 ] || exit 0
+      kill -s KILL "$t"
+      exit 0
+    ) <&3 3<&- >/dev/null 2>&1 &
+    w=$!
+    while [ "$watcher_ready" = 0 ]; do
+      kill -0 "$w" || break
+    done
+    trap - USR1
+    exec 3<&- >/dev/null 2>&1
+    wait "$t"
+    s=$?
+    kill "$w"
+    wait "$w"
+    exit "$s"
+    """
+  end
+
+  @doc false
+  # The `:args` for a duplex session's lifeline port (#303). A duplex session
+  # uses claude's stdin for the protocol, so the lifeline is a second port
+  # whose stdin the BEAM holds. EOF there (the adapter closed the session, or
+  # the BEAM died) gives an idle claude @close_grace_s to exit on its own
+  # stdin EOF, then sends INT, TERM and KILL to `os_pid` with the same graces
+  # as launcher_args/2. Each step first checks that the pid is still alive,
+  # so after a normal exit (the session stops and the lifeline closes) no
+  # signal is sent. The same pid-reuse caveat applies. The script keeps its
+  # stdout open (it never writes to it): when a port's output closes, the VM
+  # closes the port, and so the lifeline's stdin, which would read as EOF.
+  @spec lifeline_args(non_neg_integer()) :: [String.t()]
+  def lifeline_args(os_pid) when is_integer(os_pid) do
+    script = """
+    t=$1
+    exec 2>/dev/null
+    while read -r _line; do :; done
+    [ -x /bin/sleep ] || exit 0
+    kill -0 "$t" || exit 0
+    /bin/sleep #{@close_grace_s}
+    kill -0 "$t" || exit 0
+    kill -s INT "$t"
+    /bin/sleep #{@int_grace_s}
+    kill -0 "$t" || exit 0
+    kill -s TERM "$t"
+    /bin/sleep #{@term_grace_s}
+    kill -0 "$t" || exit 0
+    kill -s KILL "$t"
+    """
+
+    ["-c", script, "claude-wrapper-lifeline", Integer.to_string(os_pid)]
+  end
 
   # A conservative allowlist of shell-safe characters. Anything else -- and the
   # empty string -- gets single-quoted below.
