@@ -140,8 +140,12 @@ defmodule ClaudeWrapper.DuplexSession.Adapter.Port do
     ArgumentError -> :ok
   end
 
-  defp env_opts(%Config{env: []}), do: []
-  defp env_opts(%Config{env: env}), do: [{:env, Config.port_env(env)}]
+  defp env_opts(%Config{} = config) do
+    case Config.child_env(config) do
+      [] -> []
+      env -> [{:env, Config.port_env(env)}]
+    end
+  end
 
   defp cd_opts(%Config{working_dir: nil}), do: []
   defp cd_opts(%Config{working_dir: dir}), do: [{:cd, String.to_charlist(dir)}]
