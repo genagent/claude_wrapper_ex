@@ -13,6 +13,11 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
     path
   end
 
+  # Fakes that write something the test must observe wait for this file,
+  # which go/1 creates once the test has subscribed.
+  defp gate(dir), do: "while [ ! -f '#{Path.join(dir, "go")}' ]; do sleep 0.02; done\n"
+  defp go(dir), do: File.touch!(Path.join(dir, "go"))
+
   defp start(dir, body, adapter_opts \\ []) do
     Process.flag(:trap_exit, true)
 
@@ -47,7 +52,8 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
 
       File.write!(Path.join(dir, "line.json"), line <> "\n")
 
-      pid = start(dir, "cat '#{Path.join(dir, "line.json")}'\nexec cat >/dev/null\n")
+      pid = start(dir, gate(dir) <> "cat '#{Path.join(dir, "line.json")}'\nexec cat >/dev/null\n")
+      go(dir)
 
       assert_receive {:claude,
                       {:assistant, %{"message" => %{"content" => [%{"text" => ^text}]}}}},
@@ -92,7 +98,8 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
     end
 
     test "a child that exits reports its tail and removes the file", %{tmp_dir: dir} do
-      pid = start(dir, "echo exiting-3 >&2\nexit 3\n")
+      pid = start(dir, gate(dir) <> "echo exiting-3 >&2\nexit 3\n")
+      go(dir)
 
       assert_receive {:claude,
                       {:transport_terminal,
