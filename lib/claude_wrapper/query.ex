@@ -1107,28 +1107,14 @@ defmodule ClaudeWrapper.Query do
     end
   end
 
-  defp maybe_send_rate_limit(
-         %{"rate_limit_info" => %{"status" => status} = info},
-         {pid, reference}
-       )
-       when is_binary(status) and byte_size(status) > 0 do
-    observation = %RateLimitObservation{
-      status: status,
-      rate_limit_type: optional_string(info["rateLimitType"]),
-      unified_windows: optional_map(info["unifiedWindows"])
-    }
+  defp maybe_send_rate_limit(data, {pid, reference}) do
+    with {:ok, observation} <- RateLimitObservation.from_event(data),
+         do: send(pid, {reference, observation})
 
-    send(pid, {reference, observation})
     :continue
   end
 
   defp maybe_send_rate_limit(_data, _observer), do: :continue
-
-  defp optional_string(value) when is_binary(value), do: value
-  defp optional_string(_value), do: nil
-
-  defp optional_map(value) when is_map(value), do: value
-  defp optional_map(_value), do: %{}
 
   defp observed_result(stdout, code, stderr) do
     case terminal_result(stdout) do

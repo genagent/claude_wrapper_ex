@@ -57,6 +57,9 @@ defmodule ClaudeWrapper.Stream do
           | {:stream_event, map()}
           | {:user, map()}
           | {:unsolicited_result, Result.t()}
+          | {:system, String.t(), map()}
+          | {:rate_limit, ClaudeWrapper.RateLimitObservation.t()}
+          | {:raw, map()}
           | {:result, Result.t()}
           | {:error, ClaudeWrapper.Error.t()}
 
