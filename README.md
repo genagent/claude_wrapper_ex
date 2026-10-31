@@ -353,7 +353,7 @@ Port runner.
 
 ### Retry, telemetry, budget
 
-- **`ClaudeWrapper.Retry`**: exponential backoff around a `Query`. The default retries timeouts, plain non-zero exits, rate limits, and API errors that ended a turn before any tool ran (`:api_error` with category `:rate_limit`, `:overloaded`, `:server_error` or `:connection`); other auth failures, client API errors and rail stops are not retried.
+- **`ClaudeWrapper.Retry`**: exponential backoff around a `Query`. A retry re-sends the prompt as a new CLI process, and the tool effects of a failed attempt (file edits, commits, pushes, shell commands) are not undone and can run again. So the default retries only API errors that ended the run before any tool ran (`:api_error` with category `:rate_limit`, `:overloaded`, `:server_error` or `:connection`). Timeouts, non-zero exits and other failures are retried only when a caller `:retry_on` opts in; even then a timeout is retried only after the runner confirmed the attempt exited (`Runner.Forcola`), and a query with a pinned `--session-id` is never retried.
 
   ```elixir
   ClaudeWrapper.Retry.execute(query, config, max_retries: 3, base_delay_ms: 1_000)
