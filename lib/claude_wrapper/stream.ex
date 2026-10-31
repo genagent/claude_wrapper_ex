@@ -40,10 +40,11 @@ defmodule ClaudeWrapper.Stream do
 
   ## Early halt
 
-  Halting early (e.g. `Stream.take/2`) stops consumption and unsubscribes,
-  but does **not** cancel the turn server-side -- the `claude` subprocess
-  runs the turn to completion. Use `ClaudeWrapper.DuplexSession.interrupt/1`
-  for a real mid-turn cancel.
+  Halting early (e.g. `Stream.take/2`) stops consumption and unsubscribes.
+  By default it does **not** cancel the turn server-side -- the `claude`
+  subprocess runs the turn to completion. Start the session with
+  `cancel_on_caller_exit: true` to have it interrupt the turn when the
+  stream's sender exits, or use `ClaudeWrapper.DuplexSession.interrupt/1`.
   """
 
   alias ClaudeWrapper.{DuplexSession, Error, Result, StreamEvent}
