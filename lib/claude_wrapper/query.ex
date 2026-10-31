@@ -1125,18 +1125,34 @@ defmodule ClaudeWrapper.Query do
     end
   end
 
+  # The last result line, with any earlier result lines of the same run (a
+  # print-mode run that waited for background tasks writes one per turn) kept
+  # as extra["prior_results"] (#320).
   defp terminal_result(stdout) do
     stdout
     |> String.split("\n")
-    |> Enum.reverse()
-    |> Enum.find_value(&result_line/1)
+    |> Enum.flat_map(&result_data/1)
+    |> attach_prior_results()
   end
 
-  defp result_line(line) do
-    case StreamEvent.parse(line) do
-      {:ok, %StreamEvent{type: "result", data: data}} -> Result.from_json(data)
-      _other -> nil
+  # JSON escapes quotes inside strings, so only a line with an object whose
+  # "type" is "result" matches; the decode confirms it is the top-level type.
+  # This skips decoding the other (possibly large) lines.
+  defp result_data(line) do
+    with true <- Regex.match?(~r/"type"\s*:\s*"result"/, line),
+         {:ok, %StreamEvent{type: "result", data: data}} <- StreamEvent.parse(line) do
+      [data]
+    else
+      _other -> []
     end
+  end
+
+  defp attach_prior_results([]), do: nil
+
+  defp attach_prior_results(results) do
+    {prior, [last]} = Enum.split(results, -1)
+    result = Result.from_json(last)
+    if prior == [], do: result, else: put_in(result.extra["prior_results"], prior)
   end
 
   defp do_execute(%__MODULE__{} = query, %Config{} = config) do

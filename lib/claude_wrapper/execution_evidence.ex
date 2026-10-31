@@ -47,7 +47,8 @@ defmodule ClaudeWrapper.ExecutionEvidence do
     * `:session_id` -- the first valid native session ID seen on stdout during
       this execution, or `nil`
     * `:result` -- the last terminal `result` event found in the retained
-      stdout, or `nil`. It is kept even when the execution later failed
+      stdout, or `nil`. Earlier `result` events of the same run are kept in
+      it (`ClaudeWrapper.Result.prior_results/1`). It is kept even when the execution later failed
       (timeout, nonzero exit, unconfirmed cleanup); its presence is not
       evidence of clean completion.
     * `:outcome` -- the exact `{:ok, result}` / `{:error, error}` the call

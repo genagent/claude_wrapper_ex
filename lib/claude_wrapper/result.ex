@@ -78,6 +78,11 @@ defmodule ClaudeWrapper.Result do
   @doc """
   Token usage for the turn, read from `extra["usage"]`.
 
+  This is the last turn's usage only. A print-mode run that waits for
+  background tasks writes a further result for each turn it runs after
+  them, and the returned result is the last; `run_usage/1` covers the
+  whole run.
+
   Returns `nil` when the result carries no usage (e.g. some error
   results). `total` is `input + output + cache_creation` -- it **excludes**
   cache reads, which re-count context already tallied when it was first
@@ -92,6 +97,80 @@ defmodule ClaudeWrapper.Result do
     case extra["usage"] do
       %{} = u -> build_usage(u)
       _ -> nil
+    end
+  end
+
+  @doc """
+  Token usage of every model call since the CLI process started, summed
+  over the per-model counts in `extra["modelUsage"]`.
+
+  For a one-shot run this covers the whole run, including the turns the
+  CLI ran after background tasks finished (where `usage/1` has only the
+  last). In a duplex session it covers the session so far. Same shape and
+  `total` rule as `usage/1`; `nil` when the result carries no
+  `modelUsage`.
+
+      iex> ClaudeWrapper.Result.run_usage(%ClaudeWrapper.Result{
+      ...>   result: "",
+      ...>   extra: %{"modelUsage" => %{
+      ...>     "a" => %{"inputTokens" => 20, "outputTokens" => 10},
+      ...>     "b" => %{"inputTokens" => 10, "outputTokens" => 5, "cacheReadInputTokens" => 7}
+      ...>   }}
+      ...> })
+      %{input: 30, output: 15, cache_creation: 0, cache_read: 7, total: 45}
+  """
+  @spec run_usage(t()) :: usage() | nil
+  def run_usage(%__MODULE__{extra: extra}) do
+    case extra["modelUsage"] do
+      %{} = by_model when map_size(by_model) > 0 ->
+        by_model
+        |> Map.values()
+        |> Enum.filter(&is_map/1)
+        |> Enum.reduce(%{}, &add_model_usage/2)
+        |> build_usage()
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  The result's position among the results the CLI wrote in this run,
+  read from `extra["result_index"]` (`0` for the first), or `nil` when
+  absent.
+
+  A print-mode run that waits for background tasks writes one result per
+  turn. With `--output-format json` (`ClaudeWrapper.Query.execute/2`) the
+  CLI prints only the last, so a `result_index` above `0` there means
+  earlier results were not printed; use `ClaudeWrapper.Query.execute/3`
+  (see `prior_results/1`) or `ClaudeWrapper.Query.stream/2` to get each
+  turn's reply.
+  """
+  @spec result_index(t()) :: non_neg_integer() | nil
+  def result_index(%__MODULE__{extra: extra}) do
+    case extra["result_index"] do
+      index when is_integer(index) and index >= 0 -> index
+      _ -> nil
+    end
+  end
+
+  @doc """
+  The results the CLI wrote earlier in the same run, oldest first, read
+  from `extra["prior_results"]`.
+
+  A print-mode run that waits for background tasks writes one result per
+  turn: the reply to the prompt, then one for each turn run after a task
+  finished. `ClaudeWrapper.Query.execute/3` (stream-json) returns the last
+  as the result and keeps the earlier ones here, so the prompt's own
+  reply is the first prior result. `ClaudeWrapper.Query.execute/2` (json)
+  only sees the last result, so this is `[]` there; check
+  `result_index/1`.
+  """
+  @spec prior_results(t()) :: [t()]
+  def prior_results(%__MODULE__{extra: extra}) do
+    case extra["prior_results"] do
+      results when is_list(results) -> for %{} = data <- results, do: from_json(data)
+      _ -> []
     end
   end
 
@@ -222,6 +301,20 @@ defmodule ClaudeWrapper.Result do
       cache_read: cache_read,
       total: input + output + cache_creation
     }
+  end
+
+  # modelUsage counts are camelCase; add them onto the usage keys.
+  defp add_model_usage(m, acc) do
+    Map.merge(
+      acc,
+      %{
+        "input_tokens" => int(m["inputTokens"]),
+        "output_tokens" => int(m["outputTokens"]),
+        "cache_creation_input_tokens" => int(m["cacheCreationInputTokens"]),
+        "cache_read_input_tokens" => int(m["cacheReadInputTokens"])
+      },
+      fn _key, a, b -> a + b end
+    )
   end
 
   defp int(n) when is_integer(n), do: n
