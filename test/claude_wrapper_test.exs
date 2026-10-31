@@ -792,10 +792,10 @@ defmodule ClaudeWrapperTest do
       end
     end
 
-    test "default_retry_on retries timeouts, plain command failures, and rate limits" do
-      assert Retry.default_retry_on({:error, %Error{kind: :timeout}})
-      assert Retry.default_retry_on({:error, %Error{kind: :command_failed, exit_code: 1}})
-      assert Retry.default_retry_on({:error, %Error{kind: :auth, reason: :rate_limit}})
+    test "default_retry_on does not retry failures that can follow tool use (#317)" do
+      refute Retry.default_retry_on({:error, %Error{kind: :timeout}})
+      refute Retry.default_retry_on({:error, %Error{kind: :command_failed, exit_code: 1}})
+      refute Retry.default_retry_on({:error, %Error{kind: :auth, reason: :rate_limit}})
     end
 
     test "default_retry_on does not retry other auth failures or rail stops" do
