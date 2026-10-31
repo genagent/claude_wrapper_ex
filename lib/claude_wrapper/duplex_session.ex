@@ -126,6 +126,13 @@ defmodule ClaudeWrapper.DuplexSession do
       -- Forcola's terminal evidence and bounded stderr tail
     * `{:control_cancel, request_id}` -- the CLI cancelled an inbound
       control request it had sent
+    * `{:system, subtype, msg}` -- any other `system` frame
+      (`compact_boundary`, `status`, `task_notification`, hook events with
+      `--include-hook-events`, ...)
+    * `{:rate_limit, %ClaudeWrapper.RateLimitObservation{}}` -- a
+      `rate_limit_event`, parsed as on the one-shot paths
+    * `{:raw, msg}` -- any other frame, unparsed (a `rate_limit_event`
+      without a status, or a type this module does not know)
 
   Subscribers are monitored; if a subscriber crashes or exits, it is
   automatically removed.
@@ -165,7 +172,7 @@ defmodule ClaudeWrapper.DuplexSession do
   use GenServer
   require Logger
 
-  alias ClaudeWrapper.{Command, Config, Error, Query, Result, Telemetry}
+  alias ClaudeWrapper.{Command, Config, Error, Query, RateLimitObservation, Result, Telemetry}
   alias ClaudeWrapper.DuplexSession.{Adapter, TransportTerminal}
 
   @default_stderr_capture_bytes 16 * 1024
@@ -1493,23 +1500,41 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defp dispatch(%{"type" => "assistant"} = msg, state) do
     broadcast(state, {:assistant, msg})
-    accumulate(state, msg)
+    state
   end
 
   defp dispatch(%{"type" => "stream_event"} = msg, state) do
     broadcast(state, {:stream_event, msg})
-    accumulate(state, msg)
+    state
   end
 
   defp dispatch(%{"type" => "user"} = msg, state) do
     broadcast(state, {:user, msg})
-    accumulate(state, msg)
+    state
   end
 
-  # Other system subtypes (e.g. compact_boundary), unknown types: still
-  # accumulate inside an active turn so callers that later inspect the
-  # turn record can see them, but do not broadcast as a typed event.
-  defp dispatch(msg, state), do: accumulate(state, msg)
+  # Every other frame reaches subscribers too (#322): system frames other
+  # than init (compact_boundary, status, task_notification, hook events),
+  # rate-limit events parsed the same way as on the one-shot paths, and any
+  # other type unparsed.
+  defp dispatch(%{"type" => "system", "subtype" => subtype} = msg, state) do
+    broadcast(state, {:system, subtype, msg})
+    state
+  end
+
+  defp dispatch(%{"type" => "rate_limit_event"} = msg, state) do
+    case RateLimitObservation.from_event(msg) do
+      {:ok, observation} -> broadcast(state, {:rate_limit, observation})
+      :error -> broadcast(state, {:raw, msg})
+    end
+
+    state
+  end
+
+  defp dispatch(msg, state) do
+    broadcast(state, {:raw, msg})
+    state
+  end
 
   defp complete_turn(msg, from, state) do
     result = Result.from_json(msg)
@@ -1579,12 +1604,6 @@ defmodule ClaudeWrapper.DuplexSession do
     {:arity, arity} = :erlang.fun_info(handler, :arity)
     arity
   end
-
-  defp accumulate(%{pending_turn: {from, events}} = state, msg) do
-    %{state | pending_turn: {from, [msg | events]}}
-  end
-
-  defp accumulate(state, _msg), do: state
 
   defp broadcast(%{subscribers: subs}, _event) when map_size(subs) == 0, do: :ok
 
