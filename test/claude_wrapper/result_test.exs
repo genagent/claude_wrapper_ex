@@ -88,4 +88,44 @@ defmodule ClaudeWrapper.ResultTest do
       assert Result.usage(r).total == 3
     end
   end
+
+  describe "prior_results/1, result_index/1 and run_usage/1 (#320)" do
+    test "prior results parse as Results, oldest first" do
+      r = result(%{"prior_results" => [%{"result" => "a"}, %{"result" => "b"}]})
+      assert [%Result{result: "a"}, %Result{result: "b"}] = Result.prior_results(r)
+    end
+
+    test "absent or malformed fields give [] and nil" do
+      assert Result.prior_results(result(%{})) == []
+      assert Result.prior_results(result(%{"prior_results" => "x"})) == []
+      assert Result.result_index(result(%{})) == nil
+      assert Result.result_index(result(%{"result_index" => -1})) == nil
+      assert Result.result_index(result(%{"result_index" => 2})) == 2
+      assert Result.run_usage(result(%{})) == nil
+      assert Result.run_usage(result(%{"modelUsage" => %{}})) == nil
+    end
+
+    test "run_usage maps the camelCase cache counts" do
+      r =
+        result(%{
+          "modelUsage" => %{
+            "m" => %{
+              "inputTokens" => 2,
+              "outputTokens" => 4,
+              "cacheReadInputTokens" => 100,
+              "cacheCreationInputTokens" => 50,
+              "costUSD" => 0.005
+            }
+          }
+        })
+
+      assert Result.run_usage(r) == %{
+               input: 2,
+               output: 4,
+               cache_creation: 50,
+               cache_read: 100,
+               total: 56
+             }
+    end
+  end
 end

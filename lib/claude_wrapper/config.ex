@@ -77,6 +77,10 @@ defmodule ClaudeWrapper.Config do
       environment on every spawn path, before `:env` is applied; see
       `ClaudeWrapper.ChildEnv`. It has no effect outside a release.
     * `:timeout` - Command timeout in milliseconds (default `nil`: unbounded).
+      In print mode the CLI waits for background tasks after the prompt's
+      turn, and runs a further turn for each one that finishes, before it
+      exits; that wait (up to `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, 600000
+      ms by default in Claude Code 2.1.312) counts against this timeout.
       Applies to `query/2`, `Command.run/3`, `raw/2`, and the CLI subcommand
       wrappers (via `exec/2`). For `ClaudeWrapper.stream/2`, a finite value
       bounds both the whole run and each gap between output frames. Without

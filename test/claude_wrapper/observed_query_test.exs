@@ -263,6 +263,43 @@ defmodule ClaudeWrapper.ObservedQueryTest do
     assert actual == Result.from_json(data)
   end
 
+  test "a run that waited for a background task keeps the prompt's own result (#320)", context do
+    first =
+      Map.merge(result(), %{
+        "result" => "STARTED-BACKGROUND",
+        "result_index" => 0,
+        "num_turns" => 2,
+        "usage" => %{"input_tokens" => 20, "output_tokens" => 10},
+        "total_cost_usd" => 2.8e-4
+      })
+
+    last =
+      Map.merge(result(), %{
+        "result" => "BACKGROUND-FINISHED-REPLY",
+        "result_index" => 1,
+        "num_turns" => 1,
+        "usage" => %{"input_tokens" => 10, "output_tokens" => 5},
+        "total_cost_usd" => 4.2e-4,
+        "modelUsage" => %{"m" => %{"inputTokens" => 30, "outputTokens" => 15}}
+      })
+
+    script =
+      emit(init()) <>
+        emit(first) <>
+        emit(%{"type" => "system", "subtype" => "task_notification"}) <>
+        emit(init()) <>
+        emit(last)
+
+    assert {:ok, %Result{result: "BACKGROUND-FINISHED-REPLY", cost_usd: 4.2e-4} = actual} =
+             execute(context, script)
+
+    assert Result.result_index(actual) == 1
+    assert [%Result{result: "STARTED-BACKGROUND"} = prior] = Result.prior_results(actual)
+    assert Result.result_index(prior) == 0
+    assert %{input: 10, output: 5} = Result.usage(actual)
+    assert %{input: 30, output: 15} = Result.run_usage(actual)
+  end
+
   test "non-rail error results preserve existing successful tuple semantics", context do
     data = Map.merge(result(), %{"subtype" => "error_during_execution", "is_error" => true})
     assert {:ok, %Result{is_error: true}} = execute(context, emit(data) <> "exit 1\n")
