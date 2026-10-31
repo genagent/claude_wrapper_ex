@@ -158,11 +158,13 @@ defmodule ClaudeWrapper.ObservedQueryTest do
   end
 
   test "rate-limit evidence remains visible before a timed-out run", context do
+    # The deadline must leave the fake time to start and write both frames
+    # under load; the prompt launcher (#306) adds a shell exec to startup.
     script = emit(init()) <> emit(rate_limit_event("allowed")) <> "sleep 30\n"
-    config = fixture(context, script, timeout: 150)
+    config = fixture(context, script, timeout: 1_000)
     reference = context.reference
 
-    assert {:error, %Error{kind: :timeout, reason: 150}} =
+    assert {:error, %Error{kind: :timeout, reason: 1_000}} =
              Query.execute(Query.new("hello"), config,
                session_observer: {self(), reference},
                rate_limit_observer: {self(), reference}
@@ -323,15 +325,18 @@ defmodule ClaudeWrapper.ObservedQueryTest do
   test "whole-run timeout is not reset by continuing output", context do
     script = emit(init()) <> "while :; do printf 'still working\\n'; sleep 0.02; done\n"
     started = System.monotonic_time(:millisecond)
-    assert {:error, %Error{kind: :timeout, reason: 150}} = execute(context, script, timeout: 150)
-    assert System.monotonic_time(:millisecond) - started < 2_000
+
+    assert {:error, %Error{kind: :timeout, reason: 1_000}} =
+             execute(context, script, timeout: 1_000)
+
+    assert System.monotonic_time(:millisecond) - started < 3_000
     reference = context.reference
     assert_receive {^reference, %SessionObservation{}}
   end
 
   test "a result before a stalled transport still ends in timeout", context do
     assert {:error, %Error{kind: :timeout}} =
-             execute(context, emit(init()) <> emit(result()) <> "sleep 30\n", timeout: 150)
+             execute(context, emit(init()) <> emit(result()) <> "sleep 30\n", timeout: 1_000)
 
     reference = context.reference
     assert_receive {^reference, %SessionObservation{}}

@@ -18,6 +18,11 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
   defp gate(dir), do: "while [ ! -f '#{Path.join(dir, "go")}' ]; do sleep 0.02; done\n"
   defp go(dir), do: File.touch!(Path.join(dir, "go"))
 
+  # Fakes that write stderr touch this file afterwards; the test waits for it
+  # instead of sleeping a fixed time.
+  defp ready(dir), do: "touch '#{Path.join(dir, "ready")}'\n"
+  defp await_ready(dir), do: wait_until(fn -> File.exists?(Path.join(dir, "ready")) end)
+
   # Register for the exit status, then release the fake, so a session that
   # fails fast cannot exit before the waiter is registered.
   defp exit_after_go(pid, dir) do
@@ -108,8 +113,8 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
 
   describe "stderr capture (#311)" do
     test "shutdown/1 returns the stderr tail, which never reaches the VM", %{tmp_dir: dir} do
-      pid = start(dir, "echo STDERR-MARKER >&2\nexec cat >/dev/null\n")
-      Process.sleep(200)
+      pid = start(dir, "echo STDERR-MARKER >&2\n" <> ready(dir) <> "exec cat >/dev/null\n")
+      await_ready(dir)
 
       assert {:ok, %TransportTerminal{evidence: :closed, stderr: "STDERR-MARKER\n"}} =
                DuplexSession.shutdown(pid)
@@ -129,15 +134,21 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
 
     test "the tail keeps the last stderr_capture_bytes", %{tmp_dir: dir} do
       pid =
-        start(dir, "printf 'aaaaabbbbb' >&2\nexec cat >/dev/null\n", stderr_capture_bytes: 5)
+        start(dir, "printf 'aaaaabbbbb' >&2\n" <> ready(dir) <> "exec cat >/dev/null\n",
+          stderr_capture_bytes: 5
+        )
 
-      Process.sleep(200)
+      await_ready(dir)
       assert {:ok, %TransportTerminal{stderr: "bbbbb"}} = DuplexSession.shutdown(pid)
     end
 
     test "stderr_capture_bytes 0 discards stderr", %{tmp_dir: dir} do
-      pid = start(dir, "echo gone >&2\nexec cat >/dev/null\n", stderr_capture_bytes: 0)
-      Process.sleep(200)
+      pid =
+        start(dir, "echo gone >&2\n" <> ready(dir) <> "exec cat >/dev/null\n",
+          stderr_capture_bytes: 0
+        )
+
+      await_ready(dir)
       assert {:ok, %TransportTerminal{stderr: ""}} = DuplexSession.shutdown(pid)
     end
   end
