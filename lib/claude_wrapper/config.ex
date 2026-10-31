@@ -41,7 +41,8 @@ defmodule ClaudeWrapper.Config do
           debug: boolean(),
           runner: module() | nil,
           runner_options: keyword() | nil,
-          release_env: :scrub | :inherit
+          release_env: :scrub | :inherit,
+          max_line_bytes: pos_integer()
         }
 
   defstruct [
@@ -53,7 +54,8 @@ defmodule ClaudeWrapper.Config do
     env: [],
     verbose: false,
     debug: false,
-    release_env: :scrub
+    release_env: :scrub,
+    max_line_bytes: 1_048_576
   ]
 
   @doc """
@@ -85,6 +87,13 @@ defmodule ClaudeWrapper.Config do
       wrappers (via `exec/2`). For `ClaudeWrapper.stream/2`, a finite value
       bounds both the whole run and each gap between output frames. Without
       one, streaming retains its per-frame idle safety deadline.
+    * `:max_line_bytes` - The largest stdout line, in bytes, that
+      `ClaudeWrapper.Query.stream/2` and observed execution
+      (`ClaudeWrapper.Query.execute/3` with a session or rate-limit
+      observer) accept (default 1 MiB). A longer line stops the CLI and
+      ends the stream with a `"line_limit"` error event, or the call with
+      an `:output_limit` error (#312). Raises `ArgumentError` unless a
+      positive integer.
     * `:verbose` - Enable verbose output
     * `:debug` - Enable debug output
     * `:runner` - A `ClaudeWrapper.Runner` module for this config (default
@@ -112,7 +121,8 @@ defmodule ClaudeWrapper.Config do
       debug: Keyword.get(opts, :debug, false),
       runner: validate_runner!(opts[:runner]),
       runner_options: validate_runner_options!(opts[:runner_options]),
-      release_env: validate_release_env!(Keyword.get(opts, :release_env, :scrub))
+      release_env: validate_release_env!(Keyword.get(opts, :release_env, :scrub)),
+      max_line_bytes: validate_max_line_bytes!(Keyword.get(opts, :max_line_bytes, 1_048_576))
     }
   end
 
@@ -215,6 +225,11 @@ defmodule ClaudeWrapper.Config do
 
   defp validate_release_env!(mode),
     do: raise(ArgumentError, ":release_env must be :scrub or :inherit, got: #{inspect(mode)}")
+
+  defp validate_max_line_bytes!(bytes) when is_integer(bytes) and bytes > 0, do: bytes
+
+  defp validate_max_line_bytes!(other),
+    do: raise(ArgumentError, "max_line_bytes must be a positive integer, got: #{inspect(other)}")
 
   # `System.cmd/3` unsets a variable given `nil`; a struct built without
   # new/1 may still carry `false`.
