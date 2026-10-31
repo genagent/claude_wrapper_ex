@@ -56,7 +56,14 @@ defmodule ClaudeWrapper.Telemetry do
   `:stop` events additionally include:
 
     * `:cost_usd` -- parsed from the final NDJSON result, when
-      available.
+      available. This is the CLI's running total for the session (a
+      resumed or duplex session's result includes earlier turns), not
+      the cost of this call alone.
+    * `:turn_cost_usd` -- on `[:claude_wrapper, :session, :turn, :stop]`
+      and `[:claude_wrapper, :duplex, :turn, :stop]` only: the cost of
+      this turn, the difference from the session's previous running
+      total (see `ClaudeWrapper.Result.turn_cost/2`). Feed this, not
+      `:cost_usd`, to `ClaudeWrapper.Budget.record/2`.
     * `:exit_code` -- `0` on success, non-zero when the CLI exited
       with an error that still produced output, `nil` for other
       errors.
@@ -213,7 +220,13 @@ defmodule ClaudeWrapper.Telemetry do
     :telemetry.execute(
       [:claude_wrapper, :duplex, :turn, :exception],
       %{monotonic_time: System.monotonic_time(), duration: System.monotonic_time() - monotonic},
-      Map.merge(metadata, %{kind: :error, reason: reason, cost_usd: nil, exit_code: nil})
+      Map.merge(metadata, %{
+        kind: :error,
+        reason: reason,
+        cost_usd: nil,
+        turn_cost_usd: nil,
+        exit_code: nil
+      })
     )
   end
 
@@ -264,20 +277,21 @@ defmodule ClaudeWrapper.Telemetry do
     %{cost_usd: nil, exit_code: nil}
   end
 
-  defp session_turn_stop_metadata({:ok, _session, %Result{} = result}) do
+  defp session_turn_stop_metadata({:ok, session, %Result{} = result}) do
     %{
       cost_usd: result.cost_usd,
+      turn_cost_usd: session |> Map.get(:history, []) |> Result.turn_costs() |> List.last(),
       exit_code: 0,
       session_id: result.session_id
     }
   end
 
   defp session_turn_stop_metadata({:error, %Error{exit_code: code}}) do
-    %{cost_usd: nil, exit_code: code}
+    %{cost_usd: nil, turn_cost_usd: nil, exit_code: code}
   end
 
   defp session_turn_stop_metadata({:error, _reason}) do
-    %{cost_usd: nil, exit_code: nil}
+    %{cost_usd: nil, turn_cost_usd: nil, exit_code: nil}
   end
 
   defp resume?(%Query{resume: resume, continue_session: continue, session_id: sid}) do

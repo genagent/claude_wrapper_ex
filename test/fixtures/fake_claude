@@ -33,6 +33,14 @@ case "$FAKE_CLAUDE_SCENARIO" in
   scalar)
     printf '{%s,"subtype":"success","is_error":false,"result":"","structured_output":"Ada Lovelace"}\n' "$base"
     ;;
+  running_total)
+    # Each invocation costs 0.01; total_cost_usd is the running total over
+    # the invocations recorded in FAKE_CLAUDE_CALLS, as a resumed session's
+    # result reports it (#319).
+    n=$(wc -l < "$FAKE_CLAUDE_CALLS" | tr -d ' ')
+    total=$(awk "BEGIN { printf \"%.2f\", $n * 0.01 }")
+    printf '{"type":"result","session_id":"fake-session","duration_ms":1,"num_turns":1,"total_cost_usd":%s,"subtype":"success","is_error":false,"result":"turn %s"}\n' "$total" "$n"
+    ;;
   env_probe)
     # Reports the auto-memory switch hermetic sets (#327) as the result text.
     printf '{%s,"subtype":"success","is_error":false,"result":"auto_memory_off=%s"}\n' "$base" "${CLAUDE_CODE_DISABLE_AUTO_MEMORY-<unset>}"

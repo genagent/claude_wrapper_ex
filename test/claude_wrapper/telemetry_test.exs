@@ -120,6 +120,7 @@ defmodule ClaudeWrapper.TelemetryTest do
 
       assert_receive {:telemetry, [:claude_wrapper, :session, :turn, :stop], _, stop_meta}
       assert stop_meta.cost_usd == 0.05
+      assert stop_meta.turn_cost_usd == nil
       assert stop_meta.exit_code == 0
       assert stop_meta.session_id == "sess-abc"
     end
@@ -327,7 +328,18 @@ defmodule ClaudeWrapper.TelemetryTest do
       assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :stop], meas, meta}, 1_000
       assert is_integer(meas.duration)
       assert meta.cost_usd == 0.05
+      assert meta.turn_cost_usd == 0.05
       assert meta.session_id == "s-1"
+
+      # The second turn's cost_usd is the running total; turn_cost_usd is
+      # the difference from the first (#319).
+      spawn(fn -> DuplexSession.send(pid, "again") end)
+
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :start], _, _}, 1_000
+      inject(pid, %{type: "result", subtype: "success", total_cost_usd: 0.125, session_id: "s-1"})
+      assert_receive {:telemetry, [:claude_wrapper, :duplex, :turn, :stop], _, meta}, 1_000
+      assert meta.cost_usd == 0.125
+      assert meta.turn_cost_usd == 0.075
 
       DuplexSession.stop(pid)
     end

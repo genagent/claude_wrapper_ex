@@ -556,12 +556,13 @@ defmodule ClaudeWrapper.IEx do
 
   defp print_history(turns) do
     turns
+    |> Enum.zip(Result.turn_costs(turns))
     |> Enum.with_index(1)
     |> Enum.each(&print_turn/1)
   end
 
-  defp print_turn({result, i}) do
-    cost_str = if result.cost_usd, do: " (#{format_cost(result.cost_usd)})", else: ""
+  defp print_turn({{result, cost}, i}) do
+    cost_str = if cost, do: " (#{format_cost(cost)})", else: ""
     error_str = if result.is_error, do: " \e[31m[error]\e[0m", else: ""
 
     IO.puts("\e[36m--- Turn #{i}#{cost_str}#{error_str} ---\e[0m")
@@ -574,7 +575,7 @@ defmodule ClaudeWrapper.IEx do
     IO.puts(result.result)
     IO.puts("")
 
-    cost_str = format_cost(result.cost_usd)
+    cost_str = session |> Session.turn_costs() |> List.last() |> format_cost()
     total = Session.total_cost(session)
     turns = Session.turn_count(session)
 
