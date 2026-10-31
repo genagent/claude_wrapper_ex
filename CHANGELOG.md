@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.19.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.18.0...v0.19.0) (2026-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* **retry:** Retry.execute/3 no longer retries :timeout, nonzero :command_failed or :auth rate limits by default, and never retries a timeout under Runner.Port.
+* **query:** unknown or mis-shaped options passed to query/2, stream/2, Session and the IEx helpers raise ArgumentError instead of being ignored, and conflicting session selectors raise before spawning.
+* **query:** API-error results are {:error, %Error{kind: :api_error}} (or :auth for a 401) instead of {:ok, %Result{is_error: true}}.
+
+### Features
+
+* **duplex:** bound Adapter.Port lines and capture its stderr ([#337](https://github.com/genagent/claude_wrapper_ex/issues/337)) ([806b65c](https://github.com/genagent/claude_wrapper_ex/commit/806b65caf5ab69c0e29f78888b4e10d7acd0a5f9))
+* **duplex:** broadcast system, rate-limit and other frames ([#343](https://github.com/genagent/claude_wrapper_ex/issues/343)) ([f7a5cf5](https://github.com/genagent/claude_wrapper_ex/commit/f7a5cf5ba9825805ccf919b175f846adefad28ad)), closes [#322](https://github.com/genagent/claude_wrapper_ex/issues/322)
+* **duplex:** interrupt a turn whose send/3 times out or whose caller exits ([#344](https://github.com/genagent/claude_wrapper_ex/issues/344)) ([696c4aa](https://github.com/genagent/claude_wrapper_ex/commit/696c4aaa152ef9f1350d30333096ca3c25d67607)), closes [#323](https://github.com/genagent/claude_wrapper_ex/issues/323)
+* **env:** scrub release boot variables and PATH entries from the claude child ([#340](https://github.com/genagent/claude_wrapper_ex/issues/340)) ([fecb913](https://github.com/genagent/claude_wrapper_ex/commit/fecb9133939dd97846b597e931770dcb8c622691)), closes [#310](https://github.com/genagent/claude_wrapper_ex/issues/310)
+* **port:** signal claude when a Port run or duplex session ends early ([#336](https://github.com/genagent/claude_wrapper_ex/issues/336)) ([60765b4](https://github.com/genagent/claude_wrapper_ex/commit/60765b4bd7e499c012ef0a3f952ba6e625eb4458)), closes [#303](https://github.com/genagent/claude_wrapper_ex/issues/303)
+* **query:** deliver the prompt on stdin instead of argv ([#339](https://github.com/genagent/claude_wrapper_ex/issues/339)) ([be56e99](https://github.com/genagent/claude_wrapper_ex/commit/be56e996fcab14d10a96777a6708e8afccdcbdde))
+* **stream:** bound line size and buffered lines in Query.stream ([#349](https://github.com/genagent/claude_wrapper_ex/issues/349)) ([49a111d](https://github.com/genagent/claude_wrapper_ex/commit/49a111df80a07c1509f820e2c2138a61b7497a9f)), closes [#312](https://github.com/genagent/claude_wrapper_ex/issues/312)
+
+
+### Bug Fixes
+
+* **duplex:** complete send/3 on its own prompt's result ([#342](https://github.com/genagent/claude_wrapper_ex/issues/342)) ([b8c6896](https://github.com/genagent/claude_wrapper_ex/commit/b8c6896e9b3e1a427e0c15b841e9d303f2704502)), closes [#321](https://github.com/genagent/claude_wrapper_ex/issues/321)
+* **duplex:** convert Config.env pairs for Adapter.Port ([#329](https://github.com/genagent/claude_wrapper_ex/issues/329)) ([01ee919](https://github.com/genagent/claude_wrapper_ex/commit/01ee9196aaa1b3191c92aa7bd782e2fd2b1d76e1)), closes [#308](https://github.com/genagent/claude_wrapper_ex/issues/308)
+* **env:** one unset form for Config.env on every spawn path ([#338](https://github.com/genagent/claude_wrapper_ex/issues/338)) ([5c3bb78](https://github.com/genagent/claude_wrapper_ex/commit/5c3bb78106da952e956dae02d56d0f0d070e568f)), closes [#309](https://github.com/genagent/claude_wrapper_ex/issues/309)
+* **port:** launch claude through "$@" with an empty stdin ([#335](https://github.com/genagent/claude_wrapper_ex/issues/335)) ([1ee792d](https://github.com/genagent/claude_wrapper_ex/commit/1ee792d89639792d03ba34abea63043cf42d880e)), closes [#304](https://github.com/genagent/claude_wrapper_ex/issues/304) [#305](https://github.com/genagent/claude_wrapper_ex/issues/305)
+* **query:** hermetic turns off Claude Code auto-memory ([#330](https://github.com/genagent/claude_wrapper_ex/issues/330)) ([b524502](https://github.com/genagent/claude_wrapper_ex/commit/b5245022d3b78006e4c128afbbdb8b5268baa7f0)), closes [#327](https://github.com/genagent/claude_wrapper_ex/issues/327)
+* **query:** keep earlier results of a run on the stream-json execute paths ([#347](https://github.com/genagent/claude_wrapper_ex/issues/347)) ([527431d](https://github.com/genagent/claude_wrapper_ex/commit/527431d4e6674cc6a618502655305dfd541157fe)), closes [#320](https://github.com/genagent/claude_wrapper_ex/issues/320)
+* **query:** raise on unknown or mis-shaped options and conflicting selectors ([#334](https://github.com/genagent/claude_wrapper_ex/issues/334)) ([57565c7](https://github.com/genagent/claude_wrapper_ex/commit/57565c7cc3e7a2449b3f207f7eedaecae0c6638f))
+* **query:** return API-error results as typed errors ([#331](https://github.com/genagent/claude_wrapper_ex/issues/331)) ([2cdd61d](https://github.com/genagent/claude_wrapper_ex/commit/2cdd61d2d95e33b8cbc0978b71f3d4f9243ece0b)), closes [#316](https://github.com/genagent/claude_wrapper_ex/issues/316)
+* **retry:** do not re-run turns that may have run tools ([#348](https://github.com/genagent/claude_wrapper_ex/issues/348)) ([7ab147c](https://github.com/genagent/claude_wrapper_ex/commit/7ab147c2e805f600738efaf4144c50cc57fcf67c)), closes [#317](https://github.com/genagent/claude_wrapper_ex/issues/317)
+* **session:** send one session selector after the first turn ([#333](https://github.com/genagent/claude_wrapper_ex/issues/333)) ([24c2aae](https://github.com/genagent/claude_wrapper_ex/commit/24c2aae6286a717a583faa46d6307c5b4e07ae7d)), closes [#326](https://github.com/genagent/claude_wrapper_ex/issues/326)
+* **stream_event:** read total_cost_usd in cost_usd/1 ([#345](https://github.com/genagent/claude_wrapper_ex/issues/345)) ([f97cdcf](https://github.com/genagent/claude_wrapper_ex/commit/f97cdcf17c4eb93ca8c65d3738c37cbc7aeffd95)), closes [#318](https://github.com/genagent/claude_wrapper_ex/issues/318)
+* treat result cost_usd as the session's running total ([#346](https://github.com/genagent/claude_wrapper_ex/issues/346)) ([4047e43](https://github.com/genagent/claude_wrapper_ex/commit/4047e434d55a268a318fc6e9480c30d75f087722)), closes [#319](https://github.com/genagent/claude_wrapper_ex/issues/319)
+
 ## [0.18.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.17.0...v0.18.0) (2026-10-29)
 
 
