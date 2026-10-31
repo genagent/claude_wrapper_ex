@@ -32,7 +32,9 @@ defmodule ClaudeWrapper.Stream do
   The foundational `stream/3` yields the same `event` payloads a
   subscriber receives (the second element of `{:claude, event}`):
   `{:system_init, session_id}`, `{:assistant, msg}`, `{:stream_event,
-  raw}`, `{:user, msg}`, and the terminal `{:result, %Result{}}`. A
+  raw}`, `{:user, msg}`, any `{:unsolicited_result, %Result{}}` (a
+  result that is not this turn's, see `DuplexSession.send/3`), and the
+  terminal `{:result, %Result{}}` for this turn. A
   failed turn (including `:turn_in_flight`) yields a terminal
   `{:error, %ClaudeWrapper.Error{}}` instead of `{:result, _}`.
 
@@ -54,6 +56,7 @@ defmodule ClaudeWrapper.Stream do
           | {:assistant, map()}
           | {:stream_event, map()}
           | {:user, map()}
+          | {:unsolicited_result, Result.t()}
           | {:result, Result.t()}
           | {:error, ClaudeWrapper.Error.t()}
 

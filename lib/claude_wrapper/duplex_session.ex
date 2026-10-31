@@ -117,7 +117,11 @@ defmodule ClaudeWrapper.DuplexSession do
     * `{:stream_event, msg}` -- a partial assistant token
       (`SDKPartialAssistantMessage`)
     * `{:user, msg}` -- a user message (e.g. tool results, replays)
-    * `{:result, %ClaudeWrapper.Result{}}` -- the parsed turn boundary
+    * `{:result, %ClaudeWrapper.Result{}}` -- the parsed turn boundary of a
+      `send/3`
+    * `{:unsolicited_result, %ClaudeWrapper.Result{}}` -- a result that
+      belongs to no pending `send/3`: a turn the CLI started on its own
+      (after a background task finished) or a result for another prompt
     * `{:transport_terminal, %ClaudeWrapper.DuplexSession.TransportTerminal{}}`
       -- Forcola's terminal evidence and bounded stderr tail
     * `{:control_cancel, request_id}` -- the CLI cancelled an inbound
@@ -262,6 +266,7 @@ defmodule ClaudeWrapper.DuplexSession do
           session_id: String.t() | nil,
           buffer: binary(),
           pending_turn: {GenServer.from(), [map()]} | nil,
+          turn_uuid: String.t() | nil,
           pending_control: %{String.t() => GenServer.from()},
           subscribers: %{pid() => reference()},
           on_permission: permission_handler(),
@@ -297,6 +302,7 @@ defmodule ClaudeWrapper.DuplexSession do
     :session_monotonic,
     buffer: <<>>,
     pending_turn: nil,
+    turn_uuid: nil,
     pending_control: %{},
     subscribers: %{},
     exit_status: :running,
@@ -395,6 +401,13 @@ defmodule ClaudeWrapper.DuplexSession do
 
   @doc """
   Send a user prompt. Blocks until the turn's `result` event arrives.
+
+  The prompt is sent with a `uuid`, and the call completes only on a
+  `result` whose `user_message_uuid(s)` contains it, so a result from a
+  turn the CLI starts on its own (after a background task) or for another
+  prompt is not returned here; subscribers get it as
+  `{:unsolicited_result, _}` (#321). A result without those fields, from
+  a CLI that does not echo them, completes the call as before.
 
   Returns `{:ok, %Result{}}` on success, `{:error,
   %ClaudeWrapper.Error{kind: :turn_in_flight}}` if another turn is
@@ -1013,8 +1026,13 @@ defmodule ClaudeWrapper.DuplexSession do
   @impl true
   def handle_call({:send, prompt}, from, %{pending_turn: nil, port: port} = state)
       when not is_nil(port) do
+    # The uuid comes back on this prompt's result as user_message_uuid(s),
+    # which is how the turn is matched to its result (#321).
+    uuid = uuid4()
+
     msg = %{
       type: "user",
+      uuid: uuid,
       message: %{role: "user", content: prompt},
       parent_tool_use_id: nil
     }
@@ -1022,7 +1040,7 @@ defmodule ClaudeWrapper.DuplexSession do
     case state.adapter.command(port, [Jason.encode!(msg), ?\n]) do
       :ok ->
         span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: state.session_id})
-        {:noreply, %{state | pending_turn: {from, []}, turn_span: span}}
+        {:noreply, %{state | pending_turn: {from, []}, turn_uuid: uuid, turn_span: span}}
 
       {:error, reason} ->
         {:reply, {:error, Error.new(:terminated, reason: {:transport_write, reason})}, state}
@@ -1466,28 +1484,12 @@ defmodule ClaudeWrapper.DuplexSession do
 
   # Turn boundary: reply to the waiting caller with a parsed Result.
   defp dispatch(%{"type" => "result"} = msg, %{pending_turn: {from, _events}} = state) do
-    result = Result.from_json(msg)
-    broadcast(state, {:result, result})
-    # An API-error result is returned as a typed error (#316); subscribers
-    # still see the result itself.
-    GenServer.reply(from, Query.classify_api_error(result, nil, nil, nil))
-
-    Telemetry.duplex_turn_stop(state.turn_span, %{
-      command: :duplex_turn,
-      session_id: result.session_id || state.session_id,
-      cost_usd: result.cost_usd,
-      exit_code: 0
-    })
-
-    # The turn is over; any still-tracked deferred permission ids are moot, so a
-    # late respond_to_permission/3 for this turn becomes a documented no-op.
-    %{state | pending_turn: nil, turn_span: nil, deferred_permissions: MapSet.new()}
+    if correlated?(msg, state.turn_uuid),
+      do: complete_turn(msg, from, state),
+      else: unsolicited_result(msg, state)
   end
 
-  defp dispatch(%{"type" => "result"} = msg, state) do
-    broadcast(state, {:result, Result.from_json(msg)})
-    state
-  end
+  defp dispatch(%{"type" => "result"} = msg, state), do: unsolicited_result(msg, state)
 
   defp dispatch(%{"type" => "assistant"} = msg, state) do
     broadcast(state, {:assistant, msg})
@@ -1508,6 +1510,60 @@ defmodule ClaudeWrapper.DuplexSession do
   # accumulate inside an active turn so callers that later inspect the
   # turn record can see them, but do not broadcast as a typed event.
   defp dispatch(msg, state), do: accumulate(state, msg)
+
+  defp complete_turn(msg, from, state) do
+    result = Result.from_json(msg)
+    broadcast(state, {:result, result})
+    # An API-error result is returned as a typed error (#316); subscribers
+    # still see the result itself.
+    GenServer.reply(from, Query.classify_api_error(result, nil, nil, nil))
+
+    Telemetry.duplex_turn_stop(state.turn_span, %{
+      command: :duplex_turn,
+      session_id: result.session_id || state.session_id,
+      cost_usd: result.cost_usd,
+      exit_code: 0
+    })
+
+    # The turn is over; any still-tracked deferred permission ids are moot, so a
+    # late respond_to_permission/3 for this turn becomes a documented no-op.
+    %{
+      state
+      | pending_turn: nil,
+        turn_uuid: nil,
+        turn_span: nil,
+        deferred_permissions: MapSet.new()
+    }
+  end
+
+  # A result for another prompt, or for a turn the CLI started on its own
+  # (after a background task's notification), is not a turn boundary for
+  # any pending send/3 (#321).
+  defp unsolicited_result(msg, state) do
+    broadcast(state, {:unsolicited_result, Result.from_json(msg)})
+    state
+  end
+
+  # Claude Code 2.1.312 echoes the prompt's uuid on its result. A result
+  # without the field (an older CLI) is taken as the pending turn's.
+  defp correlated?(msg, uuid) do
+    case msg do
+      %{"user_message_uuids" => uuids} when is_list(uuids) -> uuid in uuids
+      %{"user_message_uuid" => echoed} when is_binary(echoed) -> echoed == uuid
+      _ -> true
+    end
+  end
+
+  # A random (version 4) UUID.
+  defp uuid4 do
+    <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)
+
+    <<a::48, 4::4, b::12, 2::2, c::62>>
+    |> Base.encode16(case: :lower)
+    |> then(fn <<p1::binary-8, p2::binary-4, p3::binary-4, p4::binary-4, p5::binary-12>> ->
+      Enum.join([p1, p2, p3, p4, p5], "-")
+    end)
+  end
 
   # Detect the user's callback arity once and apply with the right
   # number of arguments. 3-arity gets the request_id so a deferred
@@ -1560,7 +1616,7 @@ defmodule ClaudeWrapper.DuplexSession do
   defp fail_pending_turn(%{pending_turn: {from, _}} = state, reason) do
     GenServer.reply(from, {:error, fail_reason_to_error(reason)})
     Telemetry.duplex_turn_exception(state.turn_span, reason)
-    %{state | pending_turn: nil, turn_span: nil}
+    %{state | pending_turn: nil, turn_uuid: nil, turn_span: nil}
   end
 
   defp fail_pending_control(%{pending_control: pending} = state, _reason)
