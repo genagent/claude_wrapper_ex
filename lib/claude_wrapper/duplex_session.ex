@@ -245,6 +245,7 @@ defmodule ClaudeWrapper.DuplexSession do
           | {:on_permission, permission_handler()}
           | {:on_control_request, control_handler()}
           | {:initialize, boolean() | map()}
+          | {:cancel_on_caller_exit, boolean()}
           | {:sdk_mcp_servers, %{String.t() => sdk_mcp_handler()}}
           | {:adapter, module()}
           | {:adapter_opts, keyword()}
@@ -274,6 +275,9 @@ defmodule ClaudeWrapper.DuplexSession do
           buffer: binary(),
           pending_turn: {GenServer.from(), [map()]} | nil,
           turn_uuid: String.t() | nil,
+          turn_timer: reference() | nil,
+          turn_monitor: reference() | nil,
+          cancel_on_caller_exit: boolean(),
           pending_control: %{String.t() => GenServer.from()},
           subscribers: %{pid() => reference()},
           on_permission: permission_handler(),
@@ -310,6 +314,9 @@ defmodule ClaudeWrapper.DuplexSession do
     buffer: <<>>,
     pending_turn: nil,
     turn_uuid: nil,
+    turn_timer: nil,
+    turn_monitor: nil,
+    cancel_on_caller_exit: false,
     pending_control: %{},
     subscribers: %{},
     exit_status: :running,
@@ -351,6 +358,9 @@ defmodule ClaudeWrapper.DuplexSession do
       (default `deny_all/2`).
     * `:on_control_request` -- `t:control_handler/0` for every other
       inbound control request (default `unsupported_control/3`).
+    * `:cancel_on_caller_exit` -- interrupt the in-flight turn when the
+      process that sent it exits, e.g. a `ClaudeWrapper.Stream` halted
+      early (default `false`). See `send/3`.
     * `:initialize` -- `true` or a map of extra fields: send `initialize`
       at start (see `initialize_response/2`). Implied by `:sdk_mcp_servers`.
     * `:sdk_mcp_servers` -- `%{name => t:sdk_mcp_handler/0}` in-process
@@ -421,13 +431,47 @@ defmodule ClaudeWrapper.DuplexSession do
   already running, or `{:error, %ClaudeWrapper.Error{}}` on failure.
 
   The default `timeout` is 120 seconds because the entire turn duration
-  must complete within it (cold start + model latency + tool calls).
+  must complete within it (cold start + model latency + tool calls). The
+  session enforces it (#323): when it passes, the call returns
+  `{:error, %ClaudeWrapper.Error{kind: :timeout}}`, the session interrupts
+  the turn, and it accepts the next prompt once the interrupted turn's
+  result has arrived (until then `send/3` returns `:turn_in_flight`).
+  `:infinity` sets no deadline. With `cancel_on_caller_exit: true` on
+  `start_link/1`, a caller that exits mid-turn (including a
+  `ClaudeWrapper.Stream` halted early) also gets its turn interrupted.
+  `send_async/3` is the non-blocking form.
   """
   @spec send(GenServer.server(), String.t(), timeout()) ::
           {:ok, Result.t()} | {:error, term()}
   def send(server, prompt, timeout \\ 120_000) when is_binary(prompt) do
-    GenServer.call(server, {:send, prompt}, timeout)
+    GenServer.call(server, {:send, prompt, timeout}, call_timeout(timeout))
   end
+
+  # The session enforces the turn deadline and replies first; the call's own
+  # timeout is a backstop for a session that stops responding.
+  defp call_timeout(:infinity), do: :infinity
+  defp call_timeout(ms) when is_integer(ms) and ms >= 0, do: ms + 5_000
+
+  @doc """
+  Start a turn without blocking (#323). Returns `{:ok, ref}`; the outcome
+  arrives as `{:duplex_turn, ref, {:ok, %Result{}} | {:error, %Error{}}}`
+  in the calling process. `timeout` (default `:infinity`) is enforced as in
+  `send/3`. Errors that prevent the turn from starting (`:turn_in_flight`,
+  `:duplex_closed`) are returned directly. `cancel/2` interrupts the turn.
+  """
+  @spec send_async(GenServer.server(), String.t(), timeout()) ::
+          {:ok, reference()} | {:error, Error.t()}
+  def send_async(server, prompt, timeout \\ :infinity) when is_binary(prompt) do
+    GenServer.call(server, {:send_async, prompt, self(), timeout})
+  end
+
+  @doc """
+  Interrupt the turn started by `send_async/3` with `ref`. The interrupted
+  turn's result is still delivered as `{:duplex_turn, ref, _}`. Returns
+  `{:error, %Error{kind: :not_found}}` when `ref` is not the turn in flight.
+  """
+  @spec cancel(GenServer.server(), reference()) :: :ok | {:error, Error.t()}
+  def cancel(server, ref) when is_reference(ref), do: GenServer.call(server, {:cancel, ref})
 
   @doc """
   Return the session ID assigned by the CLI on `system/init`, or `nil`
@@ -736,16 +780,16 @@ defmodule ClaudeWrapper.DuplexSession do
 
   @doc """
   Send an `interrupt` control_request to the CLI. The CLI cancels any
-  in-flight turn and emits a `result` with a cancel-flavored stop
-  reason; that result still flows through the normal `send/3` reply.
+  in-flight turn and emits a `result` for it; that result still flows
+  through the normal `send/3` reply.
 
   This call returns once the CLI acknowledges the interrupt with a
-  matching `control_response`. The caller of `send/3` will receive
-  its own reply when the resulting `result` event arrives.
+  matching `control_response` (Claude Code 2.1.312 answers
+  `{"still_queued": []}`). The caller of `send/3` will receive its own
+  reply when the resulting `result` event arrives.
 
   Calling `interrupt/1` outside of an active turn is harmless: the
-  CLI accepts the request, acks it, and emits a synthetic result the
-  GenServer drops.
+  CLI accepts and acks the request.
   """
   @spec interrupt(GenServer.server(), timeout()) :: :ok | {:error, term()}
   def interrupt(server, timeout \\ 10_000) do
@@ -938,6 +982,7 @@ defmodule ClaudeWrapper.DuplexSession do
           on_permission: on_permission,
           on_control_request: on_control_request,
           sdk_mcp_servers: sdk_mcp_servers,
+          cancel_on_caller_exit: Keyword.get(opts, :cancel_on_caller_exit, false) == true,
           owner_ref: owner_ref,
           stderr_capture_bytes: stderr_capture_bytes,
           max_line_bytes: max_line_bytes,
@@ -1031,35 +1076,40 @@ defmodule ClaudeWrapper.DuplexSession do
   end
 
   @impl true
-  def handle_call({:send, prompt}, from, %{pending_turn: nil, port: port} = state)
-      when not is_nil(port) do
-    # The uuid comes back on this prompt's result as user_message_uuid(s),
-    # which is how the turn is matched to its result (#321).
-    uuid = uuid4()
-
-    msg = %{
-      type: "user",
-      uuid: uuid,
-      message: %{role: "user", content: prompt},
-      parent_tool_use_id: nil
-    }
-
-    case state.adapter.command(port, [Jason.encode!(msg), ?\n]) do
-      :ok ->
-        span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: state.session_id})
-        {:noreply, %{state | pending_turn: {from, []}, turn_uuid: uuid, turn_span: span}}
-
-      {:error, reason} ->
-        {:reply, {:error, Error.new(:terminated, reason: {:transport_write, reason})}, state}
+  def handle_call({:send, prompt, timeout}, {caller, _} = from, %{pending_turn: nil} = state)
+      when not is_nil(state.port) do
+    case start_turn(prompt, from, caller, timeout, state) do
+      {:ok, state} -> {:noreply, state}
+      {:error, error} -> {:reply, {:error, error}, state}
     end
   end
 
-  def handle_call({:send, _prompt}, _from, %{pending_turn: nil, port: nil} = state) do
+  def handle_call({:send_async, prompt, caller, timeout}, _from, %{pending_turn: nil} = state)
+      when not is_nil(state.port) do
+    ref = make_ref()
+
+    case start_turn(prompt, {:async, caller, ref}, caller, timeout, state) do
+      {:ok, state} -> {:reply, {:ok, ref}, state}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call(request, _from, %{pending_turn: nil, port: nil} = state)
+      when elem(request, 0) in [:send, :send_async] do
     {:reply, {:error, Error.new(:duplex_closed)}, state}
   end
 
-  def handle_call({:send, _prompt}, _from, state) do
+  def handle_call(request, _from, state) when elem(request, 0) in [:send, :send_async] do
     {:reply, {:error, Error.new(:turn_in_flight)}, state}
+  end
+
+  def handle_call({:cancel, ref}, _from, %{pending_turn: {{:async, _caller, ref}, _}} = state) do
+    write_interrupt(state)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:cancel, ref}, _from, state) do
+    {:reply, {:error, Error.new(:not_found, reason: ref)}, state}
   end
 
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
@@ -1230,6 +1280,21 @@ defmodule ClaudeWrapper.DuplexSession do
 
     {:stop, :normal,
      %{state | exit_status: {:failed, {:transport_error, {:puller_down, reason}}}}}
+  end
+
+  # The send/3 deadline passed: answer the caller and interrupt the turn.
+  def handle_info({:turn_timeout, uuid, ms}, %{turn_uuid: uuid, pending_turn: {from, _}} = state)
+      when from != :abandoned do
+    reply_turn(from, {:error, Error.timeout(ms)})
+    {:noreply, abandon_turn(%{state | turn_timer: nil})}
+  end
+
+  def handle_info({:turn_timeout, _uuid, _ms}, state), do: {:noreply, state}
+
+  # cancel_on_caller_exit: the process that sent the turn exited.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{turn_monitor: ref} = state)
+      when not is_nil(ref) do
+    {:noreply, abandon_turn(%{state | turn_monitor: nil})}
   end
 
   def handle_info({:mcp_reply, pid, response}, state) do
@@ -1541,7 +1606,8 @@ defmodule ClaudeWrapper.DuplexSession do
     broadcast(state, {:result, result})
     # An API-error result is returned as a typed error (#316); subscribers
     # still see the result itself.
-    GenServer.reply(from, Query.classify_api_error(result, nil, nil, nil))
+    reply_turn(from, Query.classify_api_error(result, nil, nil, nil))
+    state = clear_turn_guards(state)
 
     Telemetry.duplex_turn_stop(state.turn_span, %{
       command: :duplex_turn,
@@ -1578,6 +1644,79 @@ defmodule ClaudeWrapper.DuplexSession do
       _ -> true
     end
   end
+
+  defp start_turn(prompt, from, caller, timeout, state) do
+    # The uuid comes back on this prompt's result as user_message_uuid(s),
+    # which is how the turn is matched to its result (#321).
+    uuid = uuid4()
+
+    msg = %{
+      type: "user",
+      uuid: uuid,
+      message: %{role: "user", content: prompt},
+      parent_tool_use_id: nil
+    }
+
+    case state.adapter.command(state.port, [Jason.encode!(msg), ?\n]) do
+      :ok ->
+        span = Telemetry.duplex_turn_start(%{command: :duplex_turn, session_id: state.session_id})
+
+        {:ok,
+         %{
+           state
+           | pending_turn: {from, []},
+             turn_uuid: uuid,
+             turn_span: span,
+             turn_timer: turn_timer(uuid, timeout),
+             turn_monitor: if(state.cancel_on_caller_exit, do: Process.monitor(caller))
+         }}
+
+      {:error, reason} ->
+        {:error, Error.new(:terminated, reason: {:transport_write, reason})}
+    end
+  end
+
+  defp turn_timer(_uuid, :infinity), do: nil
+
+  defp turn_timer(uuid, ms) when is_integer(ms),
+    do: Process.send_after(self(), {:turn_timeout, uuid, ms}, ms)
+
+  defp clear_turn_guards(state) do
+    if state.turn_timer, do: Process.cancel_timer(state.turn_timer)
+    if state.turn_monitor, do: Process.demonitor(state.turn_monitor, [:flush])
+    %{state | turn_timer: nil, turn_monitor: nil}
+  end
+
+  # Interrupt the turn and keep it pending, with no caller, until its result
+  # arrives (Claude Code 2.1.312 writes one after an interrupt); then the
+  # session accepts the next prompt (#323).
+  defp abandon_turn(%{pending_turn: {_from, events}} = state) do
+    write_interrupt(state)
+    state = clear_turn_guards(state)
+    %{state | pending_turn: {:abandoned, events}}
+  end
+
+  # An interrupt whose control_response no caller waits for; the reply
+  # matches no pending request and is dropped.
+  defp write_interrupt(%{port: nil}), do: :ok
+
+  defp write_interrupt(state) do
+    msg = %{
+      type: "control_request",
+      request_id: generate_request_id(),
+      request: %{subtype: "interrupt"}
+    }
+
+    state.adapter.command(state.port, [Jason.encode!(msg), ?\n])
+    :ok
+  end
+
+  defp reply_turn(:abandoned, _outcome), do: :ok
+
+  defp reply_turn({:async, caller, ref}, outcome),
+    do: Kernel.send(caller, {:duplex_turn, ref, outcome})
+
+  defp reply_turn(from, outcome), do: GenServer.reply(from, outcome)
 
   # A random (version 4) UUID.
   defp uuid4 do
@@ -1633,8 +1772,9 @@ defmodule ClaudeWrapper.DuplexSession do
   defp fail_pending_turn(%{pending_turn: nil} = state, _reason), do: state
 
   defp fail_pending_turn(%{pending_turn: {from, _}} = state, reason) do
-    GenServer.reply(from, {:error, fail_reason_to_error(reason)})
+    reply_turn(from, {:error, fail_reason_to_error(reason)})
     Telemetry.duplex_turn_exception(state.turn_span, reason)
+    state = clear_turn_guards(state)
     %{state | pending_turn: nil, turn_uuid: nil, turn_span: nil}
   end
 
