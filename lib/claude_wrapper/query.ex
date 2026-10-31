@@ -1417,8 +1417,8 @@ defmodule ClaudeWrapper.Query do
     }
   end
 
-  defp stream_opts(%Config{working_dir: dir, env: env}) do
-    [cd: dir, env: env]
+  defp stream_opts(%Config{working_dir: dir} = config) do
+    [cd: dir, env: Config.child_env(config)]
   end
 
   @doc """

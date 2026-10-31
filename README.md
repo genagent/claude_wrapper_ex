@@ -224,6 +224,10 @@ The CLI's own rail-stop caps are typed, recoverable errors, distinct from a genu
 # resume with Query.resume(sid) / Session
 ```
 
+### Running from a mix release
+
+When the VM runs from a mix release (`RELEASE_ROOT` is set), every spawn path removes the release's boot variables (`RELEASE_*`, including `RELEASE_COOKIE`, plus `BINDIR` and `ROOTDIR`) and its `bin` and `erts-<vsn>/bin` directories from `claude`'s environment, so a project's own `elixir` or `mix` that the agent runs does not boot against the release ([#310](https://github.com/genagent/claude_wrapper_ex/issues/310)). `Config.env` is applied after the scrub, so a scrubbed name can still be set explicitly; `Config.new(release_env: :inherit)` turns the scrub off. `ClaudeWrapper.ChildEnv.release_scrub/1` returns the entries for callers that build an environment themselves. Unsetting `RELEASE_COOKIE` is not an isolation boundary: the cookie is also in `$RELEASE_ROOT/releases/COOKIE`.
+
 ### Leak-free execution (opt-in)
 
 On the default Port paths, a timeout, halted stream, closed session, owner death or BEAM death stops `claude` itself: a small `/bin/sh` supervisor (one-shot and streaming) or a lifeline port (`DuplexSession`) sends SIGINT, then SIGTERM 2 s later, then SIGKILL 1 s after that ([#303](https://github.com/genagent/claude_wrapper_ex/issues/303)). A closed duplex session first gets 1 s to exit on its own stdin EOF. Only the `claude` pid is signalled, so processes it started (stdio MCP servers, tool commands) are stopped only if `claude` stops them, and a pid recycled in the moment between `claude`'s exit and a signal is a residual risk. `ClaudeWrapper.Config.exec/2`, used by the `Commands.*` subcommand wrappers, still sends no signal on timeout. Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death), which also reaches the CLI's descendants in its group:

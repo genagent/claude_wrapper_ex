@@ -40,7 +40,8 @@ defmodule ClaudeWrapper.Config do
           verbose: boolean(),
           debug: boolean(),
           runner: module() | nil,
-          runner_options: keyword() | nil
+          runner_options: keyword() | nil,
+          release_env: :scrub | :inherit
         }
 
   defstruct [
@@ -51,7 +52,8 @@ defmodule ClaudeWrapper.Config do
     :runner_options,
     env: [],
     verbose: false,
-    debug: false
+    debug: false,
+    release_env: :scrub
   ]
 
   @doc """
@@ -69,6 +71,11 @@ defmodule ClaudeWrapper.Config do
       `nil`) removes the variable from the child's environment on every
       spawn path (#309). Names must be non-empty strings without `=`;
       anything else raises `ArgumentError`.
+    * `:release_env` - `:scrub` (default) or `:inherit`. When the VM runs
+      from a mix release (`RELEASE_ROOT` is set), `:scrub` removes release
+      boot variables and release `PATH` entries from the child's
+      environment on every spawn path, before `:env` is applied; see
+      `ClaudeWrapper.ChildEnv`. It has no effect outside a release.
     * `:timeout` - Command timeout in milliseconds (default `nil`: unbounded).
       Applies to `query/2`, `Command.run/3`, `raw/2`, and the CLI subcommand
       wrappers (via `exec/2`). For `ClaudeWrapper.stream/2`, a finite value
@@ -100,7 +107,8 @@ defmodule ClaudeWrapper.Config do
       verbose: Keyword.get(opts, :verbose, false),
       debug: Keyword.get(opts, :debug, false),
       runner: validate_runner!(opts[:runner]),
-      runner_options: validate_runner_options!(opts[:runner_options])
+      runner_options: validate_runner_options!(opts[:runner_options]),
+      release_env: validate_release_env!(Keyword.get(opts, :release_env, :scrub))
     }
   end
 
@@ -187,9 +195,22 @@ defmodule ClaudeWrapper.Config do
   def cmd_opts(%__MODULE__{} = config) do
     opts = [stderr_to_stdout: true]
     opts = if config.working_dir, do: [{:cd, config.working_dir} | opts], else: opts
-    opts = if config.env != [], do: [{:env, cmd_env(config.env)} | opts], else: opts
+    env = child_env(config)
+    opts = if env != [], do: [{:env, cmd_env(env)} | opts], else: opts
     opts
   end
+
+  @doc false
+  # The environment entries every spawn path applies: the release scrub
+  # (unless `release_env: :inherit`), then `Config.env` (#310).
+  @spec child_env(t()) :: [{String.t(), String.t() | nil}]
+  def child_env(%__MODULE__{release_env: :inherit, env: env}), do: env
+  def child_env(%__MODULE__{env: env}), do: ClaudeWrapper.ChildEnv.apply(env)
+
+  defp validate_release_env!(mode) when mode in [:scrub, :inherit], do: mode
+
+  defp validate_release_env!(mode),
+    do: raise(ArgumentError, ":release_env must be :scrub or :inherit, got: #{inspect(mode)}")
 
   # `System.cmd/3` unsets a variable given `nil`; a struct built without
   # new/1 may still carry `false`.

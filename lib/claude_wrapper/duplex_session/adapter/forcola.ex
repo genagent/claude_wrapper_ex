@@ -52,7 +52,7 @@ if Code.ensure_loaded?(Forcola) do
       adapter_opts = Keyword.drop(opts, [:config, :args, :owner])
       validate_opts!(adapter_opts)
 
-      {argv, env} = Config.split_env_argv([config.binary | args], config.env)
+      {argv, env} = Config.split_env_argv([config.binary | args], Config.child_env(config))
 
       case Forcola.Duplex.open(argv, duplex_opts(%{config | env: env}, adapter_opts)) do
         {:ok, session} ->
