@@ -217,6 +217,13 @@ between output frames. A stream that ends before its terminal result emits a
 safety deadline still applies. Select the Forcola runner below when timeout
 cleanup must terminate the CLI process group.
 
+Each stdout line is bounded by the config's `max_line_bytes` (default 1 MiB);
+a longer line stops the CLI and ends the stream with a `line_limit` error
+event. With the Forcola runner the stream reads on demand, so a slow consumer
+holds the CLI back. The default `Runner.Port` cannot: an Erlang port has no
+read-side flow control, so a slow consumer's mailbox holds every line the CLI
+has written.
+
 The CLI's own rail-stop caps are typed, recoverable errors, distinct from a genuine failure. `:max_turns_exceeded` (`--max-turns`) and `:max_budget_exceeded` (`--max-budget-usd`, separate from the client-side `:budget_exceeded` of `ClaudeWrapper.Budget`) each carry `reason: %{cap:, cost_usd:, num_turns:, session_id:}`, so a capped run can be resumed:
 
 ```elixir

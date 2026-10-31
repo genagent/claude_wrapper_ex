@@ -84,12 +84,18 @@ defmodule ClaudeWrapper.RunnerTest do
       assert lines == ["a", "b", "c"]
     end
 
+    # The port's 1 MiB line buffer splits the line; it is reassembled up to
+    # max_line_bytes (#312).
     test "reassembles a line longer than the port buffer instead of dropping it (#198)" do
       big = String.duplicate("A", 1_100_000)
 
       lines =
         "sh"
-        |> Port.stream_lines(["-c", "head -c 1100000 /dev/zero | tr '\\0' A; echo"], [], nil)
+        |> Port.stream_lines(
+          ["-c", "head -c 1100000 /dev/zero | tr '\\0' A; echo"],
+          [max_line_bytes: 2_000_000],
+          nil
+        )
         |> Enum.to_list()
 
       assert lines == [big]

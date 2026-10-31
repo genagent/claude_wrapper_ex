@@ -96,7 +96,11 @@ defmodule ClaudeWrapper.Runner do
   means), `{:error, :timeout}` when the timeout elapsed, and other
   `{:error, reason}` tuples for spawn/io failures. `stream_lines/4`
   returns a lazy `Enumerable` of complete stdout lines (no trailing
-  newline); the caller parses each line. A finite streaming timeout bounds
+  newline), including a final line the CLI wrote without one; the caller
+  parses each line. `opts` carries `:max_line_bytes`: a runner that bounds
+  lines ends the stream with `{:line_limit, max_line_bytes}` after an
+  over-limit line, and stops the CLI. `run_observed/5` gets the same option
+  and reports an over-limit line as `{:error, {:limit, {:line, :stdout, n}}}`. A finite streaming timeout bounds
   both the whole run and each gap between lines. Without one, implementations
   retain their idle safety deadline.
   """

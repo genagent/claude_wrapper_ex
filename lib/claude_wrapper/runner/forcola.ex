@@ -83,6 +83,8 @@ if Code.ensure_loaded?(Forcola) do
     # whole-run deadline was configured.
     @stream_idle_timeout_ms 300_000
 
+    @max_line_bytes 1_048_576
+
     @impl true
     def run(binary, args, opts, timeout) do
       {argv, opts} = env_argv(binary, args, opts)
@@ -128,7 +130,7 @@ if Code.ensure_loaded?(Forcola) do
 
       forcola_opts =
         [timeout_ms: timeout || @unbounded_ms, merge_stderr: false] ++
-          Keyword.take(opts, [:cd, :env])
+          bounded_opts(opts) ++ Keyword.take(opts, [:cd, :env])
 
       stream = Forcola.Stream.lines(argv, forcola_opts)
       next = &Enumerable.reduce(stream, &1, fn line, _acc -> {:suspend, line} end)
@@ -168,6 +170,9 @@ if Code.ensure_loaded?(Forcola) do
         {:continue, next_observer} when is_function(next_observer, 1) -> next_observer
       end
     end
+
+    defp observed_failure(%Forcola.Stream.Error{limit: limit}, _lines) when not is_nil(limit),
+      do: {:error, {:limit, limit}}
 
     defp observed_failure(%Forcola.Stream.Error{timed_out: true}, _lines),
       do: {:error, :timeout}
@@ -235,11 +240,18 @@ if Code.ensure_loaded?(Forcola) do
         [
           timeout_ms: whole_timeout,
           idle_timeout_ms: idle_timeout
-        ] ++ Keyword.take(opts, [:cd, :env])
+        ] ++ bounded_opts(opts) ++ Keyword.take(opts, [:cd, :env])
 
       # merge_stderr defaults to false: stderr must not be folded into the
       # NDJSON line stream, where it would feed non-JSON to the parser.
-      halting_lines(Forcola.Stream.lines(argv, forcola_opts))
+      on_demand_lines(Forcola.Stream.lines(argv, forcola_opts))
+    end
+
+    # Forcola.Stream's demand-driven mode: the shim reads stdout only while the
+    # consumer has pulled, and a line over max_line_bytes kills the group with
+    # a typed limit (#312). Its own default line bound is 64 KiB.
+    defp bounded_opts(opts) do
+      [backpressure: true, max_line_bytes: Keyword.get(opts, :max_line_bytes, @max_line_bytes)]
     end
 
     # Forcola takes string env values only; unset entries (#309) become an
@@ -256,44 +268,50 @@ if Code.ensure_loaded?(Forcola) do
     end
 
     # Forcola.Stream.lines/2 raises Forcola.Stream.Error on a non-clean
-    # termination (non-zero exit, signal, timeout) after emitting every
-    # line produced before death. Runner.Port's streaming path halts
-    # silently on exit instead, so to keep Query.stream/2's contract
-    # identical across runners we enumerate in a linked task and treat the
-    # terminal error as end-of-stream.
+    # termination (non-zero exit, signal, timeout) after emitting every line
+    # produced before death. Runner.Port's streaming path halts silently on
+    # exit instead, so to keep Query.stream/2's contract identical across
+    # runners the terminal error is treated as end-of-stream, except a line
+    # limit, which ends it with `{:line_limit, n}` (#312).
     #
-    # Halting the outer stream early shuts the task down; the task owns the
-    # forcola port, so killing it closes the port and the shim group-kills
-    # the CLI tree -- the leak-free property is preserved.
-    defp halting_lines(stream) do
+    # The inner stream is stepped one line at a time in the enumerating
+    # process (suspending after each line), so lines are read only as the
+    # consumer pulls them and backpressure reaches the CLI. Halting the outer
+    # stream early halts the inner one, which group-kills the CLI tree; if the
+    # enumerating process dies, its port closes and the shim does the same.
+    defp on_demand_lines(stream) do
       Stream.resource(
-        fn ->
-          # self() here is the process that enumerates the outer stream;
-          # the task forwards lines to it.
-          parent = self()
-          ref = make_ref()
-
-          task =
-            Task.async(fn ->
-              try do
-                Enum.each(stream, fn line -> send(parent, {ref, :line, line}) end)
-              rescue
-                _ -> :ok
-              after
-                send(parent, {ref, :done})
-              end
-            end)
-
-          {task, ref}
+        fn -> &Enumerable.reduce(stream, &1, fn line, _acc -> {:suspend, line} end) end,
+        fn
+          :done -> {:halt, :done}
+          next -> next_line(next)
         end,
-        fn {_task, ref} = state ->
-          receive do
-            {^ref, :line, line} -> {[line], state}
-            {^ref, :done} -> {:halt, state}
-          end
-        end,
-        fn {task, _ref} -> Task.shutdown(task, :brutal_kill) end
+        fn
+          :done -> :ok
+          continuation -> halt_lines(continuation)
+        end
       )
+    end
+
+    defp next_line(next) do
+      case step_lines(next) do
+        {:suspended, line, continuation} -> {[line], continuation}
+        {:error, %Forcola.Stream.Error{limit: {:line, _stream, n}}} -> {[{:line_limit, n}], :done}
+        _finished_or_failed -> {:halt, :done}
+      end
+    end
+
+    defp step_lines(next) do
+      next.({:cont, nil})
+    rescue
+      error in Forcola.Stream.Error -> {:error, error}
+    end
+
+    defp halt_lines(continuation) do
+      continuation.({:halt, nil})
+      :ok
+    rescue
+      Forcola.Stream.Error -> :ok
     end
 
     defp merge_stderr?(opts), do: Keyword.get(opts, :stderr_to_stdout, false)

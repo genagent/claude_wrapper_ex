@@ -1061,7 +1061,7 @@ defmodule ClaudeWrapper.Query do
     case runner.run_observed(
            binary,
            args,
-           Config.cmd_opts(config),
+           Config.cmd_opts(config) ++ [max_line_bytes: config.max_line_bytes],
            config.timeout,
            observe
          ) do
@@ -1073,6 +1073,9 @@ defmodule ClaudeWrapper.Query do
 
       {:error, {:binary_not_found, _reason}} ->
         {:error, Error.new(:binary_not_found, reason: config.binary)}
+
+      {:error, {:limit, limit}} ->
+        {:error, Error.new(:output_limit, reason: %{limit: limit})}
 
       {:error, reason} ->
         {:error, Error.io(reason)}
@@ -1331,7 +1334,16 @@ defmodule ClaudeWrapper.Query do
   and each gap between frames), a non-zero exit, or a spawn failure -- the
   stream ends with a terminal
   `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` so the
-  truncation is observable. The default runner signals the CLI when the
+  truncation is observable.
+
+  A stdout line longer than `Config` `:max_line_bytes` (default 1 MiB) stops
+  the CLI and ends the stream with a terminal
+  `%StreamEvent{type: "error", data: %{"error" => "line_limit", "limit" => bytes}}`
+  (#312). With `ClaudeWrapper.Runner.Forcola` the stream reads on demand: a
+  consumer slower than the CLI holds it back rather than buffering its
+  output. `ClaudeWrapper.Runner.Port` cannot do that (an Erlang port has no
+  read-side flow control), so a slow consumer's mailbox holds every line
+  the CLI has written. The default runner signals the CLI when the
   stream ends early (SIGINT, then SIGTERM and SIGKILL); use the
   `ClaudeWrapper.Runner.Forcola` runner to also stop its process group.
 
@@ -1383,12 +1395,18 @@ defmodule ClaudeWrapper.Query do
     |> runner.stream_lines(args, stream_opts(config), config.timeout)
     |> Stream.transform(
       fn -> false end,
-      fn line, saw_result? ->
-        case StreamEvent.parse(line) do
-          {:ok, %StreamEvent{type: "result"} = event} -> {[event], true}
-          {:ok, event} -> {[event], saw_result?}
-          {:error, _} -> {[], saw_result?}
-        end
+      fn
+        # A runner ends the stream with this after an over-limit line (#312);
+        # it is terminal, so no truncation event follows.
+        {:line_limit, bytes}, _saw_result? ->
+          {[line_limit_event(bytes)], true}
+
+        line, saw_result? ->
+          case StreamEvent.parse(line) do
+            {:ok, %StreamEvent{type: "result"} = event} -> {[event], true}
+            {:ok, event} -> {[event], saw_result?}
+            {:error, _} -> {[], saw_result?}
+          end
       end,
       # A clean stream-json run ends with a terminal `result` event. If the
       # stream halts without one -- a timeout, a non-zero/failed exit, or a
@@ -1402,6 +1420,20 @@ defmodule ClaudeWrapper.Query do
       end,
       fn _acc -> cleanup.() end
     )
+  end
+
+  defp line_limit_event(bytes) do
+    %StreamEvent{
+      type: "error",
+      data: %{
+        "error" => "line_limit",
+        "limit" => bytes,
+        "message" =>
+          "a stdout line exceeded max_line_bytes (#{bytes}); the CLI was stopped " <>
+            "and the run is incomplete"
+      },
+      raw: nil
+    }
   end
 
   defp truncation_event do
@@ -1420,7 +1452,7 @@ defmodule ClaudeWrapper.Query do
   end
 
   defp stream_opts(%Config{working_dir: dir} = config) do
-    [cd: dir, env: Config.child_env(config)]
+    [cd: dir, env: Config.child_env(config), max_line_bytes: config.max_line_bytes]
   end
 
   @doc """
