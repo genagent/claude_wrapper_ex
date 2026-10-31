@@ -25,6 +25,7 @@ defmodule ClaudeWrapper.Query do
 
   alias ClaudeWrapper.{
     Auth,
+    Command,
     Config,
     Error,
     ExecutionEvidence,
@@ -96,7 +97,8 @@ defmodule ClaudeWrapper.Query do
           disable_slash_commands: boolean(),
           include_hook_events: boolean(),
           exclude_dynamic_system_prompt_sections: boolean(),
-          hermetic: hermetic() | nil
+          hermetic: hermetic() | nil,
+          prompt_input: :stdin | :argv
         }
 
   defstruct [
@@ -128,6 +130,7 @@ defmodule ClaudeWrapper.Query do
     :name,
     :setting_sources,
     :hermetic,
+    prompt_input: :stdin,
     allowed_tools: [],
     disallowed_tools: [],
     mcp_config: [],
@@ -451,6 +454,31 @@ defmodule ClaudeWrapper.Query do
   def hermetic(%__MODULE__{} = q, scope) when scope in [:full, :project],
     do: %{q | hermetic: scope}
 
+  @doc """
+  How `execute/2,3` and `stream/2` deliver the prompt (#306).
+
+    * `:stdin` (default) -- the prompt is written to a 0600 file in a 0700
+      directory, and the CLI is started through a `/bin/sh` launcher that
+      opens the file as stdin, removes the file and directory, and `exec`s
+      the CLI (which keeps the launcher's pid and process group, so the
+      runner's signals still reach it). argv carries flags only, so the
+      prompt is not limited by `execve` and does not appear in the process
+      table. If the CLI never starts, the wrapper removes the directory.
+      This applies to `ClaudeWrapper.Runner.Port` and
+      `ClaudeWrapper.Runner.Forcola`; a custom runner still receives the
+      prompt in argv, since it is not known to start the launcher as given.
+    * `:argv` -- the previous form: the prompt is the last argv element,
+      after `--`.
+
+  `DuplexSession` is unaffected; it always writes prompts to stdin.
+  """
+  @spec prompt_input(t(), :stdin | :argv) :: t()
+  def prompt_input(%__MODULE__{} = q, mode) when mode in [:stdin, :argv],
+    do: %{q | prompt_input: mode}
+
+  def prompt_input(%__MODULE__{}, mode),
+    do: invalid_enum!(:prompt_input, mode, [:stdin, :argv])
+
   # --- Bulk option application ---
 
   @doc """
@@ -518,7 +546,8 @@ defmodule ClaudeWrapper.Query do
     :debug_file,
     :betas,
     :name,
-    :setting_sources
+    :setting_sources,
+    :prompt_input
   ]
 
   @bool_opts [
@@ -848,8 +877,23 @@ defmodule ClaudeWrapper.Query do
   # fallback to run/4 or run_observed/5.
   defp run_evidenced(query, config, runner, options, observers) do
     if Code.ensure_loaded?(runner) and function_exported?(runner, :run_evidenced, 5) do
-      {outcome, native, session_id} = invoke_evidenced(query, config, runner, options, observers)
-      {native, session_id, safe_evidenced_reply(outcome, config, runner, options)}
+      base = Config.base_args(config)
+      base = if "--verbose" in base, do: base, else: ["--verbose" | base]
+
+      case spawn_target(query, config, base ++ build_args(query)) do
+        {:ok, binary, args, cleanup} ->
+          try do
+            {outcome, native, session_id} =
+              invoke_evidenced(binary, args, config, runner, options, observers)
+
+            {native, session_id, safe_evidenced_reply(outcome, config, runner, options)}
+          after
+            cleanup.()
+          end
+
+        {:error, error} ->
+          {Runner.not_started_evidence(), nil, {:error, error}}
+      end
     else
       reason = %{runner: runner, reason: :run_evidenced_not_implemented}
       error = Error.new(:evidence_unsupported, reason: reason)
@@ -857,10 +901,7 @@ defmodule ClaudeWrapper.Query do
     end
   end
 
-  defp invoke_evidenced(query, config, runner, options, observers) do
-    base = Config.base_args(config)
-    base = if "--verbose" in base, do: base, else: ["--verbose" | base]
-    args = base ++ build_args(query)
+  defp invoke_evidenced(binary, args, config, runner, options, observers) do
     seen = make_ref()
     observe = &observe_evidenced(&1, observers.session, observers.rate_limit, seen)
     opts = Config.cmd_opts(config) ++ [runner_options: options]
@@ -868,7 +909,7 @@ defmodule ClaudeWrapper.Query do
     Process.put(seen, %{session_id: nil, stdout: [], size: 0, truncated: false})
 
     try do
-      returned = runner.run_evidenced(config.binary, args, opts, config.timeout, observe)
+      returned = runner.run_evidenced(binary, args, opts, config.timeout, observe)
       {outcome, native} = normalize_runner_return(returned)
       partial = Process.get(seen)
       {outcome, Map.merge(partial_evidence(partial), native), partial.session_id}
@@ -1008,11 +1049,17 @@ defmodule ClaudeWrapper.Query do
   defp do_execute_observed(query, config, runner, session_observer, rate_limit_observer) do
     base = Config.base_args(config)
     base = if "--verbose" in base, do: base, else: ["--verbose" | base]
-    args = base ++ build_args(query)
     observe = &observe_events(&1, session_observer, rate_limit_observer)
 
+    with_spawn_target(query, config, base ++ build_args(query), fn binary, args ->
+      runner
+      |> run_observed_target(binary, args, config, observe)
+    end)
+  end
+
+  defp run_observed_target(runner, binary, args, config, observe) do
     case runner.run_observed(
-           config.binary,
+           binary,
            args,
            Config.cmd_opts(config),
            config.timeout,
@@ -1111,10 +1158,15 @@ defmodule ClaudeWrapper.Query do
     # output (NDJSON stream lines, stdin warnings) that breaks JSON parsing.
     # Verbose is only meaningful for stream-json output.
     base = Config.base_args(config) -- ["--verbose"]
-    args = base ++ build_args(query)
     opts = Config.cmd_opts(config)
 
-    case run_cmd(Runner.impl(config), config.binary, args, opts, config.timeout) do
+    with_spawn_target(query, config, base ++ build_args(query), fn binary, args ->
+      execute_target(binary, args, opts, config)
+    end)
+  end
+
+  defp execute_target(binary, args, opts, config) do
+    case run_cmd(Runner.impl(config), binary, args, opts, config.timeout) do
       {:ok, stdout} ->
         with {:ok, result} <- parse_json_output(stdout),
              do: classify_api_error(result, 0, stdout, nil)
@@ -1315,10 +1367,17 @@ defmodule ClaudeWrapper.Query do
     # stream-json with --print requires --verbose
     base = Config.base_args(config)
     base = if "--verbose" in base, do: base, else: ["--verbose" | base]
-    args = base ++ build_args(query)
+
+    case spawn_target(query, config, base ++ build_args(query)) do
+      {:ok, binary, args, cleanup} -> stream_target(binary, args, config, cleanup)
+      {:error, error} -> rejected_stream("spawn_rejected", Exception.message(error))
+    end
+  end
+
+  defp stream_target(binary, args, config, cleanup) do
     runner = Runner.impl(config)
 
-    config.binary
+    binary
     |> runner.stream_lines(args, stream_opts(config), config.timeout)
     |> Stream.transform(
       fn -> false end,
@@ -1339,7 +1398,7 @@ defmodule ClaudeWrapper.Query do
         true -> {[], true}
         false -> {[truncation_event()], false}
       end,
-      fn _acc -> :ok end
+      fn _acc -> cleanup.() end
     )
   end
 
@@ -1635,6 +1694,140 @@ defmodule ClaudeWrapper.Query do
       trimmed = String.trim(line)
       String.starts_with?(trimmed, "{")
     end)
+  end
+
+  # --- Spawn target (#306) ---
+
+  # Opens the prompt file as stdin, removes it and its directory, and execs
+  # the CLI in place of the shell, so the CLI keeps the pid and process group
+  # the runner tracks. Exit 125 means the file could not be opened.
+  @stdin_launcher ~S(f=$1; shift; exec <"$f" || exit 125; rm -f -- "$f"; rmdir -- "${f%/*}"; exec "$@")
+
+  # Runners known to start argv[0] with the remaining argv unchanged, which
+  # the stdin launcher relies on. A custom runner keeps the prompt in argv.
+  @stdin_runners [ClaudeWrapper.Runner.Port, ClaudeWrapper.Runner.Forcola]
+
+  # Run `fun.(binary, args)` against the spawn target for `args`, removing
+  # the prompt file's directory afterwards.
+  defp with_spawn_target(query, config, args, fun) do
+    case spawn_target(query, config, args) do
+      {:ok, binary, args, cleanup} ->
+        try do
+          fun.(binary, args)
+        after
+          cleanup.()
+        end
+
+      {:error, _error} = error ->
+        error
+    end
+  end
+
+  # `args` is the full argv from build_args/1, ending in `-- <prompt>`.
+  # Returns the executable and argv to hand the runner, and a cleanup fun.
+  defp spawn_target(%__MODULE__{prompt_input: :stdin} = q, config, args) do
+    if Runner.impl(config) in @stdin_runners,
+      do: stdin_target(q.prompt, config, args),
+      else: argv_target(config, args)
+  end
+
+  defp spawn_target(%__MODULE__{prompt_input: :argv}, config, args),
+    do: argv_target(config, args)
+
+  defp argv_target(config, args) do
+    with :ok <- check_argv_size([config.binary | args]),
+         do: {:ok, config.binary, args, fn -> :ok end}
+  end
+
+  defp stdin_target(prompt, config, args) do
+    flags = drop_trailing_prompt(args)
+
+    with {:ok, binary} <- resolve_binary(config.binary),
+         :ok <- check_argv_size([binary | flags]),
+         {:ok, dir, file} <- write_prompt_file(prompt) do
+      argv = ["-c", @stdin_launcher, "claude-wrapper", file, binary | flags]
+      {:ok, "/bin/sh", argv, fn -> File.rm_rf(dir) end}
+    end
+  end
+
+  defp resolve_binary(binary) do
+    case Command.resolve_executable(binary) do
+      {:ok, path} -> {:ok, path}
+      {:error, {:binary_not_found, _}} -> {:error, Error.new(:binary_not_found, reason: binary)}
+    end
+  end
+
+  defp write_prompt_file(prompt) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "claude-wrapper-prompt-#{System.unique_integer([:positive])}-#{:erlang.phash2(make_ref())}"
+      )
+
+    with :ok <- File.mkdir(dir),
+         :ok <- File.chmod(dir, 0o700),
+         file = Path.join(dir, "prompt"),
+         :ok <- File.write(file, "", [:exclusive]),
+         :ok <- File.chmod(file, 0o600),
+         :ok <- File.write(file, prompt) do
+      {:ok, dir, file}
+    else
+      {:error, reason} ->
+        File.rm_rf(dir)
+        {:error, Error.io({:prompt_file, reason})}
+    end
+  end
+
+  # Linux limits each argv string to 128 KiB (MAX_ARG_STRLEN) and the whole
+  # argv plus environment to ARG_MAX. Exceeding either fails execve with
+  # E2BIG, which used to surface as :command_failed with exit code 7 and was
+  # retried. Check before spawning and return a typed error instead.
+  @linux_max_arg_strlen 131_072
+
+  defp check_argv_size(argv) do
+    longest = argv |> Enum.map(&byte_size/1) |> Enum.max(fn -> 0 end)
+    total = Enum.reduce(argv, 0, &(byte_size(&1) + 1 + &2)) + env_bytes()
+
+    cond do
+      linux?() and longest >= @linux_max_arg_strlen ->
+        {:error, argv_error(:argument, longest, @linux_max_arg_strlen - 1)}
+
+      total > arg_max() ->
+        {:error, argv_error(:total, total, arg_max())}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp argv_error(scope, bytes, limit),
+    do: Error.new(:argument_list_too_long, reason: %{scope: scope, bytes: bytes, limit: limit})
+
+  defp linux?, do: match?({:unix, :linux}, :os.type())
+
+  defp env_bytes do
+    System.get_env()
+    |> Enum.reduce(0, fn {k, v}, acc -> acc + byte_size(k) + byte_size(v) + 2 end)
+  end
+
+  # ARG_MAX from getconf, cached for the VM; 256 KiB if it cannot be read.
+  defp arg_max do
+    case :persistent_term.get({__MODULE__, :arg_max}, nil) do
+      nil ->
+        value =
+          case System.cmd("getconf", ["ARG_MAX"], stderr_to_stdout: true) do
+            {out, 0} -> out |> String.trim() |> Integer.parse() |> elem(0)
+            _ -> 262_144
+          end
+
+        :persistent_term.put({__MODULE__, :arg_max}, value)
+        value
+
+      value ->
+        value
+    end
+  rescue
+    _ -> 262_144
   end
 
   # Execute through the configured runner and normalize to this module's

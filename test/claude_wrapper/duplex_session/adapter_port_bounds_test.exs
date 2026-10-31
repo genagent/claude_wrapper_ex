@@ -18,6 +18,23 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
   defp gate(dir), do: "while [ ! -f '#{Path.join(dir, "go")}' ]; do sleep 0.02; done\n"
   defp go(dir), do: File.touch!(Path.join(dir, "go"))
 
+  # Register for the exit status, then release the fake, so a session that
+  # fails fast cannot exit before the waiter is registered.
+  defp exit_after_go(pid, dir) do
+    task = Task.async(fn -> DuplexSession.wait_for_exit(pid, 5_000) end)
+    wait_until(fn -> map_size(:sys.get_state(pid).exit_waiters) > 0 end)
+    go(dir)
+    Task.await(task)
+  end
+
+  defp wait_until(fun, attempts \\ 200) do
+    cond do
+      fun.() -> :ok
+      attempts == 0 -> flunk("condition not met")
+      true -> Process.sleep(5) && wait_until(fun, attempts - 1)
+    end
+  end
+
   defp start(dir, body, adapter_opts \\ []) do
     Process.flag(:trap_exit, true)
 
@@ -36,12 +53,12 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
   describe "line and output bounds (#311)" do
     test "an unterminated line over max_line_bytes ends the session", %{tmp_dir: dir} do
       pid =
-        start(dir, "head -c 200000 /dev/zero | tr '\\\\0' a\nexec sleep 30\n",
+        start(dir, gate(dir) <> "head -c 200000 /dev/zero | tr '\\\\0' a\nexec sleep 30\n",
           max_line_bytes: 65_536
         )
 
       assert {:failed, {:transport_error, {:output_limit, :line, 65_536}}} =
-               DuplexSession.wait_for_exit(pid, 5_000)
+               exit_after_go(pid, dir)
     end
 
     test "a large line under the bound is delivered", %{tmp_dir: dir} do
@@ -67,12 +84,13 @@ defmodule ClaudeWrapper.DuplexSession.AdapterPortBoundsTest do
       pid =
         start(
           dir,
-          "i=0\nwhile [ $i -lt 200 ]; do echo '{\"type\":\"noise\",\"pad\":\"0123456789\"}'; i=$((i+1)); done\nexec sleep 30\n",
+          gate(dir) <>
+            "i=0\nwhile [ $i -lt 200 ]; do echo '{\"type\":\"noise\",\"pad\":\"0123456789\"}'; i=$((i+1)); done\nexec sleep 30\n",
           max_output_bytes: 4_096
         )
 
       assert {:failed, {:transport_error, {:output_limit, :output, 4_096}}} =
-               DuplexSession.wait_for_exit(pid, 5_000)
+               exit_after_go(pid, dir)
     end
 
     test "an invalid bound raises at start", %{tmp_dir: dir} do

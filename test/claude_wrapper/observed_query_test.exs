@@ -311,10 +311,10 @@ defmodule ClaudeWrapper.ObservedQueryTest do
     assert_receive {^reference, %SessionObservation{}}
   end
 
-  test "missing binary preserves the Forcola spawn error", context do
+  test "a missing binary is :binary_not_found before spawning", context do
     config = Config.new(binary: Path.join(context.directory, "missing"), timeout: 1_000)
 
-    assert {:error, %Error{kind: :io, reason: {:spawn, _reason}}} =
+    assert {:error, %Error{kind: :binary_not_found}} =
              Query.execute(Query.new("hello"), config,
                session_observer: {self(), context.reference}
              )
