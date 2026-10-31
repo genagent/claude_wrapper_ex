@@ -452,7 +452,24 @@ defmodule ClaudeWrapperTest do
       assert StreamEvent.result_text(event) == nil
     end
 
-    test "cost_usd extracts from event" do
+    test "cost_usd reads total_cost_usd from a 2.x result event (#318)" do
+      line =
+        Jason.encode!(%{
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "pong",
+          session_id: "s",
+          total_cost_usd: 1.4e-4,
+          usage: %{input_tokens: 10, output_tokens: 5}
+        })
+
+      {:ok, event} = StreamEvent.parse(line)
+      assert StreamEvent.cost_usd(event) == 1.4e-4
+      assert StreamEvent.cost_usd(event) == ClaudeWrapper.Result.from_json(event.data).cost_usd
+    end
+
+    test "cost_usd falls back to the older cost_usd field" do
       event = %StreamEvent{type: "result", data: %{"cost_usd" => 0.03}}
       assert StreamEvent.cost_usd(event) == 0.03
     end

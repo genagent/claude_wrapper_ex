@@ -106,9 +106,14 @@ defmodule ClaudeWrapper.StreamEvent do
 
   @doc """
   Extract cost in USD, if present.
+
+  Reads `total_cost_usd` (what Claude Code 2.x writes on result events),
+  then the older `cost_usd`, as `ClaudeWrapper.Result.from_json/1` does.
+  The value is the CLI's running total for the session, not the cost of
+  this turn alone.
   """
   @spec cost_usd(t()) :: float() | nil
-  def cost_usd(%__MODULE__{data: data}), do: data["cost_usd"]
+  def cost_usd(%__MODULE__{data: data}), do: data["total_cost_usd"] || data["cost_usd"]
 
   @doc """
   Decode a partial-message event into a typed, tagged view.
