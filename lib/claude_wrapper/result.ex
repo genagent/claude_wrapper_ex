@@ -4,6 +4,18 @@ defmodule ClaudeWrapper.Result do
 
   Maps to the Rust `QueryResult` -- the parsed JSON output from
   `--output-format json`.
+
+  ## Cost
+
+  `cost_usd` is the CLI's running total for the session, not the cost of
+  this turn alone: in a duplex session, and on a turn that resumes an
+  existing session id, each result already includes the cost of earlier
+  turns (a resumed session continues from the total its transcript
+  saved). Read the latest result for a session's total rather than adding
+  results up. `turn_cost/2`, `turn_costs/1` and `total_cost/1` derive
+  per-turn and overall costs from a sequence of results.
+
+  Token `usage/1` is per turn, so token counts can be added across turns.
   """
 
   @type t :: %__MODULE__{
@@ -110,6 +122,90 @@ defmodule ClaudeWrapper.Result do
       _ -> nil
     end
   end
+
+  @doc """
+  The cost of `result`'s turn alone, given the `previous` result of the
+  same conversation (the last one that carried a cost), or `nil` for the
+  first.
+
+  When both results belong to the same session and the running total did
+  not go down, this is the difference between the two totals. Otherwise
+  (no previous result, a different session id, or a total that went
+  down) it is `result.cost_usd` itself. Returns `nil` when `result`
+  carries no cost.
+
+      iex> alias ClaudeWrapper.Result
+      iex> first = %Result{result: "", session_id: "s", cost_usd: 0.25}
+      iex> second = %Result{result: "", session_id: "s", cost_usd: 0.75}
+      iex> Result.turn_cost(second, first)
+      0.5
+      iex> Result.turn_cost(first, nil)
+      0.25
+  """
+  @spec turn_cost(t(), t() | nil) :: float() | nil
+  def turn_cost(%__MODULE__{cost_usd: nil}, _previous), do: nil
+
+  def turn_cost(%__MODULE__{cost_usd: cost} = result, previous) do
+    if continues?(result, previous), do: cost - previous.cost_usd, else: cost
+  end
+
+  @doc """
+  The per-turn cost of each result in `results` (in order), as
+  `turn_cost/2` computes it against the last earlier result that carried
+  a cost. Results with no cost map to `nil`.
+
+      iex> alias ClaudeWrapper.Result
+      iex> results = for total <- [0.25, 0.5, 1.0], do: %Result{result: "", session_id: "s", cost_usd: total}
+      iex> Result.turn_costs(results)
+      [0.25, 0.25, 0.5]
+  """
+  @spec turn_costs([t()]) :: [float() | nil]
+  def turn_costs(results) when is_list(results) do
+    {costs, _last} =
+      Enum.map_reduce(results, nil, fn result, previous ->
+        {turn_cost(result, previous), if(result.cost_usd, do: result, else: previous)}
+      end)
+
+    costs
+  end
+
+  @doc """
+  The total cost of the turns in `results`, in USD.
+
+  For results from one session this is the latest running total. When the
+  session id changes, or the total goes down, the previous session's last
+  total is kept and the new one is added. Results with no cost are
+  skipped; an empty list is `0.0`.
+
+      iex> alias ClaudeWrapper.Result
+      iex> results = for total <- [0.25, 0.5, 1.0], do: %Result{result: "", session_id: "s", cost_usd: total}
+      iex> Result.total_cost(results)
+      1.0
+  """
+  @spec total_cost([t()]) :: float()
+  def total_cost(results) when is_list(results) do
+    {sum, last} =
+      Enum.reduce(results, {0.0, nil}, fn
+        %__MODULE__{cost_usd: nil}, acc ->
+          acc
+
+        result, {sum, previous} ->
+          if continues?(result, previous) or previous == nil,
+            do: {sum, result},
+            else: {sum + previous.cost_usd, result}
+      end)
+
+    sum + ((last && last.cost_usd) || 0.0) + 0.0
+  end
+
+  defp continues?(%__MODULE__{session_id: sid, cost_usd: cost}, %__MODULE__{
+         session_id: sid,
+         cost_usd: previous
+       })
+       when is_number(cost) and is_number(previous) and cost >= previous,
+       do: true
+
+  defp continues?(_result, _previous), do: false
 
   # Sum a usage map into the normalized shape. Missing / non-integer fields
   # count as 0; `total` excludes cache reads (see usage/1).

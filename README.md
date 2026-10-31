@@ -50,7 +50,7 @@ Requires the `claude` CLI installed and on your `PATH` (or set `CLAUDE_CLI` to i
 ```elixir
 {:ok, result} = ClaudeWrapper.query("Explain this error: ...")
 result.result       # the text
-result.cost_usd     # spend for the call
+result.cost_usd     # the session's running total (a resumed session includes earlier turns)
 ```
 
 Everything else is a variation on this: more control over the flags (`Query`), continuity across turns (`Session` / `DuplexSession`), streaming, or reading Claude Code's own on-disk state.
@@ -359,7 +359,7 @@ Port runner.
   ClaudeWrapper.Retry.execute(query, config, max_retries: 3, base_delay_ms: 1_000)
   ```
 
-- **`ClaudeWrapper.Telemetry`**: `:telemetry.span/3`-shaped events (`:start` / `:stop` / `:exception`) around every exec path, so one handler observes the whole lifecycle. `:stop` metadata carries `:cost_usd`, `:exit_code`, `:duration`.
+- **`ClaudeWrapper.Telemetry`**: `:telemetry.span/3`-shaped events (`:start` / `:stop` / `:exception`) around every exec path, so one handler observes the whole lifecycle. `:stop` metadata carries `:cost_usd` (the session's running total), `:exit_code`, `:duration`; session and duplex turn stops add `:turn_cost_usd`.
 
   | Event | Emitted by |
   |---|---|

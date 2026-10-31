@@ -129,16 +129,26 @@ defmodule ClaudeWrapper.Conversation do
   def last_result(%__MODULE__{history: history}), do: List.last(history)
 
   @doc """
-  Cumulative cost in USD across every recorded turn.
+  Cost in USD of the conversation so far.
 
-  Turns whose `Result` carries no `cost_usd` contribute `0.0`.
+  Each result's `cost_usd` is the CLI's running total for the session, so
+  this is the latest total rather than a sum (see
+  `ClaudeWrapper.Result.total_cost/1`). It includes turns the CLI ran on
+  its own between sends (after a background task finished), and, for a
+  session that resumed an existing id, the total its transcript saved.
+  `0.0` until a turn with a cost is recorded.
   """
   @spec total_cost(t()) :: float()
-  def total_cost(%__MODULE__{history: history}) do
-    Enum.reduce(history, 0.0, fn %Result{} = result, acc ->
-      acc + (result.cost_usd || 0.0)
-    end)
-  end
+  def total_cost(%__MODULE__{history: history}), do: Result.total_cost(history)
+
+  @doc """
+  The cost of each recorded turn in USD, in order (`nil` for a turn whose
+  result carried no cost). See `ClaudeWrapper.Result.turn_costs/1`. A
+  turn's cost includes any turns the CLI ran on its own since the
+  previous send.
+  """
+  @spec turn_costs(t()) :: [float() | nil]
+  def turn_costs(%__MODULE__{history: history}), do: Result.turn_costs(history)
 
   @doc """
   Number of turns recorded through `send/2,3`.

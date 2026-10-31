@@ -73,7 +73,7 @@ defmodule ClaudeWrapper.ConversationTest do
   end
 
   describe "send/3" do
-    test "accumulates history, cost, and turn count across turns" do
+    test "accumulates history, running-total cost, and turn count across turns" do
       pid = start_with_fake_claude()
 
       try do
@@ -95,13 +95,36 @@ defmodule ClaudeWrapper.ConversationTest do
                  run_turn(conv, "again", %{
                    result: "second",
                    session_id: "sess-1",
-                   total_cost_usd: 0.02
+                   total_cost_usd: 0.03
                  })
 
         assert Conversation.turn_count(conv) == 2
         assert_in_delta Conversation.total_cost(conv), 0.03, 1.0e-9
         assert Conversation.history(conv) == [r1, r2]
         assert Conversation.last_result(conv) == r2
+      after
+        DuplexSession.stop(pid)
+      end
+    end
+
+    test "total_cost/1 is the latest running total, not a sum (#319)" do
+      pid = start_with_fake_claude()
+
+      try do
+        conv =
+          Enum.reduce([0.01, 0.03, 0.06], Conversation.new(pid), fn total, conv ->
+            {:ok, conv, _} =
+              run_turn(conv, "p", %{result: "r", session_id: "sess-1", total_cost_usd: total})
+
+            conv
+          end)
+
+        assert Conversation.total_cost(conv) == 0.06
+
+        [a, b, c] = Conversation.turn_costs(conv)
+        assert_in_delta a, 0.01, 1.0e-9
+        assert_in_delta b, 0.02, 1.0e-9
+        assert_in_delta c, 0.03, 1.0e-9
       after
         DuplexSession.stop(pid)
       end

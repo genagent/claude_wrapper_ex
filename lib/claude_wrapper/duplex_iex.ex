@@ -312,7 +312,8 @@ defmodule ClaudeWrapper.DuplexIEx do
   defp print_partial_text(_other), do: :ok
 
   defp print_meta(%Result{} = result) do
-    cost_str = format_cost(result.cost_usd)
+    # cost_usd is the session's running total (#319).
+    cost_str = "#{format_cost(result.cost_usd)} total"
     turns_str = "#{result.num_turns || 1} turn#{plural(result.num_turns || 1)}"
 
     IO.puts("\e[33m(#{cost_str}, #{turns_str})\e[0m")

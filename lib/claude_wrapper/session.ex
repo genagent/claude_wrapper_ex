@@ -187,14 +187,23 @@ defmodule ClaudeWrapper.Session do
   def turn_count(%__MODULE__{history: history}), do: length(history)
 
   @doc """
-  Get the total cost across all turns.
+  Get the total cost of the session in USD.
+
+  Each result's `cost_usd` is the CLI's running total for the session, so
+  this is the latest total rather than a sum (see
+  `ClaudeWrapper.Result.total_cost/1`). A session started from an existing
+  id continues from the total its transcript saved, so the first turn's
+  total includes the cost of earlier turns in that transcript.
   """
   @spec total_cost(t()) :: float()
-  def total_cost(%__MODULE__{history: history}) do
-    Enum.reduce(history, 0.0, fn result, acc ->
-      acc + (result.cost_usd || 0.0)
-    end)
-  end
+  def total_cost(%__MODULE__{history: history}), do: Result.total_cost(history)
+
+  @doc """
+  The cost of each turn in USD, in order (`nil` for a turn whose result
+  carried no cost). See `ClaudeWrapper.Result.turn_costs/1`.
+  """
+  @spec turn_costs(t()) :: [float() | nil]
+  def turn_costs(%__MODULE__{history: history}), do: Result.turn_costs(history)
 
   @doc """
   Get the last result, if any.

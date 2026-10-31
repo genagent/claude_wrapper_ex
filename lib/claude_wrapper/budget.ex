@@ -18,8 +18,11 @@ defmodule ClaudeWrapper.Budget do
 
   It is self-contained: `ClaudeWrapper.Session` and
   `ClaudeWrapper.SessionServer` are not aware of it. Drive it yourself
-  from a multi-turn loop -- record each turn's `cost_usd`, then
-  `check/1` before the next turn.
+  from a multi-turn loop -- record each turn's cost, then `check/1`
+  before the next turn. A `%ClaudeWrapper.Result{}`'s `cost_usd` is the
+  CLI's running total for the session, so record the per-turn cost
+  (`ClaudeWrapper.Result.turn_cost/2`, or the last of
+  `ClaudeWrapper.Session.turn_costs/1`) rather than `cost_usd` itself.
 
   ## Threshold semantics
 
@@ -46,7 +49,9 @@ defmodule ClaudeWrapper.Budget do
         )
 
       # In a multi-turn loop, after each turn:
-      :ok = ClaudeWrapper.Budget.record(budget, result.cost_usd)
+      {:ok, session, _result} = ClaudeWrapper.Session.send(session, prompt)
+      turn_cost = session |> ClaudeWrapper.Session.turn_costs() |> List.last()
+      :ok = ClaudeWrapper.Budget.record(budget, turn_cost)
 
       case ClaudeWrapper.Budget.check(budget) do
         :ok -> :keep_going
@@ -144,8 +149,9 @@ defmodule ClaudeWrapper.Budget do
   Fires `:on_warning` the first time the running total reaches
   `:warn_at_usd`, and `:on_exceeded` the first time it reaches
   `:max_usd`. Non-positive and non-finite costs are ignored, and a `nil`
-  cost is a no-op (so recording a `%ClaudeWrapper.Result{}`'s `cost_usd`
-  directly is safe -- it is `nil` on an interrupted/cancelled turn).
+  cost is a no-op (so recording a turn cost from
+  `ClaudeWrapper.Result.turn_cost/2` directly is safe -- it is `nil` when
+  the result carried no cost).
 
   Returns `:ok`.
   """

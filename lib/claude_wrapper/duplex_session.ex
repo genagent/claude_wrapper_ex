@@ -298,7 +298,8 @@ defmodule ClaudeWrapper.DuplexSession do
           sdk_mcp_servers: %{String.t() => sdk_mcp_handler()},
           mcp_tasks: %{pid() => {reference(), String.t()}},
           turn_span: {integer(), map()} | nil,
-          session_monotonic: integer() | nil
+          session_monotonic: integer() | nil,
+          cost_baseline: Result.t() | nil
         }
 
   defstruct [
@@ -311,6 +312,7 @@ defmodule ClaudeWrapper.DuplexSession do
     :owner_ref,
     :turn_span,
     :session_monotonic,
+    :cost_baseline,
     buffer: <<>>,
     pending_turn: nil,
     turn_uuid: nil,
@@ -1613,8 +1615,11 @@ defmodule ClaudeWrapper.DuplexSession do
       command: :duplex_turn,
       session_id: result.session_id || state.session_id,
       cost_usd: result.cost_usd,
+      turn_cost_usd: Result.turn_cost(result, state.cost_baseline),
       exit_code: 0
     })
+
+    state = advance_cost_baseline(state, result)
 
     # The turn is over; any still-tracked deferred permission ids are moot, so a
     # late respond_to_permission/3 for this turn becomes a documented no-op.
@@ -1631,9 +1636,16 @@ defmodule ClaudeWrapper.DuplexSession do
   # (after a background task's notification), is not a turn boundary for
   # any pending send/3 (#321).
   defp unsolicited_result(msg, state) do
-    broadcast(state, {:unsolicited_result, Result.from_json(msg)})
-    state
+    result = Result.from_json(msg)
+    broadcast(state, {:unsolicited_result, result})
+    advance_cost_baseline(state, result)
   end
+
+  # Result costs are the session's running total (#319); a turn's own cost is
+  # measured from the last result that carried one, including CLI-initiated
+  # turns, so their cost is not charged to the next send.
+  defp advance_cost_baseline(state, %Result{cost_usd: nil}), do: state
+  defp advance_cost_baseline(state, %Result{} = result), do: %{state | cost_baseline: result}
 
   # Claude Code 2.1.312 echoes the prompt's uuid on its result. A result
   # without the field (an older CLI) is taken as the pending turn's.
