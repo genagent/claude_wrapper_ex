@@ -352,7 +352,15 @@ defmodule ClaudeWrapper.DuplexSession do
       `apply_opts/2` as the one-shot path; the query's prompt and
       transport-format flags are ignored (the session owns its
       stream-json transport and takes prompts per turn via `send/3`).
-      See `ClaudeWrapper.Query.spawn_args/1`.
+      See `ClaudeWrapper.Query.spawn_args/1`. Every `Query` flag outside
+      the transport set passes through, including `Query.extra_args/2`.
+      For example, to forward subagent text into the session's stream
+      (the CLI accepts `--forward-subagent-text` only with stream-json
+      output, which a duplex session always uses):
+
+          query = Query.new("") |> Query.forward_subagent_text()
+          DuplexSession.start_link(config: config, query: query)
+
     * `:extra_args` -- extra CLI flags to append, applied after the
       `:query` flags (e.g. `["--permission-mode", "plan"]`). The
       escape hatch for flags not yet on `Query`.

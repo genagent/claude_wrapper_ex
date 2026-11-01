@@ -33,9 +33,32 @@ defmodule Mix.Tasks.Claude.Contract do
 
   @requirements ["app.start"]
 
-  # These required-value flags are hidden on 2.1.309. A missing-operand
-  # parse error proves recognition on each run, rather than waiving drift.
-  @hidden_value_flags ~w(--max-turns --system-prompt-file --append-system-prompt-file --permission-prompt-tool --max-thinking-tokens)
+  # These required-value flags are hidden from help (the first five on
+  # 2.1.309, the subagent prompt and advisor flags on 2.1.316). A
+  # missing-operand parse error proves recognition on each run, rather than
+  # waiving drift.
+  @hidden_value_flags ~w(--max-turns --system-prompt-file --append-system-prompt-file --permission-prompt-tool --max-thinking-tokens --append-subagent-system-prompt --append-subagent-system-prompt-file --advisor)
+
+  @doc false
+  @spec hidden_value_flags() :: [String.t()]
+  def hidden_value_flags, do: @hidden_value_flags
+
+  # Flags checked only when the reported CLI version is at or after the
+  # given version; on an older CLI they are neither looked up in help nor
+  # probed. Each version is the first one the flag is checked on (a pinned
+  # CI version where it was seen), not a bisected introduction version.
+  # Untagged flags are checked on every version.
+  @checked_from %{
+    "--restricted" => "2.1.309",
+    "--permission-prompts" => "2.1.309",
+    "--system-prompt-snapshot" => "2.1.309",
+    "--autocompact" => "2.1.309",
+    "--append-subagent-system-prompt-file" => "2.1.309"
+  }
+
+  @doc false
+  @spec checked_from() :: %{String.t() => String.t()}
+  def checked_from, do: @checked_from
 
   @impl true
   def run(_argv) do
@@ -46,7 +69,7 @@ defmodule Mix.Tasks.Claude.Contract do
     {version, 0} = System.cmd(binary, ["--version"], stderr_to_stdout: true)
     verify_version!(String.trim(version), System.get_env("CLAUDE_CONTRACT_VERSION"))
     Mix.shell().info(String.trim(version))
-    findings = check(binary)
+    findings = check(binary, specs(), reported_version(version))
 
     if findings == [] do
       Mix.shell().info(
@@ -59,9 +82,33 @@ defmodule Mix.Tasks.Claude.Contract do
   end
 
   @doc false
-  @spec check(String.t(), [{[String.t()], [String.t()]}]) :: [String.t()]
-  def check(binary, commands \\ specs()) do
-    Enum.flat_map(commands, fn {subcommand, args} -> check_command(binary, subcommand, args) end)
+  # `version` is the reported CLI version ("2.1.220"); nil checks every
+  # flag, including tagged ones.
+  @spec check(String.t(), [{[String.t()], [String.t()]}], String.t() | nil) :: [String.t()]
+  def check(binary, commands \\ specs(), version \\ nil) do
+    Enum.flat_map(commands, fn {subcommand, args} ->
+      check_command(binary, subcommand, args, version)
+    end)
+  end
+
+  @doc false
+  # The first x.y.z in `claude --version` output ("2.1.220 (Claude Code)"),
+  # or nil when there is none.
+  @spec reported_version(String.t()) :: String.t() | nil
+  def reported_version(output) do
+    case Regex.run(~r/\b(\d+\.\d+\.\d+)\b/, output, capture: :all_but_first) do
+      [version] -> version
+      nil -> nil
+    end
+  end
+
+  defp checked_on?(_flag, nil), do: true
+
+  defp checked_on?(flag, version) do
+    case Map.fetch(@checked_from, flag) do
+      {:ok, from} -> Elixir.Version.compare(version, from) != :lt
+      :error -> true
+    end
   end
 
   defp verify_version!(_reported, nil), do: :ok
@@ -71,7 +118,7 @@ defmodule Mix.Tasks.Claude.Contract do
       do: Mix.raise("expected claude #{expected}, got: #{reported}")
   end
 
-  defp check_command(binary, subcommand, args) do
+  defp check_command(binary, subcommand, args, version) do
     {help, code} = System.cmd(binary, subcommand ++ ["--help"], stderr_to_stdout: true)
 
     expected =
@@ -84,6 +131,8 @@ defmodule Mix.Tasks.Claude.Contract do
     else
       args
       |> emitted_flags()
+      # Filtered before listed?/4, so a skipped flag is not probed either.
+      |> Enum.filter(&checked_on?(&1, version))
       |> Enum.reject(&listed?(binary, &1, documented, subcommand))
       |> Enum.map(&"#{Enum.join(subcommand, " ")}: emitted #{&1} is not documented")
     end
@@ -211,24 +260,47 @@ defmodule Mix.Tasks.Claude.Contract do
       bare: true,
       disable_slash_commands: true,
       include_hook_events: true,
-      exclude_dynamic_system_prompt_sections: true
+      exclude_dynamic_system_prompt_sections: true,
+      restricted: true,
+      permission_prompts: :host,
+      system_prompt_snapshot: :off,
+      autocompact: 200_000,
+      allow_dangerously_skip_permissions: true,
+      chrome: true,
+      forward_subagent_text: true,
+      append_subagent_system_prompt: "contract",
+      append_subagent_system_prompt_file: "/tmp/subagent",
+      advisor: "contract"
     )
   end
 
-  defp specs do
+  # Specimens for the flags whose other spelling the maximal query cannot
+  # carry at the same time.
+  @doc false
+  @spec alternate_queries() :: [Query.t()]
+  def alternate_queries do
+    [
+      # build_args/1 rejects --continue with --resume.
+      Query.new("contract prompt") |> Query.continue_session(),
+      # --no-chrome and the explicit prompt-suggestions off value.
+      Query.new("contract prompt") |> Query.chrome(false) |> Query.prompt_suggestions(false)
+    ]
+  end
+
+  @doc false
+  @spec query_specs() :: [{[String.t()], [String.t()]}]
+  def query_specs do
     query = maximal_query()
-    query_args = Query.build_args(query)
-    # build_args/1 rejects --continue with --resume, so --continue is checked
-    # on its own query.
-    continue_args =
-      "contract prompt" |> Query.new() |> Query.continue_session() |> Query.build_args()
 
     spawn_args =
       Query.spawn_args(query) ++
         ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
 
-    [{[], query_args}, {[], continue_args}, {[], spawn_args}] ++ command_specs()
+    [{[], Query.build_args(query)}] ++
+      Enum.map(alternate_queries(), &{[], Query.build_args(&1)}) ++ [{[], spawn_args}]
   end
+
+  defp specs, do: query_specs() ++ command_specs()
 
   defp command_specs do
     [

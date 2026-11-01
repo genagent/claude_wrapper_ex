@@ -871,6 +871,31 @@ defmodule ClaudeWrapper.DuplexSessionTest do
       assert model_idx < perm_idx
     end
 
+    test "forward_subagent_text and the other #328 flags reach the spawn args" do
+      query =
+        Query.new("")
+        |> Query.forward_subagent_text()
+        |> Query.permission_mode(:manual)
+        |> Query.system_prompt_snapshot(:off)
+        |> Query.chrome(false)
+        |> Query.extra_args(["--query-extra"])
+
+      args = capture_args(query: query, extra_args: ["--session-extra"])
+
+      assert "--forward-subagent-text" in args
+      assert ["--permission-mode", "manual"] |> contiguous?(args)
+      assert ["--system-prompt-snapshot", "off"] |> contiguous?(args)
+      assert "--no-chrome" in args
+      # The flag is only valid with stream-json output, which the session fixes.
+      assert ["--output-format", "stream-json"] |> contiguous?(args)
+
+      # Query extra_args come with the query args, before the session's own.
+      query_idx = Enum.find_index(args, &(&1 == "--query-extra"))
+      session_idx = Enum.find_index(args, &(&1 == "--session-extra"))
+      assert query_idx < session_idx
+      refute "--" in args
+    end
+
     test "without a :query the args are unchanged from the plain transport set" do
       args = capture_args([])
 

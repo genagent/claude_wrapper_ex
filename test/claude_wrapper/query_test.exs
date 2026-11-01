@@ -636,4 +636,272 @@ defmodule ClaudeWrapper.QueryTest do
                4096
     end
   end
+
+  describe "remaining print flags (#328)" do
+    @new_flags ~w(--restricted --permission-prompts --system-prompt-snapshot --autocompact
+                  --allow-dangerously-skip-permissions --chrome --no-chrome
+                  --forward-subagent-text --append-subagent-system-prompt
+                  --append-subagent-system-prompt-file --advisor)
+
+    defp args_for(opts), do: "p" |> Query.new() |> Query.apply_opts(opts) |> Query.build_args()
+
+    test "unset fields emit none of the new flags" do
+      args = Query.build_args(Query.new("p"))
+
+      for flag <- @new_flags, do: refute(flag in args, "#{flag} emitted while unset")
+      refute "--prompt-suggestions" in args
+
+      q = Query.new("p")
+      assert q.chrome == nil
+      assert q.prompt_suggestions == nil
+      assert q.extra_args == []
+    end
+
+    test "each setter emits its exact operands" do
+      args =
+        Query.new("p")
+        |> Query.restricted()
+        |> Query.permission_prompts(:none)
+        |> Query.system_prompt_snapshot(:off)
+        |> Query.autocompact(250_000)
+        |> Query.allow_dangerously_skip_permissions()
+        |> Query.chrome(true)
+        |> Query.forward_subagent_text()
+        |> Query.append_subagent_system_prompt("sub text")
+        |> Query.append_subagent_system_prompt_file("/sub.txt")
+        |> Query.advisor("opus")
+        |> Query.build_args()
+
+      assert "--restricted" in args
+      assert subsequence?(["--permission-prompts", "none"], args)
+      assert subsequence?(["--system-prompt-snapshot", "off"], args)
+      assert subsequence?(["--autocompact", "250000"], args)
+      assert "--allow-dangerously-skip-permissions" in args
+      assert "--chrome" in args
+      refute "--no-chrome" in args
+      assert "--forward-subagent-text" in args
+      assert subsequence?(["--append-subagent-system-prompt", "sub text"], args)
+      assert subsequence?(["--append-subagent-system-prompt-file", "/sub.txt"], args)
+      assert subsequence?(["--advisor", "opus"], args)
+      assert Enum.take(args, -2) == ["--", "p"]
+    end
+
+    test "each keyword option routes to its setter" do
+      args =
+        args_for(
+          restricted: true,
+          permission_prompts: :host,
+          system_prompt_snapshot: :on,
+          autocompact: :auto,
+          allow_dangerously_skip_permissions: true,
+          chrome: false,
+          forward_subagent_text: true,
+          append_subagent_system_prompt: "a",
+          append_subagent_system_prompt_file: "/b",
+          advisor: "c",
+          extra_args: ["--x", "1"]
+        )
+
+      assert "--restricted" in args
+      assert subsequence?(["--permission-prompts", "host"], args)
+      assert subsequence?(["--system-prompt-snapshot", "on"], args)
+      assert subsequence?(["--autocompact", "auto"], args)
+      assert "--allow-dangerously-skip-permissions" in args
+      assert "--no-chrome" in args
+      refute "--chrome" in args
+      assert "--forward-subagent-text" in args
+      assert subsequence?(["--append-subagent-system-prompt", "a"], args)
+      assert subsequence?(["--append-subagent-system-prompt-file", "/b"], args)
+      assert subsequence?(["--advisor", "c"], args)
+      assert subsequence?(["--x", "1", "--", "p"], args)
+    end
+
+    test "boolean keyword options ignore false and nil" do
+      args =
+        args_for(
+          restricted: false,
+          allow_dangerously_skip_permissions: nil,
+          forward_subagent_text: false
+        )
+
+      refute "--restricted" in args
+      refute "--allow-dangerously-skip-permissions" in args
+      refute "--forward-subagent-text" in args
+    end
+
+    test "allow_dangerously_skip_permissions does not enable bypass" do
+      args = args_for(allow_dangerously_skip_permissions: true)
+
+      assert "--allow-dangerously-skip-permissions" in args
+      refute "--dangerously-skip-permissions" in args
+      refute "--permission-mode" in args
+    end
+
+    test "chrome: true/false/nil" do
+      assert "--chrome" in args_for(chrome: true)
+      assert "--no-chrome" in args_for(chrome: false)
+
+      unset = args_for(chrome: nil)
+      refute "--chrome" in unset
+      refute "--no-chrome" in unset
+
+      assert "--no-chrome" in (Query.new("p") |> Query.chrome(false) |> Query.build_args())
+
+      assert_raise ArgumentError, ~r/invalid value "yes" for option :chrome/, fn ->
+        args_for(chrome: "yes")
+      end
+    end
+
+    test "prompt_suggestions: unset, true (bare flag) and false (explicit value)" do
+      refute "--prompt-suggestions" in args_for([])
+      refute "--prompt-suggestions" in args_for(prompt_suggestions: nil)
+
+      bare = Query.new("p") |> Query.prompt_suggestions() |> Query.build_args()
+      assert subsequence?(["--prompt-suggestions", "--"], bare)
+
+      assert subsequence?(["--prompt-suggestions", "--"], args_for(prompt_suggestions: true))
+
+      explicit_true = Query.new("p") |> Query.prompt_suggestions(true) |> Query.build_args()
+      assert subsequence?(["--prompt-suggestions", "--"], explicit_true)
+
+      off = Query.new("p") |> Query.prompt_suggestions(false) |> Query.build_args()
+      assert subsequence?(["--prompt-suggestions", "false"], off)
+      assert subsequence?(["--prompt-suggestions", "false"], args_for(prompt_suggestions: false))
+
+      assert_raise ArgumentError, ~r/:prompt_suggestions/, fn ->
+        args_for(prompt_suggestions: "false")
+      end
+    end
+
+    test "invalid enum values raise through invalid_enum!" do
+      assert_raise ArgumentError, ~r/invalid permission_prompts :ask; expected one of/, fn ->
+        args_for(permission_prompts: :ask)
+      end
+
+      assert_raise ArgumentError, ~r/invalid system_prompt_snapshot "off"; expected one of/, fn ->
+        args_for(system_prompt_snapshot: "off")
+      end
+    end
+
+    test "autocompact accepts :auto and any positive integer, emitted in decimal" do
+      assert subsequence?(["--autocompact", "auto"], args_for(autocompact: :auto))
+      assert subsequence?(["--autocompact", "1"], args_for(autocompact: 1))
+      assert subsequence?(["--autocompact", "200"], args_for(autocompact: 200))
+      assert subsequence?(["--autocompact", "100000"], args_for(autocompact: 100_000))
+      assert subsequence?(["--autocompact", "2000000"], args_for(autocompact: 2_000_000))
+    end
+
+    test "autocompact rejects non-positive and malformed values" do
+      for value <- [0, -1, 150_000.0, "200000", :manual] do
+        assert_raise ArgumentError, ~r/invalid autocompact/, fn ->
+          args_for(autocompact: value)
+        end
+      end
+    end
+
+    test "permission_mode :manual emits manual and :default still emits default" do
+      assert subsequence?(["--permission-mode", "manual"], args_for(permission_mode: :manual))
+      assert subsequence?(["--permission-mode", "default"], args_for(permission_mode: :default))
+      assert Query.permission_mode_arg(:manual) == "manual"
+
+      assert_raise ArgumentError, ~r/:manual\]/, fn -> args_for(permission_mode: :nope) end
+    end
+
+    test "the new flags survive spawn_args (the duplex path)" do
+      args =
+        Query.new("p")
+        |> Query.forward_subagent_text()
+        |> Query.system_prompt_snapshot(:off)
+        |> Query.chrome(false)
+        |> Query.advisor("opus")
+        |> Query.extra_args(["--late", "v"])
+        |> Query.spawn_args()
+
+      assert "--forward-subagent-text" in args
+      assert subsequence?(["--system-prompt-snapshot", "off"], args)
+      assert "--no-chrome" in args
+      assert subsequence?(["--advisor", "opus"], args)
+      assert Enum.take(args, -2) == ["--late", "v"]
+      refute "--" in args
+      refute "p" in args
+    end
+  end
+
+  describe "extra_args (#328)" do
+    test "preserves order and token boundaries and sits right before the separator" do
+      args =
+        Query.new("the prompt")
+        |> Query.model("sonnet")
+        |> Query.extra_args(["--flag one", "two"])
+        |> Query.extra_args(["--three"])
+        |> Query.build_args()
+
+      assert Enum.take(args, -5) == ["--flag one", "two", "--three", "--", "the prompt"]
+    end
+
+    test "keyword lists accumulate across repeated keys" do
+      q = Query.apply_opts(Query.new("p"), extra_args: ["--a"], extra_args: ["--b", "c"])
+      assert q.extra_args == ["--a", "--b", "c"]
+      assert Query.apply_opts(Query.new("p"), extra_args: nil).extra_args == []
+    end
+
+    test "rejects anything other than a list of strings" do
+      for value <- ["--a", [:a], ["--a", 1], %{a: 1}, :a] do
+        assert_raise ArgumentError, ~r/extra_args must be a list of strings/, fn ->
+          Query.apply_opts(Query.new("p"), extra_args: value)
+        end
+
+        assert_raise ArgumentError, ~r/extra_args must be a list of strings/, fn ->
+          Query.extra_args(Query.new("p"), value)
+        end
+      end
+    end
+
+    test "rejects a -- element" do
+      assert_raise ArgumentError, ~r/must not contain "--"/, fn ->
+        Query.extra_args(Query.new("p"), ["--a", "--", "x"])
+      end
+    end
+
+    test "a struct field set directly is checked when the arguments are built" do
+      assert_raise ArgumentError, ~r/extra_args must be a list of strings/, fn ->
+        Query.build_args(%{Query.new("p") | extra_args: [1]})
+      end
+    end
+
+    test "the prompt is still delivered through argv and stdin" do
+      dir = Path.join(System.tmp_dir!(), "extra-args-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      fake = Path.join(dir, "claude")
+      out = Path.join(dir, "out")
+
+      # Records argv (one per line) and, when no `--` separator is present
+      # (stdin delivery), stdin; then prints a result.
+      File.write!(fake, """
+      #!/bin/sh
+      printf '%s\\n' "$@" > '#{out}.argv'
+      case " $* " in
+        *" -- "*) : > '#{out}.stdin' ;;
+        *) cat > '#{out}.stdin' ;;
+      esac
+      printf '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"s","duration_ms":1,"num_turns":1,"total_cost_usd":0}\\n'
+      """)
+
+      File.chmod!(fake, 0o755)
+      config = ClaudeWrapper.Config.new(binary: fake)
+      query = Query.new("hello there") |> Query.extra_args(["--extra", "v"])
+
+      assert {:ok, _} = Query.execute(query, config)
+      argv = File.read!(out <> ".argv") |> String.split("\n", trim: true)
+      assert Enum.take(argv, -2) == ["--extra", "v"]
+      refute "hello there" in argv
+      assert File.read!(out <> ".stdin") == "hello there"
+
+      assert {:ok, _} = Query.execute(Query.prompt_input(query, :argv), config)
+      argv = File.read!(out <> ".argv") |> String.split("\n", trim: true)
+      assert Enum.take(argv, -4) == ["--extra", "v", "--", "hello there"]
+    end
+  end
 end

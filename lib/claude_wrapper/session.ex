@@ -51,6 +51,10 @@ defmodule ClaudeWrapper.Session do
     * `:permission_mode` - Permission mode
     * `:max_budget_usd` - Budget limit
     * `:effort` - Effort level
+    * `:system_prompt_snapshot` - `:on` or `:off`; see "Changing the
+      system prompt" in `send/3`
+
+  Options given to `send/3` override these for that turn.
   """
   @spec new(Config.t(), keyword()) :: t()
   def new(%Config{} = config, opts \\ []) do
@@ -75,6 +79,29 @@ defmodule ClaudeWrapper.Session do
   `Prompt` is rendered (which expands attached files and git diffs)
   before the turn runs; a render failure short-circuits to
   `{:error, %ClaudeWrapper.Error{}}` without launching the CLI.
+
+  `opts` are `ClaudeWrapper.Query.apply_opts/2` options merged over the
+  session's own options for this turn only; a per-call value wins.
+
+  ## Changing the system prompt
+
+  A resumed conversation reuses the system prompt recorded for it until the
+  next compaction (the CLI's `--system-prompt-snapshot on` default), so a
+  changed `:system_prompt` on a later turn may not reach the model. Pass
+  `system_prompt_snapshot: :off` with the new prompt to have the CLI render
+  it fresh:
+
+      {:ok, session, _} = Session.send(session, "first", system_prompt: "Be terse.")
+
+      {:ok, session, _} =
+        Session.send(session, "second",
+          system_prompt: "Answer in French.",
+          system_prompt_snapshot: :off
+        )
+
+  The second turn's argv carries `--resume <id>`, the new
+  `--system-prompt` and `--system-prompt-snapshot off`. When the option is
+  unset, nothing is emitted and the CLI default applies.
   """
   @spec send(t(), String.t() | Prompt.t(), keyword()) ::
           {:ok, t(), Result.t()} | {:error, Error.t()}
