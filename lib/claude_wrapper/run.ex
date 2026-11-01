@@ -91,7 +91,9 @@ defmodule ClaudeWrapper.Run do
   interrupt, then TERM/KILL of the process group); Forcola 0.7 sends no
   report after that, so `:cleanup` is `:unknown`. If the runner does not
   stop within `:cancel_grace_ms`, the run process ends the execution process
-  and records `reason: :cancelled` with unknown native facts. `cancel/2` is
+  and records `reason: :cancelled` with unknown native facts. An execution
+  process that reported its outcome but is still in telemetry handlers at
+  the grace is ended too, with the outcome unchanged. `cancel/2` is
   idempotent: later calls return the same outcome. On a run that already
   finished, it returns that run's own outcome unchanged. A `cancel/2` that
   times out returns `:timeout`; the cancellation continues.
@@ -223,22 +225,20 @@ defmodule ClaudeWrapper.Run do
     do: call(pid, :snapshot, timeout)
 
   @doc """
-  Stop the run process once the run has ended, freeing its outcome.
+  Ask the run process to stop once the run has ended, freeing its outcome.
 
-  On a finished run the process stops now. On a run still in progress it
-  stops right after the run ends, once pending `await/2` and `cancel/2`
-  callers and `:events_to` have been sent the outcome. `release/1` does not
-  cancel the run. Afterwards `snapshot/1`, `await/2` and `cancel/2` return
-  `{:error, %Error{kind: :not_found}}`. Returns `:ok`, also when the run
-  process is already gone.
+  The request is asynchronous and always returns `:ok`, also when the run
+  process is already gone. The run process handles it in mailbox order: on a
+  finished run it stops then; on a run still in progress it stops right
+  after the run ends, once pending `await/2` and `cancel/2` callers have
+  been sent the outcome and `:events_to` the `{:done, status}` message.
+  `release/1` does not cancel the run. An execution process still running
+  exec telemetry stop handlers is ended when the run process stops. After
+  the stop, `snapshot/1`, `await/2` and `cancel/2` return
+  `{:error, %Error{kind: :not_found}}`.
   """
   @spec release(t()) :: :ok
-  def release(%__MODULE__{pid: pid}) do
-    case call(pid, :release, 5_000) do
-      {:error, %Error{kind: :not_found}} -> :ok
-      other -> other
-    end
-  end
+  def release(%__MODULE__{pid: pid}), do: GenServer.cast(pid, :release)
 
   @doc """
   Wait up to `timeout` milliseconds for the run's outcome.
@@ -277,12 +277,13 @@ defmodule ClaudeWrapper.Run do
     end
   end
 
+  # A call timeout is :timeout. Any other exit means the run process is gone
+  # or stopped before replying, whatever its stop reason.
   defp call(pid, message, timeout) do
     GenServer.call(pid, message, timeout)
   catch
-    :exit, {:timeout, _} -> :timeout
-    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown, :killed] -> not_found(pid)
-    :exit, {{:shutdown, _}, _} -> not_found(pid)
+    :exit, {:timeout, {GenServer, :call, _}} -> :timeout
+    :exit, _reason -> not_found(pid)
   end
 
   defp send_not_started(%{observers: %{execution: {pid, reference}}} = prepared, reply) do
@@ -385,11 +386,6 @@ defmodule ClaudeWrapper.Run do
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, snapshot_of(state), state}
 
-  def handle_call(:release, _from, %{outcome: nil} = state),
-    do: {:reply, :ok, %{state | stop_when_done: true}}
-
-  def handle_call(:release, _from, state), do: {:stop, :normal, :ok, state}
-
   def handle_call({request, _tag, _deadline}, _from, %{outcome: outcome} = state)
       when request in [:await, :cancel] and outcome != nil,
       do: {:reply, outcome, state}
@@ -402,6 +398,11 @@ defmodule ClaudeWrapper.Run do
 
   @impl true
   def handle_cast({:abandon, tag}, state), do: {:noreply, drop_waiter(state, tag)}
+
+  def handle_cast(:release, %{outcome: nil} = state),
+    do: {:noreply, %{state | stop_when_done: true}}
+
+  def handle_cast(:release, state), do: {:stop, :normal, state}
 
   @impl true
   def handle_info({:frame, event}, %{outcome: nil} = state) do
@@ -452,12 +453,13 @@ defmodule ClaudeWrapper.Run do
 
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
-  def handle_info(:cancel_grace, %{outcome: nil, status: :cancelling} = state) do
+  # A cancel was requested. An execution process still alive after the grace
+  # is ended: before an outcome that records a cancellation, after one (it is
+  # in exec telemetry stop handlers) the stored outcome stays as it is.
+  def handle_info(:cancel_grace, state) do
     Process.exit(state.worker, :kill)
     {:noreply, state}
   end
-
-  def handle_info(:cancel_grace, state), do: {:noreply, state}
 
   # Backstop for a caller whose abandon message has not arrived.
   def handle_info({:wait_timeout, tag}, state), do: {:noreply, drop_waiter(state, tag)}
@@ -483,6 +485,14 @@ defmodule ClaudeWrapper.Run do
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  # A normal stop does not end the linked execution process, which can still
+  # be in exec telemetry stop handlers after reporting; end it here.
+  @impl true
+  def terminate(_reason, state) do
+    Process.exit(state.worker, :kill)
+    :ok
+  end
 
   defp add_waiter(state, {pid, _} = from, tag, deadline) do
     timer =

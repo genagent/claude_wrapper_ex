@@ -228,56 +228,101 @@ defmodule ClaudeWrapper.RunTest do
       # The cancel is requested while the runner is still running. The runner
       # then returns, and a blocking exec-stop telemetry handler holds the
       # execution process past the cancel grace. The outcome was reported
-      # before the handler ran, so it is the runner's own, and the grace
-      # timer finds a finished run and does nothing.
-      test = self()
-      handler = "run-test-block-#{System.unique_integer([:positive])}"
-
-      :telemetry.attach(
-        handler,
-        [:claude_wrapper, :exec, :stop],
-        fn _event, _measurements, _metadata, _config ->
-          send(test, {:blocked, self()})
-          Process.sleep(:infinity)
-        end,
-        nil
-      )
-
-      :persistent_term.put({__MODULE__.Gated, :test}, test)
-
-      on_exit(fn ->
-        :telemetry.detach(handler)
-        :persistent_term.erase({__MODULE__.Gated, :test})
-      end)
-
+      # before the handler ran, so it stays the runner's own; the grace ends
+      # the blocked execution process without changing it.
+      block_exec_stop()
       reference = make_ref()
-      config = Config.new(binary: "/bin/sh", runner: __MODULE__.Gated, runner_options: [])
 
       {:ok, run} =
-        Run.start(Query.new("hi"), config,
+        Run.start(Query.new("hi"), gated_config(),
           cancel_grace_ms: 300,
           execution_observer: {self(), reference}
         )
 
       assert_receive {:gated, worker}, 5_000
+      worker_monitor = Process.monitor(worker)
       canceller = Task.async(fn -> Run.cancel(run, 5_000) end)
       wait_until(fn -> Run.snapshot(run).status == :cancelling end)
       send(worker, :go)
 
       assert_receive {:blocked, ^worker}, 5_000
-      assert {:ok, %Result{result: "done"}, evidence} = Task.await(canceller)
+      assert {:ok, %Result{result: "done"} = result, evidence} = Task.await(canceller)
       assert evidence.reason == nil
       assert evidence.cleanup == :confirmed
       assert evidence.child_status == 0
-      assert %{status: :succeeded} = Run.snapshot(run)
 
-      Process.sleep(400)
+      assert_receive {:DOWN, ^worker_monitor, :process, _, :killed}, 5_000
       assert %{status: :succeeded} = Run.snapshot(run)
-      {:ok, result} = evidence.outcome
       assert Run.await(run) == {:ok, result, evidence}
       assert_receive {^reference, ^evidence}
       refute_receive {^reference, _}, 100
-      Process.exit(worker, :kill)
+    end
+
+    test "release ends an execution process still in exec-stop telemetry" do
+      block_exec_stop()
+      {:ok, run} = Run.start(Query.new("hi"), gated_config())
+      assert_receive {:gated, worker}, 5_000
+      worker_monitor = Process.monitor(worker)
+      send(worker, :go)
+
+      assert_receive {:blocked, ^worker}, 5_000
+      assert {:ok, %Result{}, _} = Run.await(run, 5_000)
+      assert Process.alive?(worker)
+
+      assert Run.release(run) == :ok
+      assert_receive {:DOWN, ^worker_monitor, :process, _, :killed}, 5_000
+    end
+
+    test "owner exit ends an execution process still in exec-stop telemetry" do
+      block_exec_stop()
+      test = self()
+
+      owner =
+        spawn(fn ->
+          {:ok, run} = Run.start(Query.new("hi"), gated_config(), events_to: nil)
+          send(test, {:run, run})
+
+          receive do
+            :exit -> :ok
+          end
+        end)
+
+      assert_receive {:run, run}, 5_000
+      assert_receive {:gated, worker}, 5_000
+      worker_monitor = Process.monitor(worker)
+      run_monitor = Process.monitor(run.pid)
+      send(worker, :go)
+      assert_receive {:blocked, ^worker}, 5_000
+      wait_until(fn -> Run.snapshot(run).status == :succeeded end)
+
+      send(owner, :exit)
+      assert_receive {:DOWN, ^run_monitor, :process, _, :normal}, 5_000
+      assert_receive {:DOWN, ^worker_monitor, :process, _, :killed}, 5_000
+    end
+
+    test "a run process stopping with any reason during a call returns :not_found", context do
+      {:ok, run} = Run.start(Query.new("hi"), fixture(context, emit(result())))
+      assert {:ok, _, _} = Run.await(run, 5_000)
+      monitor = Process.monitor(run.pid)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          :sys.suspend(run.pid)
+          Process.exit(run.pid, :boom)
+          caller = Task.async(fn -> Run.snapshot(run, 5_000) end)
+
+          wait_until(fn ->
+            {:messages, m} = Process.info(run.pid, :messages)
+            length(m) >= 2
+          end)
+
+          :sys.resume(run.pid)
+
+          assert {:error, %Error{kind: :not_found}} = Task.await(caller)
+          assert_receive {:DOWN, ^monitor, :process, _, :boom}, 5_000
+        end)
+
+      assert log =~ "boom"
     end
 
     test "timed-out and exited waiters leave no state behind" do
@@ -403,15 +448,17 @@ defmodule ClaudeWrapper.RunTest do
       assert Run.release(run) == :ok
     end
 
-    test "on a running run stops after it ends, without cancelling it", context do
-      config = fixture(context, emit(init()) <> "sleep 0.3\n" <> emit(result()))
-      {:ok, run} = Run.start(Query.new("hi"), config)
+    test "on a running run stops after it ends, without cancelling it" do
+      register_gated()
+      {:ok, run} = Run.start(Query.new("hi"), gated_config())
+      assert_receive {:gated, worker}, 5_000
       monitor = Process.monitor(run.pid)
       waiter = Task.async(fn -> Run.await(run, 5_000) end)
       wait_until(fn -> map_size(:sys.get_state(run.pid).waiters) == 1 end)
 
       assert Run.release(run) == :ok
       assert %{status: :running} = Run.snapshot(run)
+      send(worker, :go)
       assert {:ok, %Result{result: "done"}, _} = Task.await(waiter)
       assert_receive {:DOWN, ^monitor, :process, _, :normal}, 5_000
       ref = run.ref
@@ -527,6 +574,35 @@ defmodule ClaudeWrapper.RunTest do
   end
 
   # --- helpers ---
+
+  defp register_gated do
+    :persistent_term.put({__MODULE__.Gated, :test}, self())
+    on_exit(fn -> :persistent_term.erase({__MODULE__.Gated, :test}) end)
+  end
+
+  defp gated_config do
+    Config.new(binary: "/bin/sh", runner: __MODULE__.Gated, runner_options: [])
+  end
+
+  # Gated runner plus an exec-stop telemetry handler that reports and then
+  # blocks the execution process.
+  defp block_exec_stop do
+    register_gated()
+    test = self()
+    handler = "run-test-block-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:claude_wrapper, :exec, :stop],
+      fn _event, _measurements, _metadata, _config ->
+        send(test, {:blocked, self()})
+        Process.sleep(:infinity)
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+  end
 
   defp wait_until(fun, deadline \\ System.monotonic_time(:millisecond) + 5_000) do
     cond do

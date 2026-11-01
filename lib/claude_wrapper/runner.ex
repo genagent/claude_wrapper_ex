@@ -97,9 +97,10 @@ defmodule ClaudeWrapper.Runner do
   cancellation stops the native run and returns `{:error, :cancelled}` with
   its evidence, `reason: :cancelled`, and whatever cleanup facts it can
   report. The cancel is the outcome even if a line observer failed earlier
-  in the run; that failure is not reported. If the run had already finished, the runner returns that outcome
-  instead. A runner that ignores `:cancel` is stopped by `ClaudeWrapper.Run`
-  ending the calling process after a grace period.
+  in the run; that failure is not reported. If the run had already
+  finished, the runner returns that outcome instead. A runner that ignores
+  `:cancel` is stopped by `ClaudeWrapper.Run` ending the calling process
+  after a grace period.
 
   `check_evidenced/2` is optional. It validates the options
   `run_evidenced/5` would receive (including `:runner_options`) and the
