@@ -73,6 +73,57 @@ defmodule Mix.Tasks.Claude.ContractTest do
            end)
   end
 
+  describe "version-tagged flags" do
+    test "the tagged flags start at 2.1.309" do
+      for flag <- ~w(--restricted --permission-prompts --system-prompt-snapshot --autocompact
+                     --append-subagent-system-prompt-file) do
+        assert Contract.checked_from()[flag] == "2.1.309"
+      end
+    end
+
+    test "a tagged flag missing from help is not a finding on an older version" do
+      {binary, _marker} = fake_cli()
+      assert Contract.check(binary, [{[], ["--restricted", "--", "p"]}], "2.1.220") == []
+    end
+
+    test "a tagged flag missing from help is a finding at or after its tag" do
+      {binary, _marker} = fake_cli()
+
+      for version <- ["2.1.309", "2.1.316"] do
+        assert [finding] = Contract.check(binary, [{[], ["--restricted"]}], version)
+        assert finding =~ "emitted --restricted is not documented"
+      end
+    end
+
+    test "an untagged missing flag is still a finding on the older version" do
+      {binary, _marker} = fake_cli()
+
+      assert [finding] =
+               Contract.check(binary, [{[], ["--restricted", "--removed-option"]}], "2.1.220")
+
+      assert finding =~ "emitted --removed-option is not documented"
+    end
+
+    test "a tagged hidden flag is not probed before its tag and is probed after" do
+      flag = "--append-subagent-system-prompt-file"
+      binary = echoing_cli(flag)
+
+      assert Contract.check(binary, [{[], [flag, "f"]}], "2.1.220") == []
+      assert [finding] = Contract.check(binary, [{[], [flag, "f"]}], "2.1.309")
+      assert finding =~ "emitted #{flag} is not documented"
+    end
+
+    test "without a version every flag is checked" do
+      {binary, _marker} = fake_cli()
+      assert [_finding] = Contract.check(binary, [{[], ["--restricted"]}])
+    end
+
+    test "reported_version/1 reads the version from --version output" do
+      assert Contract.reported_version("2.1.220 (Claude Code)\n") == "2.1.220"
+      assert Contract.reported_version("Claude Code") == nil
+    end
+  end
+
   test "token-from-stdin setup is rejected before starting a process" do
     {binary, marker} = fake_cli()
 

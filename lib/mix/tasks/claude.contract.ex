@@ -43,6 +43,23 @@ defmodule Mix.Tasks.Claude.Contract do
   @spec hidden_value_flags() :: [String.t()]
   def hidden_value_flags, do: @hidden_value_flags
 
+  # Flags checked only when the reported CLI version is at or after the
+  # given version; on an older CLI they are neither looked up in help nor
+  # probed. Each version is the first one the flag is checked on (a pinned
+  # CI version where it was seen), not a bisected introduction version.
+  # Untagged flags are checked on every version.
+  @checked_from %{
+    "--restricted" => "2.1.309",
+    "--permission-prompts" => "2.1.309",
+    "--system-prompt-snapshot" => "2.1.309",
+    "--autocompact" => "2.1.309",
+    "--append-subagent-system-prompt-file" => "2.1.309"
+  }
+
+  @doc false
+  @spec checked_from() :: %{String.t() => String.t()}
+  def checked_from, do: @checked_from
+
   @impl true
   def run(_argv) do
     binary =
@@ -52,7 +69,7 @@ defmodule Mix.Tasks.Claude.Contract do
     {version, 0} = System.cmd(binary, ["--version"], stderr_to_stdout: true)
     verify_version!(String.trim(version), System.get_env("CLAUDE_CONTRACT_VERSION"))
     Mix.shell().info(String.trim(version))
-    findings = check(binary)
+    findings = check(binary, specs(), reported_version(version))
 
     if findings == [] do
       Mix.shell().info(
@@ -65,9 +82,33 @@ defmodule Mix.Tasks.Claude.Contract do
   end
 
   @doc false
-  @spec check(String.t(), [{[String.t()], [String.t()]}]) :: [String.t()]
-  def check(binary, commands \\ specs()) do
-    Enum.flat_map(commands, fn {subcommand, args} -> check_command(binary, subcommand, args) end)
+  # `version` is the reported CLI version ("2.1.220"); nil checks every
+  # flag, including tagged ones.
+  @spec check(String.t(), [{[String.t()], [String.t()]}], String.t() | nil) :: [String.t()]
+  def check(binary, commands \\ specs(), version \\ nil) do
+    Enum.flat_map(commands, fn {subcommand, args} ->
+      check_command(binary, subcommand, args, version)
+    end)
+  end
+
+  @doc false
+  # The first x.y.z in `claude --version` output ("2.1.220 (Claude Code)"),
+  # or nil when there is none.
+  @spec reported_version(String.t()) :: String.t() | nil
+  def reported_version(output) do
+    case Regex.run(~r/\b(\d+\.\d+\.\d+)\b/, output, capture: :all_but_first) do
+      [version] -> version
+      nil -> nil
+    end
+  end
+
+  defp checked_on?(_flag, nil), do: true
+
+  defp checked_on?(flag, version) do
+    case Map.fetch(@checked_from, flag) do
+      {:ok, from} -> Elixir.Version.compare(version, from) != :lt
+      :error -> true
+    end
   end
 
   defp verify_version!(_reported, nil), do: :ok
@@ -77,7 +118,7 @@ defmodule Mix.Tasks.Claude.Contract do
       do: Mix.raise("expected claude #{expected}, got: #{reported}")
   end
 
-  defp check_command(binary, subcommand, args) do
+  defp check_command(binary, subcommand, args, version) do
     {help, code} = System.cmd(binary, subcommand ++ ["--help"], stderr_to_stdout: true)
 
     expected =
@@ -90,6 +131,8 @@ defmodule Mix.Tasks.Claude.Contract do
     else
       args
       |> emitted_flags()
+      # Filtered before listed?/4, so a skipped flag is not probed either.
+      |> Enum.filter(&checked_on?(&1, version))
       |> Enum.reject(&listed?(binary, &1, documented, subcommand))
       |> Enum.map(&"#{Enum.join(subcommand, " ")}: emitted #{&1} is not documented")
     end

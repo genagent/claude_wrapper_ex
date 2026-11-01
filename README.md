@@ -22,6 +22,8 @@ The emitted query/resident and command argv are checked against Claude Code
 `CLAUDE_CONTRACT_VERSION` requiring its exact reported version. The task uses
 only native version/help and missing-operand parsing; its command construction
 uses a task-local fake executable and never the selected provider binary.
+Flags newer than a pinned version are checked from the version they are tagged
+with in the task, so an older pinned CLI does not report them as missing.
 
 These are verified compatibility points, not a bisected minimum or a promise of
 full native semantics. Existing caller-selected `CliVersion` windows remain unchanged.
