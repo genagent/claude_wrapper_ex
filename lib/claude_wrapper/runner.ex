@@ -96,7 +96,8 @@ defmodule ClaudeWrapper.Runner do
   process receives `{reference, :cancel}`, a runner that supports
   cancellation stops the native run and returns `{:error, :cancelled}` with
   its evidence, `reason: :cancelled`, and whatever cleanup facts it can
-  report. If the run had already finished, the runner returns that outcome
+  report. The cancel is the outcome even if a line observer failed earlier
+  in the run; that failure is not reported. If the run had already finished, the runner returns that outcome
   instead. A runner that ignores `:cancel` is stopped by `ClaudeWrapper.Run`
   ending the calling process after a grace period.
 

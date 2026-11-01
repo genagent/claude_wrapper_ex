@@ -80,8 +80,11 @@ defmodule ClaudeWrapper.Run do
 
   `cancel/2` asks the runner to stop the run and returns its outcome and
   evidence. Cancellation starts native termination; it does not mean native
-  cleanup has finished when `cancel/2` returns, and a run that completes
-  natively before the cancel takes effect keeps its own outcome. The outcome is `{:error, %Error{kind: :cancelled}, evidence}`
+  cleanup has finished when `cancel/2` returns. A run whose runner returned
+  before the cancel took effect keeps its own outcome: the execution process
+  reports it before `[:claude_wrapper, :exec, :stop]` telemetry handlers run,
+  so a slow handler cannot turn it into a cancellation. Otherwise the outcome
+  is `{:error, %Error{kind: :cancelled}, evidence}`
   with `evidence.reason == :cancelled` and the cleanup facts the runner
   reported. `ClaudeWrapper.Runner.Forcola` stops the run by closing its
   Forcola port, so the shim runs its owner-death sequence (the configured
@@ -93,14 +96,28 @@ defmodule ClaudeWrapper.Run do
   finished, it returns that run's own outcome unchanged. A `cancel/2` that
   times out returns `:timeout`; the cancellation continues.
 
+  Besides the `Query.execute/3` error categories and `:cancelled`, a run can
+  end with `:io` errors of its own: `{:run_start_failed, reason}` when the
+  run process could not be started after preflight (a valid
+  `:execution_observer` still receives one not-started record), and
+  `{:run_down, reason}` when the execution process exited without reporting
+  while the run was not being cancelled.
+
   ## Lifetime
 
   The run process monitors the process that called `start/3` (the owner).
   If the owner exits, the run is cancelled and the run process stops once
-  the execution has ended. Until then the run process keeps the outcome, so
-  `snapshot/1`, `await/2` and `cancel/2` keep working after the run ends.
-  Once the run process has stopped they return
-  `{:error, %Error{kind: :not_found}}`.
+  the execution has ended. An exit signal sent to the run process (for
+  example `Process.exit(run.pid, :shutdown)`) does the same, and the run
+  process then stops with that reason; a `:normal` exit signal from another
+  process is ignored, as it is for a process that does not trap exits. A
+  `:kill` signal ends the run process at once, without cleanup or a terminal
+  record.
+
+  Until it stops, the run process keeps the outcome, so `snapshot/1`,
+  `await/2` and `cancel/2` keep working after the run ends. `release/1`
+  stops it once the run has ended, for owners that start many runs. Once the
+  run process has stopped they return `{:error, %Error{kind: :not_found}}`.
   """
 
   use GenServer
@@ -112,6 +129,7 @@ defmodule ClaudeWrapper.Run do
     Query,
     RateLimitObservation,
     Result,
+    Runner,
     SessionObservation,
     StreamEvent
   }
@@ -187,7 +205,9 @@ defmodule ClaudeWrapper.Run do
 
         {:error, reason} ->
           prepared.cleanup.()
-          {:error, Error.io({:run_start_failed, reason})}
+          reply = {:error, Error.io({:run_start_failed, reason})}
+          send_not_started(prepared, reply)
+          reply
       end
     end
   end
@@ -199,7 +219,26 @@ defmodule ClaudeWrapper.Run do
   the runner.
   """
   @spec snapshot(t(), timeout()) :: snapshot() | :timeout | {:error, Error.t()}
-  def snapshot(%__MODULE__{pid: pid}, timeout \\ 5_000), do: call(pid, :snapshot, timeout)
+  def snapshot(%__MODULE__{pid: pid}, timeout \\ 5_000) when timeout_value?(timeout),
+    do: call(pid, :snapshot, timeout)
+
+  @doc """
+  Stop the run process once the run has ended, freeing its outcome.
+
+  On a finished run the process stops now. On a run still in progress it
+  stops right after the run ends, once pending `await/2` and `cancel/2`
+  callers and `:events_to` have been sent the outcome. `release/1` does not
+  cancel the run. Afterwards `snapshot/1`, `await/2` and `cancel/2` return
+  `{:error, %Error{kind: :not_found}}`. Returns `:ok`, also when the run
+  process is already gone.
+  """
+  @spec release(t()) :: :ok
+  def release(%__MODULE__{pid: pid}) do
+    case call(pid, :release, 5_000) do
+      {:error, %Error{kind: :not_found}} -> :ok
+      other -> other
+    end
+  end
 
   @doc """
   Wait up to `timeout` milliseconds for the run's outcome.
@@ -242,9 +281,21 @@ defmodule ClaudeWrapper.Run do
     GenServer.call(pid, message, timeout)
   catch
     :exit, {:timeout, _} -> :timeout
-    :exit, {reason, _} when reason in [:noproc, :normal] -> not_found(pid)
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown, :killed] -> not_found(pid)
     :exit, {{:shutdown, _}, _} -> not_found(pid)
   end
+
+  defp send_not_started(%{observers: %{execution: {pid, reference}}} = prepared, reply) do
+    evidence =
+      ExecutionEvidence.from_native(Runner.not_started_evidence(),
+        runner: prepared.runner,
+        outcome: reply
+      )
+
+    send(pid, {reference, evidence})
+  end
+
+  defp send_not_started(_prepared, _reply), do: :ok
 
   defp not_found(pid), do: {:error, Error.new(:not_found, reason: {:run, pid})}
 
@@ -310,7 +361,8 @@ defmodule ClaudeWrapper.Run do
        rate_limit: nil,
        outcome: nil,
        waiters: %{},
-       stop_when_done: false
+       stop_when_done: false,
+       stop_reason: :normal
      }}
   end
 
@@ -324,12 +376,19 @@ defmodule ClaudeWrapper.Run do
       end
     end
 
-    {reply, evidence} = Query.run_prepared(prepared, %{frame: frame, cancel: cancel})
-    send(server, {:finished, reply, evidence})
+    # Reported from inside the exec span, before its stop handlers run, so a
+    # cancel grace kill during a slow handler cannot replace the outcome.
+    report = fn {reply, evidence} -> send(server, {:finished, reply, evidence}) end
+    Query.run_prepared(prepared, %{frame: frame, cancel: cancel, report: report})
   end
 
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, snapshot_of(state), state}
+
+  def handle_call(:release, _from, %{outcome: nil} = state),
+    do: {:reply, :ok, %{state | stop_when_done: true}}
+
+  def handle_call(:release, _from, state), do: {:stop, :normal, :ok, state}
 
   def handle_call({request, _tag, _deadline}, _from, %{outcome: outcome} = state)
       when request in [:await, :cancel] and outcome != nil,
@@ -381,7 +440,17 @@ defmodule ClaudeWrapper.Run do
     finish(state, reply, evidence)
   end
 
-  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+  def handle_info({:EXIT, worker, _reason}, %{worker: worker} = state), do: {:noreply, state}
+
+  # An exit signal from any other process. Without trap_exit a :normal signal
+  # would be ignored, so it is here too; any other reason cancels the run and
+  # stops the run process with that reason once the run has ended.
+  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state}
+
+  def handle_info({:EXIT, _pid, reason}, %{outcome: nil} = state),
+    do: {:noreply, %{request_cancel(state) | stop_when_done: true, stop_reason: reason}}
+
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
   def handle_info(:cancel_grace, %{outcome: nil, status: :cancelling} = state) do
     Process.exit(state.worker, :kill)
@@ -475,7 +544,7 @@ defmodule ClaudeWrapper.Run do
 
     state = %{state | outcome: outcome, status: status, finished_at: now(), waiters: %{}}
 
-    if state.stop_when_done, do: {:stop, :normal, state}, else: {:noreply, state}
+    if state.stop_when_done, do: {:stop, state.stop_reason, state}, else: {:noreply, state}
   end
 
   defp track(state, %StreamEvent{type: "system", data: %{"subtype" => "init"} = data}) do

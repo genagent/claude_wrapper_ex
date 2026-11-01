@@ -31,9 +31,11 @@ defmodule ClaudeWrapper.Runner.Collector do
   # port closes, which the native supervisor treats as owner death (for
   # Forcola: the configured interrupt, then TERM/KILL of the process group).
   # Frames already sent are still collected (a buffered final line is
-  # observed), and the run is reported as `{:cancelled, stats}`. No native report follows owner death, so cleanup
-  # stays unknown. If the helper reported its outcome before the cancel took
-  # effect, that outcome is returned unchanged.
+  # observed), and the run is reported as `{:cancelled, stats}`. No native
+  # report follows owner death, so cleanup stays unknown. An observer failure
+  # recorded before the cancel is not reported: the cancel is the outcome.
+  # If the helper reported its outcome before the cancel took effect, that
+  # outcome is returned unchanged.
   #
   # After any outcome every message tagged with the private reference is
   # flushed, so none linger in the caller's mailbox.

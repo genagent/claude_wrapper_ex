@@ -172,7 +172,9 @@ defmodule ClaudeWrapper.Runner.ForcolaEvidence do
 
   # The helper owning the Forcola port was ended on request. Forcola's shim
   # runs its owner-death cleanup, but sends no report after the port closes,
-  # so native status and cleanup stay unknown.
+  # so native status and cleanup stay unknown. The requested cancel is the
+  # outcome: an observer failure recorded earlier in `stats` is not reported
+  # (`ExecutionEvidence` has no field for it).
   def translate({:cancelled, stats}),
     do: {{:error, :cancelled}, %{collected(stats) | reason: :cancelled}}
 

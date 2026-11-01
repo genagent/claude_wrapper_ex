@@ -224,10 +224,12 @@ defmodule ClaudeWrapper.RunTest do
   end
 
   describe "review fixes" do
-    test "a worker killed after its runner returned publishes exactly one record" do
-      # A blocking exec-stop telemetry handler holds the execution process
-      # between the runner's return and its report to the run process; the
-      # cancel grace then kills it there.
+    test "a cancel pending while exec-stop telemetry blocks keeps the runner's outcome" do
+      # The cancel is requested while the runner is still running. The runner
+      # then returns, and a blocking exec-stop telemetry handler holds the
+      # execution process past the cancel grace. The outcome was reported
+      # before the handler ran, so it is the runner's own, and the grace
+      # timer finds a finished run and does nothing.
       test = self()
       handler = "run-test-block-#{System.unique_integer([:positive])}"
 
@@ -241,22 +243,41 @@ defmodule ClaudeWrapper.RunTest do
         nil
       )
 
-      on_exit(fn -> :telemetry.detach(handler) end)
+      :persistent_term.put({__MODULE__.Gated, :test}, test)
+
+      on_exit(fn ->
+        :telemetry.detach(handler)
+        :persistent_term.erase({__MODULE__.Gated, :test})
+      end)
 
       reference = make_ref()
-      config = Config.new(binary: "/bin/sh", runner: __MODULE__.Finishes, runner_options: [])
+      config = Config.new(binary: "/bin/sh", runner: __MODULE__.Gated, runner_options: [])
 
       {:ok, run} =
         Run.start(Query.new("hi"), config,
-          cancel_grace_ms: 50,
+          cancel_grace_ms: 300,
           execution_observer: {self(), reference}
         )
 
-      assert_receive {:blocked, _worker}, 5_000
-      assert {:error, %Error{kind: :cancelled}, evidence} = Run.cancel(run, 5_000)
-      assert evidence.reason == :cancelled
+      assert_receive {:gated, worker}, 5_000
+      canceller = Task.async(fn -> Run.cancel(run, 5_000) end)
+      wait_until(fn -> Run.snapshot(run).status == :cancelling end)
+      send(worker, :go)
+
+      assert_receive {:blocked, ^worker}, 5_000
+      assert {:ok, %Result{result: "done"}, evidence} = Task.await(canceller)
+      assert evidence.reason == nil
+      assert evidence.cleanup == :confirmed
+      assert evidence.child_status == 0
+      assert %{status: :succeeded} = Run.snapshot(run)
+
+      Process.sleep(400)
+      assert %{status: :succeeded} = Run.snapshot(run)
+      {:ok, result} = evidence.outcome
+      assert Run.await(run) == {:ok, result, evidence}
       assert_receive {^reference, ^evidence}
       refute_receive {^reference, _}, 100
+      Process.exit(worker, :kill)
     end
 
     test "timed-out and exited waiters leave no state behind" do
@@ -338,6 +359,63 @@ defmodule ClaudeWrapper.RunTest do
 
       refute_receive {^reference, _}, 50
       refute_received {_, {:frame, _}}
+    end
+  end
+
+  describe "exit signals" do
+    test "a :shutdown signal cancels a running run and stops with that reason", context do
+      config = fixture(context, emit(init()) <> "echo $$ > #{context.pidfile}\nexec sleep 30\n")
+      reference = make_ref()
+      {:ok, run} = Run.start(Query.new("hi"), config, execution_observer: {self(), reference})
+      await_file(context.pidfile)
+      monitor = Process.monitor(run.pid)
+
+      Process.exit(run.pid, :normal)
+      Process.sleep(50)
+      assert %{status: :running} = Run.snapshot(run)
+
+      Process.exit(run.pid, :shutdown)
+      assert_receive {:DOWN, ^monitor, :process, _, :shutdown}, 5_000
+      assert_dead(context.pidfile)
+      assert_receive {^reference, %ExecutionEvidence{reason: :cancelled}}
+      refute_receive {^reference, _}, 50
+      ref = run.ref
+      assert_receive {^ref, {:done, :cancelled}}
+    end
+
+    test "a :shutdown signal stops a finished run process", context do
+      {:ok, run} = Run.start(Query.new("hi"), fixture(context, emit(result())))
+      assert {:ok, _, _} = Run.await(run, 5_000)
+      monitor = Process.monitor(run.pid)
+      Process.exit(run.pid, :shutdown)
+      assert_receive {:DOWN, ^monitor, :process, _, :shutdown}, 5_000
+    end
+  end
+
+  describe "release" do
+    test "stops a finished run process", context do
+      {:ok, run} = Run.start(Query.new("hi"), fixture(context, emit(result())))
+      assert {:ok, _, _} = Run.await(run, 5_000)
+      monitor = Process.monitor(run.pid)
+      assert Run.release(run) == :ok
+      assert_receive {:DOWN, ^monitor, :process, _, :normal}, 1_000
+      assert {:error, %Error{kind: :not_found}} = Run.await(run)
+      assert Run.release(run) == :ok
+    end
+
+    test "on a running run stops after it ends, without cancelling it", context do
+      config = fixture(context, emit(init()) <> "sleep 0.3\n" <> emit(result()))
+      {:ok, run} = Run.start(Query.new("hi"), config)
+      monitor = Process.monitor(run.pid)
+      waiter = Task.async(fn -> Run.await(run, 5_000) end)
+      wait_until(fn -> map_size(:sys.get_state(run.pid).waiters) == 1 end)
+
+      assert Run.release(run) == :ok
+      assert %{status: :running} = Run.snapshot(run)
+      assert {:ok, %Result{result: "done"}, _} = Task.await(waiter)
+      assert_receive {:DOWN, ^monitor, :process, _, :normal}, 5_000
+      ref = run.ref
+      assert_receive {^ref, {:done, :succeeded}}
     end
   end
 
@@ -429,12 +507,19 @@ defmodule ClaudeWrapper.RunTest do
     end
   end
 
-  defmodule Finishes do
+  defmodule Gated do
     @moduledoc false
     def run(_binary, _args, _opts, _timeout), do: {:error, :unsupported}
     def stream_lines(_binary, _args, _opts, _timeout), do: []
 
+    # Ignores the cancel request and returns a clean result once told to.
     def run_evidenced(_binary, _args, _opts, _timeout, _observer) do
+      send(:persistent_term.get({__MODULE__, :test}), {:gated, self()})
+
+      receive do
+        :go -> :ok
+      end
+
       line = ~s({"type":"result","subtype":"success","result":"done"})
       native = %{execution: :started, child_status: 0, cleanup: :confirmed, stdout: line}
       {{:ok, {line, 0, ""}}, native}

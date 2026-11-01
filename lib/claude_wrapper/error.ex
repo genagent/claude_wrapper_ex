@@ -45,7 +45,10 @@ defmodule ClaudeWrapper.Error do
     * Evidenced runner callback raises, throws and catchable exits are `:io`
       with `:reason` `{:runner_failed, kind, reason}`. Collector observer
       failures use `{:observer_failed, kind, reason}`; helper death uses
-      `{:helper_down, reason}`. A failure converting the runner's outcome
+      `{:helper_down, reason}`. In `ClaudeWrapper.Run`, a run process that
+      could not be started after preflight uses `{:run_start_failed, reason}`,
+      and an execution process that exited without reporting, while not
+      cancelling, uses `{:run_down, reason}`. A failure converting the runner's outcome
       into a reply uses `{:reply_failed, kind, reason}`. Terminal evidence
       retains available partial facts without claiming unknown native
       cleanup.

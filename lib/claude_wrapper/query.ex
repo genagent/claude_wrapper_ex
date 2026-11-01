@@ -1201,8 +1201,10 @@ defmodule ClaudeWrapper.Query do
   # Runs a `prepare_evidenced/4` result in the calling process and returns
   # `{reply, %ExecutionEvidence{}}`. It does not send the record: the caller
   # publishes it. `extra` may carry `:frame`, a function called with every
-  # stdout line in stream order, and `:cancel`, a reference handed to the
-  # runner (see `ClaudeWrapper.Runner`). Does not call `:cleanup`.
+  # stdout line in stream order, `:cancel`, a reference handed to the runner
+  # (see `ClaudeWrapper.Runner`), and `:report`, called with
+  # `{reply, evidence}` as soon as they exist, inside the exec span and
+  # before its stop handlers run. Does not call `:cleanup`.
   @spec run_prepared(map(), map()) ::
           {{:ok, Result.t()} | {:error, Error.t()}, ExecutionEvidence.t()}
   def run_prepared(prepared, extra) do
@@ -1223,7 +1225,9 @@ defmodule ClaudeWrapper.Query do
           )
 
         reply = safe_evidenced_reply(outcome, config, runner, options)
-        Process.put(key, evidence_record(native, runner, reply, session_id))
+        evidence = evidence_record(native, runner, reply, session_id)
+        if extra[:report], do: extra[:report].({reply, evidence})
+        Process.put(key, evidence)
         reply
       end)
 
