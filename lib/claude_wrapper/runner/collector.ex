@@ -30,8 +30,8 @@ defmodule ClaudeWrapper.Runner.Collector do
   # in the caller ends the helper with `{:shutdown, :cancelled}`. Its native
   # port closes, which the native supervisor treats as owner death (for
   # Forcola: the configured interrupt, then TERM/KILL of the process group).
-  # Frames already sent are still collected, and the run is reported as
-  # `{:cancelled, stats}`. No native report follows owner death, so cleanup
+  # Frames already sent are still collected (a buffered final line is
+  # observed), and the run is reported as `{:cancelled, stats}`. No native report follows owner death, so cleanup
   # stays unknown. If the helper reported its outcome before the cancel took
   # effect, that outcome is returned unchanged.
   #
@@ -130,10 +130,13 @@ defmodule ClaudeWrapper.Runner.Collector do
         unless state.cancelled, do: Process.exit(helper, {:shutdown, :cancelled})
         collect(%{state | cancelled: true})
 
+      # A complete final event written without a newline is still a line
+      # after a cancel, as at normal completion.
+      {:DOWN, ^monitor, :process, ^helper, _reason} when state.cancelled ->
+        {:cancelled, state |> finish_tail() |> stats()}
+
       {:DOWN, ^monitor, :process, ^helper, reason} ->
-        if state.cancelled,
-          do: {:cancelled, stats(state)},
-          else: {:helper_down, reason, stats(state)}
+        {:helper_down, reason, stats(state)}
     end
   end
 

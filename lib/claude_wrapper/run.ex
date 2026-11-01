@@ -65,6 +65,12 @@ defmodule ClaudeWrapper.Run do
 
   ## Await and cancel
 
+  The run process sends every observer message for the run: the
+  `%SessionObservation{}` for the first nonblank native session ID, a
+  `%RateLimitObservation{}` for each valid rate-limit event, and the one
+  terminal `%ExecutionEvidence{}` record, in that order, with the same
+  shapes as `Query.execute/3`.
+
   `await/2` returns `{:ok, %Result{}, %ExecutionEvidence{}}` or
   `{:error, %Error{}, %ExecutionEvidence{}}`, with the same `Result` and
   `Error` categories as `Query.execute/3` plus `:cancelled`. Each run has
@@ -73,7 +79,9 @@ defmodule ClaudeWrapper.Run do
   `await/2` that times out returns `:timeout` and leaves the run going.
 
   `cancel/2` asks the runner to stop the run and returns its outcome and
-  evidence. The outcome is `{:error, %Error{kind: :cancelled}, evidence}`
+  evidence. Cancellation starts native termination; it does not mean native
+  cleanup has finished when `cancel/2` returns, and a run that completes
+  natively before the cancel takes effect keeps its own outcome. The outcome is `{:error, %Error{kind: :cancelled}, evidence}`
   with `evidence.reason == :cancelled` and the cleanup facts the runner
   reported. `ClaudeWrapper.Runner.Forcola` stops the run by closing its
   Forcola port, so the shim runs its owner-death sequence (the configured
@@ -104,6 +112,7 @@ defmodule ClaudeWrapper.Run do
     Query,
     RateLimitObservation,
     Result,
+    SessionObservation,
     StreamEvent
   }
 
@@ -141,6 +150,9 @@ defmodule ClaudeWrapper.Run do
           rate_limit: RateLimitObservation.t() | nil,
           elapsed_ms: non_neg_integer()
         }
+
+  defguardp timeout_value?(timeout)
+            when timeout == :infinity or (is_integer(timeout) and timeout >= 0)
 
   @run_keys [:events_to, :max_queued_frames, :cancel_grace_ms]
   @default_max_queued_frames 1_000
@@ -186,7 +198,7 @@ defmodule ClaudeWrapper.Run do
   Answered from the run process's own state; it never waits on the child or
   the runner.
   """
-  @spec snapshot(t(), timeout()) :: snapshot() | {:error, Error.t()}
+  @spec snapshot(t(), timeout()) :: snapshot() | :timeout | {:error, Error.t()}
   def snapshot(%__MODULE__{pid: pid}, timeout \\ 5_000), do: call(pid, :snapshot, timeout)
 
   @doc """
@@ -195,7 +207,8 @@ defmodule ClaudeWrapper.Run do
   Returns `t:outcome/0`, or `:timeout` without affecting the run.
   """
   @spec await(t(), timeout()) :: outcome() | :timeout | {:error, Error.t()}
-  def await(%__MODULE__{pid: pid}, timeout \\ 5_000), do: call(pid, :await, timeout)
+  def await(%__MODULE__{pid: pid}, timeout \\ 5_000) when timeout_value?(timeout),
+    do: call(pid, {:await, timeout}, :infinity)
 
   @doc """
   Cancel the run and wait up to `timeout` milliseconds for its outcome.
@@ -203,8 +216,12 @@ defmodule ClaudeWrapper.Run do
   See "Await and cancel" in the module docs.
   """
   @spec cancel(t(), timeout()) :: outcome() | :timeout | {:error, Error.t()}
-  def cancel(%__MODULE__{pid: pid}, timeout \\ 5_000), do: call(pid, :cancel, timeout)
+  def cancel(%__MODULE__{pid: pid}, timeout \\ 5_000) when timeout_value?(timeout),
+    do: call(pid, {:cancel, timeout}, :infinity)
 
+  # await/2 and cancel/2 call without a client timeout: the run process owns
+  # each waiter's deadline and replies :timeout itself, so a timed-out wait
+  # leaves no entry behind. A waiter that exits is removed through its monitor.
   defp call(pid, message, timeout) do
     GenServer.call(pid, message, timeout)
   catch
@@ -252,7 +269,10 @@ defmodule ClaudeWrapper.Run do
     cancel = make_ref()
     prepared = args.prepared
 
-    worker = spawn_link(fn -> work(server, prepared, cancel) end)
+    # The run process sends every observer message (session, rate limit and
+    # the terminal record), so their order is that of one sender.
+    worker_prepared = %{prepared | observers: %{session: nil, rate_limit: nil, execution: nil}}
+    worker = spawn_link(fn -> work(server, worker_prepared, cancel) end)
 
     {:ok,
      %{
@@ -262,6 +282,7 @@ defmodule ClaudeWrapper.Run do
        max_queued: args.max_queued,
        cancel_grace: args.cancel_grace,
        prepared: prepared,
+       observers: prepared.observers,
        worker: worker,
        cancel: cancel,
        status: :running,
@@ -272,7 +293,7 @@ defmodule ClaudeWrapper.Run do
        frames_dropped: 0,
        rate_limit: nil,
        outcome: nil,
-       waiters: [],
+       waiters: %{},
        stop_when_done: false
      }}
   end
@@ -294,17 +315,15 @@ defmodule ClaudeWrapper.Run do
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, snapshot_of(state), state}
 
-  def handle_call(:await, _from, %{outcome: outcome} = state) when outcome != nil,
-    do: {:reply, outcome, state}
+  def handle_call({request, _timeout}, _from, %{outcome: outcome} = state)
+      when request in [:await, :cancel] and outcome != nil,
+      do: {:reply, outcome, state}
 
-  def handle_call(:await, from, state), do: {:noreply, %{state | waiters: [from | state.waiters]}}
+  def handle_call({:await, timeout}, from, state),
+    do: {:noreply, add_waiter(state, from, timeout)}
 
-  def handle_call(:cancel, _from, %{outcome: outcome} = state) when outcome != nil,
-    do: {:reply, outcome, state}
-
-  def handle_call(:cancel, from, state) do
-    {:noreply, %{request_cancel(state) | waiters: [from | state.waiters]}}
-  end
+  def handle_call({:cancel, timeout}, from, state),
+    do: {:noreply, state |> request_cancel() |> add_waiter(from, timeout)}
 
   @impl true
   def handle_info({:frame, event}, %{outcome: nil} = state) do
@@ -340,11 +359,6 @@ defmodule ClaudeWrapper.Run do
         outcome: reply
       )
 
-    case state.prepared.observers.execution do
-      {pid, reference} -> send(pid, {reference, evidence})
-      nil -> :ok
-    end
-
     finish(state, reply, evidence)
   end
 
@@ -357,6 +371,18 @@ defmodule ClaudeWrapper.Run do
 
   def handle_info(:cancel_grace, state), do: {:noreply, state}
 
+  def handle_info({:wait_timeout, tag}, state) do
+    case Map.pop(state.waiters, tag) do
+      {nil, _waiters} ->
+        {:noreply, state}
+
+      {{from, _timer, monitor}, waiters} ->
+        Process.demonitor(monitor, [:flush])
+        GenServer.reply(from, :timeout)
+        {:noreply, %{state | waiters: waiters}}
+    end
+  end
+
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state) do
     if state.outcome == nil do
       {:noreply, %{request_cancel(state) | stop_when_done: true}}
@@ -365,7 +391,29 @@ defmodule ClaudeWrapper.Run do
     end
   end
 
+  # A waiting caller exited.
+  def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
+    waiters =
+      state.waiters
+      |> Enum.reject(fn {_tag, {_from, timer, waiter_monitor}} ->
+        waiter_monitor == monitor and cancel_timer(timer)
+      end)
+      |> Map.new()
+
+    {:noreply, %{state | waiters: waiters}}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp add_waiter(state, {pid, _} = from, timeout) do
+    tag = make_ref()
+    timer = if timeout != :infinity, do: Process.send_after(self(), {:wait_timeout, tag}, timeout)
+    waiter = {from, timer, Process.monitor(pid)}
+    %{state | waiters: Map.put(state.waiters, tag, waiter)}
+  end
+
+  defp cancel_timer(nil), do: true
+  defp cancel_timer(timer), do: Process.cancel_timer(timer, async: false, info: false) || true
 
   defp request_cancel(%{status: :running} = state) do
     send(state.worker, {state.cancel, :cancel})
@@ -391,10 +439,17 @@ defmodule ClaudeWrapper.Run do
         {:error, _} -> :failed
       end
 
-    Enum.each(state.waiters, &GenServer.reply(&1, outcome))
+    observe(state.observers.execution, evidence)
+
+    Enum.each(state.waiters, fn {_tag, {from, timer, monitor}} ->
+      cancel_timer(timer)
+      Process.demonitor(monitor, [:flush])
+      GenServer.reply(from, outcome)
+    end)
+
     if state.events_to, do: send(state.events_to, {state.ref, {:done, status}})
 
-    state = %{state | outcome: outcome, status: status, finished_at: now(), waiters: []}
+    state = %{state | outcome: outcome, status: status, finished_at: now(), waiters: %{}}
 
     if state.stop_when_done, do: {:stop, :normal, state}, else: {:noreply, state}
   end
@@ -402,19 +457,29 @@ defmodule ClaudeWrapper.Run do
   defp track(state, %StreamEvent{type: "system", data: %{"subtype" => "init"} = data}) do
     id = data["session_id"]
 
-    if state.session_id == nil and is_binary(id) and String.trim(id) != "",
-      do: %{state | session_id: id},
-      else: state
+    if state.session_id == nil and is_binary(id) and String.trim(id) != "" do
+      observe(state.observers.session, %SessionObservation{session_id: id})
+      %{state | session_id: id}
+    else
+      state
+    end
   end
 
   defp track(state, %StreamEvent{type: "rate_limit_event", data: data}) do
     case RateLimitObservation.from_event(data) do
-      {:ok, observation} -> %{state | rate_limit: observation}
-      _invalid -> state
+      {:ok, observation} ->
+        observe(state.observers.rate_limit, observation)
+        %{state | rate_limit: observation}
+
+      _invalid ->
+        state
     end
   end
 
   defp track(state, _event), do: state
+
+  defp observe(nil, _message), do: :ok
+  defp observe({pid, reference}, message), do: send(pid, {reference, message})
 
   defp deliver(%{events_to: nil} = state, _event), do: state
 

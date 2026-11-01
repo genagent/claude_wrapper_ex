@@ -223,6 +223,98 @@ defmodule ClaudeWrapper.RunTest do
     end
   end
 
+  describe "review fixes" do
+    test "a worker killed after its runner returned publishes exactly one record" do
+      # A blocking exec-stop telemetry handler holds the execution process
+      # between the runner's return and its report to the run process; the
+      # cancel grace then kills it there.
+      test = self()
+      handler = "run-test-block-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler,
+        [:claude_wrapper, :exec, :stop],
+        fn _event, _measurements, _metadata, _config ->
+          send(test, {:blocked, self()})
+          Process.sleep(:infinity)
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      reference = make_ref()
+      config = Config.new(binary: "/bin/sh", runner: __MODULE__.Finishes, runner_options: [])
+
+      {:ok, run} =
+        Run.start(Query.new("hi"), config,
+          cancel_grace_ms: 50,
+          execution_observer: {self(), reference}
+        )
+
+      assert_receive {:blocked, _worker}, 5_000
+      assert {:error, %Error{kind: :cancelled}, evidence} = Run.cancel(run, 5_000)
+      assert evidence.reason == :cancelled
+      assert_receive {^reference, ^evidence}
+      refute_receive {^reference, _}, 100
+    end
+
+    test "timed-out and exited waiters leave no state behind" do
+      config = Config.new(binary: "/bin/sh", runner: __MODULE__.IgnoresCancel, runner_options: [])
+      {:ok, run} = Run.start(Query.new("hi"), config, cancel_grace_ms: 50)
+
+      for _ <- 1..5, do: assert(Run.await(run, 10) == :timeout)
+      assert :sys.get_state(run.pid).waiters == %{}
+
+      waiter = spawn(fn -> Run.await(run, :infinity) end)
+      wait_until(fn -> map_size(:sys.get_state(run.pid).waiters) == 1 end)
+      Process.exit(waiter, :kill)
+      wait_until(fn -> :sys.get_state(run.pid).waiters == %{} end)
+
+      assert {:error, %Error{kind: :cancelled}, _} = Run.cancel(run, 5_000)
+    end
+
+    test "cancel observes a complete final event written without a newline", context do
+      json = Jason.encode!(init())
+
+      script =
+        "printf '%s' #{Command.shell_escape(json)}\necho $$ > #{context.pidfile}\nexec sleep 30\n"
+
+      {:ok, run} = Run.start(Query.new("hi"), fixture(context, script))
+      # The unterminated bytes produce no frame until the cancel; give them
+      # time to reach the collector after the child records its pid.
+      await_file(context.pidfile)
+      Process.sleep(200)
+
+      assert {:error, %Error{kind: :cancelled}, evidence} = Run.cancel(run, 5_000)
+      assert evidence.stdout == json
+      ref = run.ref
+      assert_receive {^ref, {:frame, %StreamEvent{type: "system"}}}
+      assert %{session_id: "native-session", frames: 1} = Run.snapshot(run)
+    end
+
+    test "session, rate-limit and evidence observers arrive in that order", context do
+      config = fixture(context, emit(init()) <> emit(rate_limit()) <> emit(result()))
+      reference = make_ref()
+      observer = {self(), reference}
+
+      {:ok, run} =
+        Run.start(Query.new("hi"), config,
+          session_observer: observer,
+          rate_limit_observer: observer,
+          execution_observer: observer,
+          events_to: nil
+        )
+
+      assert {:ok, _result, evidence} = Run.await(run, 5_000)
+      assert_receive {^reference, %ClaudeWrapper.SessionObservation{session_id: "native-session"}}
+      assert_receive {^reference, %RateLimitObservation{status: "allowed"}}
+      assert_receive {^reference, ^evidence}
+      refute_receive {^reference, _}, 50
+      refute_received {_, {:frame, _}}
+    end
+  end
+
   describe "slow owner" do
     test "frames beyond the queue bound are dropped and counted", context do
       lines = Enum.map_join(1..5, "", fn n -> emit(%{"type" => "assistant", "n" => n}) end)
@@ -311,7 +403,33 @@ defmodule ClaudeWrapper.RunTest do
     end
   end
 
+  defmodule Finishes do
+    @moduledoc false
+    def run(_binary, _args, _opts, _timeout), do: {:error, :unsupported}
+    def stream_lines(_binary, _args, _opts, _timeout), do: []
+
+    def run_evidenced(_binary, _args, _opts, _timeout, _observer) do
+      line = ~s({"type":"result","subtype":"success","result":"done"})
+      native = %{execution: :started, child_status: 0, cleanup: :confirmed, stdout: line}
+      {{:ok, {line, 0, ""}}, native}
+    end
+  end
+
   # --- helpers ---
+
+  defp wait_until(fun, deadline \\ System.monotonic_time(:millisecond) + 5_000) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(10)
+        wait_until(fun, deadline)
+
+      true ->
+        flunk("condition not met")
+    end
+  end
 
   defp fixture(context, script, opts \\ []) do
     binary = Path.join(context.directory, "fake claude #{System.unique_integer([:positive])}")
