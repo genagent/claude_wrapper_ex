@@ -230,12 +230,14 @@ defmodule ClaudeWrapper.RunTest do
       # execution process past the cancel grace. The outcome was reported
       # before the handler ran, so it stays the runner's own; the grace ends
       # the blocked execution process without changing it.
+      # The grace is long enough that scheduling between the cancel and :go
+      # cannot let it expire before the runner returns.
       block_exec_stop()
       reference = make_ref()
 
       {:ok, run} =
         Run.start(Query.new("hi"), gated_config(),
-          cancel_grace_ms: 300,
+          cancel_grace_ms: 2_000,
           execution_observer: {self(), reference}
         )
 

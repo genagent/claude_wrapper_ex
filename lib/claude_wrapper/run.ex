@@ -84,12 +84,12 @@ defmodule ClaudeWrapper.Run do
   before the cancel took effect keeps its own outcome: the execution process
   reports it before `[:claude_wrapper, :exec, :stop]` telemetry handlers run,
   so a slow handler cannot turn it into a cancellation. Otherwise the outcome
-  is `{:error, %Error{kind: :cancelled}, evidence}`
-  with `evidence.reason == :cancelled` and the cleanup facts the runner
-  reported. `ClaudeWrapper.Runner.Forcola` stops the run by closing its
-  Forcola port, so the shim runs its owner-death sequence (the configured
-  interrupt, then TERM/KILL of the process group); Forcola 0.7 sends no
-  report after that, so `:cleanup` is `:unknown`. If the runner does not
+  is `{:error, %Error{kind: :cancelled}, evidence}` with
+  `evidence.reason == :cancelled` and the cleanup facts the runner reported.
+  `ClaudeWrapper.Runner.Forcola` stops the run by closing its Forcola port,
+  so the shim runs its owner-death sequence (the configured interrupt, then
+  TERM/KILL of the process group); Forcola 0.7 sends no report after that,
+  so `:cleanup` is `:unknown`. If the runner does not
   stop within `:cancel_grace_ms`, the run process ends the execution process
   and records `reason: :cancelled` with unknown native facts. An execution
   process that reported its outcome but is still in telemetry handlers at
@@ -131,7 +131,6 @@ defmodule ClaudeWrapper.Run do
     Query,
     RateLimitObservation,
     Result,
-    Runner,
     SessionObservation,
     StreamEvent
   }
@@ -208,7 +207,7 @@ defmodule ClaudeWrapper.Run do
         {:error, reason} ->
           prepared.cleanup.()
           reply = {:error, Error.io({:run_start_failed, reason})}
-          send_not_started(prepared, reply)
+          Query.send_not_started(prepared.observers.execution, prepared.runner, reply)
           reply
       end
     end
@@ -285,18 +284,6 @@ defmodule ClaudeWrapper.Run do
     :exit, {:timeout, {GenServer, :call, _}} -> :timeout
     :exit, _reason -> not_found(pid)
   end
-
-  defp send_not_started(%{observers: %{execution: {pid, reference}}} = prepared, reply) do
-    evidence =
-      ExecutionEvidence.from_native(Runner.not_started_evidence(),
-        runner: prepared.runner,
-        outcome: reply
-      )
-
-    send(pid, {reference, evidence})
-  end
-
-  defp send_not_started(_prepared, _reply), do: :ok
 
   defp not_found(pid), do: {:error, Error.new(:not_found, reason: {:run, pid})}
 

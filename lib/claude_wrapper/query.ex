@@ -1006,9 +1006,17 @@ defmodule ClaudeWrapper.Query do
   end
 
   defp reject_not_started(execution_observer, config, reply) do
-    send_evidence(execution_observer, Runner.not_started_evidence(), Runner.impl(config), reply)
+    send_not_started(execution_observer, Runner.impl(config), reply)
     reply
   end
+
+  @doc false
+  # Sends the not-started terminal record for `reply` to a valid
+  # `:execution_observer` (`nil` sends nothing). Shared with
+  # `ClaudeWrapper.Run` so both build the record the same way.
+  @spec send_not_started({pid(), reference()} | nil, module(), {:error, Error.t()}) :: :ok
+  def send_not_started(execution_observer, runner, reply),
+    do: send_evidence(execution_observer, Runner.not_started_evidence(), runner, reply)
 
   # Only a well-formed keyword list with exactly one valid pair yields an
   # observer. Invalid or ambiguous values are rejected without a record; a

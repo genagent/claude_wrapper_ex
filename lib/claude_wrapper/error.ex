@@ -40,8 +40,9 @@ defmodule ClaudeWrapper.Error do
     * `:invalid_run_options` -- `ClaudeWrapper.Run.start/3` got an invalid
       run option (`:reason` is `{key, value}` or `{:duplicate, key}`)
     * `:cancelled` -- an evidenced run was cancelled through
-      `ClaudeWrapper.Run.cancel/2` or by its owner exiting; the execution
-      evidence records `reason: :cancelled`
+      `ClaudeWrapper.Run.cancel/2`, by its owner exiting, or by a non-normal
+      exit signal to the run process; the execution evidence records
+      `reason: :cancelled`
     * Evidenced runner callback raises, throws and catchable exits are `:io`
       with `:reason` `{:runner_failed, kind, reason}`. Collector observer
       failures use `{:observer_failed, kind, reason}`; helper death uses
@@ -49,9 +50,9 @@ defmodule ClaudeWrapper.Error do
       could not be started after preflight uses `{:run_start_failed, reason}`,
       and an execution process that exited without reporting, while not
       cancelling, uses `{:run_down, reason}`. A failure converting the
-      runner's outcome into a reply uses `{:reply_failed, kind, reason}`. Terminal evidence
-      retains available partial facts without claiming unknown native
-      cleanup.
+      runner's outcome into a reply uses `{:reply_failed, kind, reason}`.
+      Terminal evidence retains available partial facts without claiming
+      unknown native cleanup.
     * `:unsupported_command` -- an operation the native CLI cannot perform
     * `:binary_not_found` -- the `claude` binary could not be launched
     * `:command_failed` -- the CLI exited non-zero (`:exit_code`,
