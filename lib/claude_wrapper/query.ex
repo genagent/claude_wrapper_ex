@@ -1099,35 +1099,149 @@ defmodule ClaudeWrapper.Query do
   # Rejects a runner without the callback before invoking it; there is no
   # fallback to run/4 or run_observed/5.
   defp run_evidenced(query, config, runner, options, observers) do
-    if Code.ensure_loaded?(runner) and function_exported?(runner, :run_evidenced, 5) do
-      base = Config.base_args(config)
-      base = if "--verbose" in base, do: base, else: ["--verbose" | base]
+    with :ok <- evidenced_runner(runner),
+         {:ok, binary, args, cleanup} <-
+           spawn_target(query, config, evidenced_args(query, config)) do
+      try do
+        {outcome, native, session_id} =
+          invoke_evidenced(binary, args, config, runner, options, observers, %{})
 
-      case spawn_target(query, config, base ++ build_args(query)) do
-        {:ok, binary, args, cleanup} ->
-          try do
-            {outcome, native, session_id} =
-              invoke_evidenced(binary, args, config, runner, options, observers)
-
-            {native, session_id, safe_evidenced_reply(outcome, config, runner, options)}
-          after
-            cleanup.()
-          end
-
-        {:error, error} ->
-          {Runner.not_started_evidence(), nil, {:error, error}}
+        {native, session_id, safe_evidenced_reply(outcome, config, runner, options)}
+      after
+        cleanup.()
       end
     else
-      reason = %{runner: runner, reason: :run_evidenced_not_implemented}
-      error = Error.new(:evidence_unsupported, reason: reason)
-      {Runner.not_started_evidence(), nil, {:error, error}}
+      {:error, error} -> {Runner.not_started_evidence(), nil, {:error, error}}
     end
   end
 
-  defp invoke_evidenced(binary, args, config, runner, options, observers) do
+  defp evidenced_runner(runner) do
+    if Code.ensure_loaded?(runner) and function_exported?(runner, :run_evidenced, 5) do
+      :ok
+    else
+      reason = %{runner: runner, reason: :run_evidenced_not_implemented}
+      {:error, Error.new(:evidence_unsupported, reason: reason)}
+    end
+  end
+
+  defp evidenced_args(query, config) do
+    base = Config.base_args(config)
+    base = if "--verbose" in base, do: base, else: ["--verbose" | base]
+    base ++ build_args(query)
+  end
+
+  @doc false
+  # Preflight for `ClaudeWrapper.Run.start/3`: every rejection `execute/3`
+  # returns before spawning an evidenced run (malformed, unknown or duplicate
+  # options, invalid observers, a runner without `run_evidenced/5`, an
+  # unresolvable spawn target), plus the runner's optional
+  # `check_evidenced/2`. A rejection sends the not-started record to a valid
+  # `:execution_observer`, as `execute/3` does. On success the caller owns
+  # the returned `:cleanup` function and must call it after the run.
+  # `precheck` is the caller's own option validation result; an error there is
+  # handled like any other preflight rejection.
+  @spec prepare_evidenced(t(), Config.t(), keyword(), :ok | {:error, Error.t()}) ::
+          {:ok, map()} | {:error, Error.t()}
+  def prepare_evidenced(%__MODULE__{} = query, %Config{} = config, opts, precheck \\ :ok) do
+    config = with_spawn_env(query, config)
+
+    with {:ok, execution_observer} <- execution_observer(opts) do
+      case prepare_checked(query, config, opts, execution_observer, precheck) do
+        {:ok, _prepared} = ok -> ok
+        {:error, _error} = reply -> reject_not_started(execution_observer, config, reply)
+      end
+    end
+  end
+
+  defp prepare_checked(query, config, opts, execution_observer, precheck) do
+    query = %{query | output_format: :stream_json}
+    runner = Runner.impl(config)
+    options = Runner.options(config)
+
+    with :ok <- precheck,
+         :ok <- validate_execution_opts(opts),
+         {:ok, session_observer} <- session_observer(opts),
+         {:ok, rate_limit_observer} <- rate_limit_observer(opts),
+         :ok <- evidenced_runner(runner),
+         :ok <- check_evidenced(runner, config, options),
+         {:ok, binary, args, cleanup} <-
+           spawn_target(query, config, evidenced_args(query, config)) do
+      {:ok,
+       %{
+         query: query,
+         config: config,
+         runner: runner,
+         options: options,
+         observers: %{
+           session: session_observer,
+           rate_limit: rate_limit_observer,
+           execution: execution_observer
+         },
+         binary: binary,
+         args: args,
+         cleanup: cleanup
+       }}
+    end
+  end
+
+  defp check_evidenced(runner, config, options) do
+    if function_exported?(runner, :check_evidenced, 2) do
+      opts = Config.cmd_opts(config) ++ [runner_options: options]
+
+      case runner.check_evidenced(opts, config.timeout) do
+        :ok -> :ok
+        other -> safe_evidenced_reply(other, config, runner, options)
+      end
+    else
+      :ok
+    end
+  end
+
+  @doc false
+  # Runs a `prepare_evidenced/3` result in the calling process and returns
+  # `{reply, %ExecutionEvidence{}}`, also sending the record to the
+  # `:execution_observer`. `extra` may carry `:frame`, a function called with
+  # every stdout line in stream order, and `:cancel`, a reference handed to
+  # the runner (see `ClaudeWrapper.Runner`). Does not call `:cleanup`.
+  @spec run_prepared(map(), map()) ::
+          {{:ok, Result.t()} | {:error, Error.t()}, ExecutionEvidence.t()}
+  def run_prepared(prepared, extra) do
+    %{config: config, runner: runner, options: options, observers: observers} = prepared
+    key = make_ref()
+
+    reply =
+      Telemetry.span_exec(prepared.query, fn ->
+        {outcome, native, session_id} =
+          invoke_evidenced(
+            prepared.binary,
+            prepared.args,
+            config,
+            runner,
+            options,
+            observers,
+            extra
+          )
+
+        reply = safe_evidenced_reply(outcome, config, runner, options)
+        evidence = evidence_record(native, runner, reply, session_id)
+        maybe_send_observation(observers.execution, evidence)
+        Process.put(key, evidence)
+        reply
+      end)
+
+    {reply, Process.delete(key)}
+  end
+
+  defp invoke_evidenced(binary, args, config, runner, options, observers, extra) do
     seen = make_ref()
-    observe = &observe_evidenced(&1, observers.session, observers.rate_limit, seen)
-    opts = Config.cmd_opts(config) ++ [runner_options: options]
+
+    observe =
+      (&observe_evidenced(&1, observers.session, observers.rate_limit, seen))
+      |> with_frames(extra[:frame])
+
+    opts =
+      Config.cmd_opts(config) ++
+        [runner_options: options] ++ if(extra[:cancel], do: [cancel: extra[:cancel]], else: [])
 
     Process.put(seen, %{session_id: nil, stdout: [], size: 0, truncated: false})
 
@@ -1143,6 +1257,23 @@ defmodule ClaudeWrapper.Query do
         {{:error, {:runner_failed, kind, reason}}, native, partial.session_id}
     after
       Process.delete(seen)
+    end
+  end
+
+  # Calls `frame` with every observed line before the evidenced observer,
+  # re-wrapping each replacement observer so frames continue after the
+  # session announcement.
+  defp with_frames(observe, nil), do: observe
+
+  defp with_frames(observe, frame) do
+    fn line ->
+      frame.(line)
+
+      case observe.(line) do
+        {:continue, next} -> {:continue, with_frames(next, frame)}
+        :observed -> {:continue, with_frames(fn _line -> :continue end, frame)}
+        :continue -> :continue
+      end
     end
   end
 
@@ -1240,6 +1371,9 @@ defmodule ClaudeWrapper.Query do
   defp evidenced_reply({:error, {:evidence_unsupported, reason}}, _config, runner, _options),
     do: {:error, Error.new(:evidence_unsupported, reason: %{runner: runner, reason: reason})}
 
+  defp evidenced_reply({:error, :cancelled}, _config, _runner, _options),
+    do: {:error, Error.new(:cancelled)}
+
   defp evidenced_reply({:error, {:binary_not_found, _reason}}, config, _runner, _options),
     do: {:error, Error.new(:binary_not_found, reason: config.binary)}
 
@@ -1254,16 +1388,17 @@ defmodule ClaudeWrapper.Query do
   defp send_evidence(nil, _native, _runner, _reply, _session_id), do: :ok
 
   defp send_evidence({pid, reference}, native, runner, reply, session_id) do
-    evidence =
-      ExecutionEvidence.from_native(native,
-        runner: runner,
-        session_id: session_id,
-        result: retained_result(native),
-        outcome: reply
-      )
-
-    send(pid, {reference, evidence})
+    send(pid, {reference, evidence_record(native, runner, reply, session_id)})
     :ok
+  end
+
+  defp evidence_record(native, runner, reply, session_id) do
+    ExecutionEvidence.from_native(native,
+      runner: runner,
+      session_id: session_id,
+      result: retained_result(native),
+      outcome: reply
+    )
   end
 
   defp retained_result(%{stdout: stdout}) when is_binary(stdout), do: terminal_result(stdout)

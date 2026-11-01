@@ -208,6 +208,22 @@ defmodule ClaudeWrapper.Runner.ForcolaEvidenceTest do
       assert evidence.output_truncated == true
     end
 
+    test "a cancelled run keeps collected output with reason :cancelled and unknown cleanup" do
+      stats = %{lines_dropped: 0, stdout: "partial\n", stderr: "", output_truncated: :unknown}
+
+      assert {{:error, :cancelled}, evidence} = ForcolaEvidence.translate({:cancelled, stats})
+      assert evidence.reason == :cancelled
+      assert evidence.execution == :started
+      assert evidence.stdout == "partial\n"
+      assert evidence.cleanup == :unknown
+      assert evidence.child_status == nil
+
+      assert {{:error, :cancelled}, quiet} =
+               ForcolaEvidence.translate({:cancelled, %{lines_dropped: 0}})
+
+      assert quiet.execution == :unknown
+    end
+
     test "an unexpected outcome is an io error with unknown evidence" do
       assert {{:error, {:io, {:unexpected_outcome, :weird}}}, evidence} = translate(:weird)
       assert evidence.cleanup == :unknown

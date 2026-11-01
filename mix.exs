@@ -57,6 +57,7 @@ defmodule ClaudeWrapper.MixProject do
           ClaudeWrapper.Conversation,
           ClaudeWrapper,
           ClaudeWrapper.Query,
+          ClaudeWrapper.Run,
           ClaudeWrapper.Session,
           ClaudeWrapper.SessionServer,
           ClaudeWrapper.IEx

@@ -27,9 +27,11 @@ defmodule ClaudeWrapper.ExecutionEvidence do
     * `:termination` -- how the native layer ended (for Forcola: `:exit`,
       `:malformed_exit`, `:backstop`, `{:transport, status}`,
       `{:spawn, reason}`), `:not_started`, or `:unknown`
-    * `:reason` -- `nil` or the bound that cancelled the run: `:timeout`,
-      `:idle_timeout`, `:max_output_bytes`, `:observer_overflow` (`:unknown`
-      when the runner reported something else)
+    * `:reason` -- `nil` or what cancelled the run: a bound (`:timeout`,
+      `:idle_timeout`, `:max_output_bytes`, `:observer_overflow`) or
+      `:cancelled` for a `ClaudeWrapper.Run` cancelled through
+      `ClaudeWrapper.Run.cancel/2` or by its owner exiting (`:unknown` when
+      the runner reported something else)
     * `:output_truncated` -- `true`, `false`, or `:unknown`
     * `:cleanup` -- `:confirmed` only when the native layer explicitly
       confirmed it; otherwise `:unconfirmed`, `:unknown`, or `:not_applicable`
@@ -67,7 +69,13 @@ defmodule ClaudeWrapper.ExecutionEvidence do
           child_signal: pos_integer() | nil,
           termination: term(),
           reason:
-            nil | :timeout | :idle_timeout | :max_output_bytes | :observer_overflow | :unknown,
+            nil
+            | :timeout
+            | :idle_timeout
+            | :max_output_bytes
+            | :observer_overflow
+            | :cancelled
+            | :unknown,
           output_truncated: boolean() | :unknown,
           cleanup: :confirmed | :unconfirmed | :unknown | :not_applicable,
           scope: :process_group | :active_cgroup | :unknown | :not_applicable,
@@ -97,7 +105,7 @@ defmodule ClaudeWrapper.ExecutionEvidence do
             result: nil,
             outcome: nil
 
-  @reasons [nil, :timeout, :idle_timeout, :max_output_bytes, :observer_overflow]
+  @reasons [nil, :timeout, :idle_timeout, :max_output_bytes, :observer_overflow, :cancelled]
 
   @doc """
   Build a record from a runner's native evidence map, normalizing every value

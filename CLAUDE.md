@@ -24,6 +24,7 @@ ClaudeWrapper.Conversation    # Turn-history/cost bookkeeping over a DuplexSessi
 
 ClaudeWrapper                 # Convenience API (query/2, stream/2, raw/2, version/0, ...)
 ClaudeWrapper.Query           # Per-call query builder + execute/stream + apply_opts/2
+ClaudeWrapper.Run             # Async evidenced one-shot handle: start/snapshot/await/cancel
 ClaudeWrapper.Session         # Multi-turn continuity over per-call subprocesses
 ClaudeWrapper.SessionServer   # GenServer wrapper for Session
 ClaudeWrapper.IEx             # REPL helpers for one-shot/per-call mode

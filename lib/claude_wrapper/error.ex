@@ -37,6 +37,11 @@ defmodule ClaudeWrapper.Error do
     * `:output_limit` -- an output bound cancelled an evidenced run
       (`:reason` is `%{limit: :max_output_bytes | :observer_overflow,
       max_output_bytes:}`); partial output is in the execution evidence
+    * `:invalid_run_options` -- `ClaudeWrapper.Run.start/3` got an invalid
+      run option (`:reason` is `{key, value}` or `{:duplicate, key}`)
+    * `:cancelled` -- an evidenced run was cancelled through
+      `ClaudeWrapper.Run.cancel/2` or by its owner exiting; the execution
+      evidence records `reason: :cancelled`
     * Evidenced runner callback raises, throws and catchable exits are `:io`
       with `:reason` `{:runner_failed, kind, reason}`. Collector observer
       failures use `{:observer_failed, kind, reason}`; helper death uses
@@ -136,6 +141,8 @@ defmodule ClaudeWrapper.Error do
           | :invalid_runner_options
           | :evidence_unsupported
           | :output_limit
+          | :cancelled
+          | :invalid_run_options
           | :binary_not_found
           | :unsupported_command
           | :command_failed
@@ -251,6 +258,11 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :output_limit, reason: reason}),
     do: "claude output exceeded a bound: #{inspect(reason)}"
+
+  defp default_message(%{kind: :cancelled}), do: "the run was cancelled"
+
+  defp default_message(%{kind: :invalid_run_options, reason: reason}),
+    do: "invalid run option: #{inspect(reason)}"
 
   defp default_message(%{kind: :binary_not_found, reason: bin}),
     do: "claude binary not found: #{inspect(bin)}"

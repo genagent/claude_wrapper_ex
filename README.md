@@ -392,6 +392,43 @@ Other runners are rejected with
 `:evidence_unsupported` before they are invoked; there is no fallback to the
 Port runner.
 
+### Async one-shot runs (`Run`)
+
+`ClaudeWrapper.Run.start/3` runs the same evidenced execution in its own
+process and returns a handle instead of blocking:
+
+```elixir
+{:ok, run} = ClaudeWrapper.Run.start(query, config, events_to: self())
+
+%{status: :running, session_id: sid, frames: n} = ClaudeWrapper.Run.snapshot(run)
+
+case ClaudeWrapper.Run.await(run, 300_000) do
+  {:ok, %ClaudeWrapper.Result{} = result, %ClaudeWrapper.ExecutionEvidence{}} -> result
+  {:error, %ClaudeWrapper.Error{} = error, %ClaudeWrapper.ExecutionEvidence{}} -> error
+  :timeout -> ClaudeWrapper.Run.cancel(run)
+end
+```
+
+- `start/3` applies `Query.execute/3`'s preflight (options, observers, runner
+  support, runner options via `c:ClaudeWrapper.Runner.check_evidenced/2`, spawn
+  target) and returns those rejections before anything is spawned.
+- Each parsed stdout event is sent to `:events_to` as
+  `{run.ref, {:frame, %StreamEvent{}}}` in stream order, then
+  `{run.ref, {:done, status}}`. Delivery is unacknowledged; when the
+  recipient's queue holds `:max_queued_frames` (default 1,000) or more
+  messages, frames are dropped and counted in `snapshot/1`.
+- `snapshot/1` is answered from the run process's state and never waits on
+  the child.
+- `await/2` returns the outcome with the run's single evidence record; its
+  timeout returns `:timeout` and leaves the run going.
+- `cancel/2` is idempotent and returns `{:error, %Error{kind: :cancelled},
+  evidence}` with `evidence.reason == :cancelled`. With `Runner.Forcola` the
+  run is stopped by closing its Forcola port, so the shim runs its owner-death
+  sequence; Forcola 0.7 sends no report after that, so cleanup is `:unknown`.
+- If the process that called `start/3` exits, the run is cancelled.
+
+It needs a runner with `run_evidenced/5` (currently `Runner.Forcola`).
+
 ### Retry, telemetry, budget
 
 - **`ClaudeWrapper.Retry`**: exponential backoff around a `Query`. A retry re-sends the prompt as a new CLI process, and the tool effects of a failed attempt (file edits, commits, pushes, shell commands) are not undone and can run again. So the default retries only API errors that ended the run before any tool ran (`:api_error` with category `:rate_limit`, `:overloaded`, `:server_error` or `:connection`). Timeouts, non-zero exits and other failures are retried only when a caller `:retry_on` opts in; even then a timeout is retried only after the runner confirmed the attempt exited (`Runner.Forcola`), and a query with a pinned `--session-id` is never retried.
@@ -471,6 +508,7 @@ The `PATH` / `CLAUDE_CLI` default is unchanged for everyone else. See `ClaudeWra
 |---|---|
 | `ClaudeWrapper` | Convenience API (`query/2`, `stream/2`, `version/0`, `auth_status/0`, `doctor/0`, `raw/2`) |
 | `ClaudeWrapper.Query` | Query builder + execute/stream |
+| `ClaudeWrapper.Run` | Async handle for one evidenced one-shot run: snapshot, await, cancel |
 | `ClaudeWrapper.Session` | Multi-turn continuity over per-call subprocesses |
 | `ClaudeWrapper.SessionServer` | Supervised wrapper for `Session` |
 | `ClaudeWrapper.IEx` | REPL helpers for one-shot/per-call mode |
