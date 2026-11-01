@@ -189,6 +189,15 @@ defmodule ClaudeWrapper do
       surface: `true` or `:full` (drops user + project + local ambient),
       `:project` (keeps the user's global config). Does not change auth.
       See `ClaudeWrapper.Query.hermetic/2`.
+    * `:system_prompt_snapshot` - `:on` or `:off`; `:off` renders the system
+      prompt fresh on a resumed conversation. See
+      `ClaudeWrapper.Query.system_prompt_snapshot/2`.
+    * `:prompt_suggestions`, `:chrome` - `true` or `false`, both emitted
+      (`false` as `--prompt-suggestions false` / `--no-chrome`); `nil`
+      leaves the CLI default.
+    * `:extra_args` - a list of strings appended as raw argv after every
+      other flag and before the prompt separator. See
+      `ClaudeWrapper.Query.extra_args/2`.
 
   The list above is the common subset. Any other option accepted by
   `ClaudeWrapper.Query.apply_opts/2` also works here (for example `:effort`,

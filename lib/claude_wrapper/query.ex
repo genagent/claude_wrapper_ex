@@ -38,12 +38,22 @@ defmodule ClaudeWrapper.Query do
   }
 
   @type permission_mode ::
-          :default | :accept_edits | :bypass_permissions | :dont_ask | :plan | :auto
+          :default
+          | :accept_edits
+          | :bypass_permissions
+          | :dont_ask
+          | :plan
+          | :auto
+          | :manual
 
   @type output_format :: :text | :json | :stream_json
   @type input_format :: :text | :stream_json
   @type effort :: :low | :medium | :high | :xhigh | :max
   @type hermetic :: :full | :project
+  @type permission_prompts :: :host | :none
+  @type system_prompt_snapshot :: :on | :off
+  @typedoc "`:auto`, or a positive integer token count."
+  @type autocompact :: :auto | pos_integer()
 
   @type t :: %__MODULE__{
           prompt: String.t(),
@@ -91,14 +101,25 @@ defmodule ClaudeWrapper.Query do
           safe_mode: boolean(),
           setting_sources: String.t() | nil,
           tmux: boolean(),
-          prompt_suggestions: boolean(),
+          prompt_suggestions: boolean() | nil,
           replay_user_messages: boolean(),
           bare: boolean(),
           disable_slash_commands: boolean(),
           include_hook_events: boolean(),
           exclude_dynamic_system_prompt_sections: boolean(),
           hermetic: hermetic() | nil,
-          prompt_input: :stdin | :argv
+          prompt_input: :stdin | :argv,
+          restricted: boolean(),
+          permission_prompts: permission_prompts() | nil,
+          system_prompt_snapshot: system_prompt_snapshot() | nil,
+          autocompact: autocompact() | nil,
+          allow_dangerously_skip_permissions: boolean(),
+          chrome: boolean() | nil,
+          forward_subagent_text: boolean(),
+          append_subagent_system_prompt: String.t() | nil,
+          append_subagent_system_prompt_file: String.t() | nil,
+          advisor: String.t() | nil,
+          extra_args: [String.t()]
         }
 
   defstruct [
@@ -130,7 +151,19 @@ defmodule ClaudeWrapper.Query do
     :name,
     :setting_sources,
     :hermetic,
+    :prompt_suggestions,
+    :permission_prompts,
+    :system_prompt_snapshot,
+    :autocompact,
+    :chrome,
+    :append_subagent_system_prompt,
+    :append_subagent_system_prompt_file,
+    :advisor,
     prompt_input: :stdin,
+    extra_args: [],
+    restricted: false,
+    allow_dangerously_skip_permissions: false,
+    forward_subagent_text: false,
     allowed_tools: [],
     disallowed_tools: [],
     mcp_config: [],
@@ -149,7 +182,6 @@ defmodule ClaudeWrapper.Query do
     worktree: false,
     brief: false,
     tmux: false,
-    prompt_suggestions: false,
     replay_user_messages: false,
     bare: false,
     disable_slash_commands: false,
@@ -204,7 +236,13 @@ defmodule ClaudeWrapper.Query do
   @spec max_budget_usd(t(), float()) :: t()
   def max_budget_usd(%__MODULE__{} = q, budget), do: %{q | max_budget_usd: budget}
 
-  @doc "Set permission mode."
+  @doc """
+  Set permission mode.
+
+  `:manual` emits `manual` (listed in `claude --help` on Claude Code
+  2.1.316). `:default` still emits `default` for compatibility with earlier
+  CLI versions.
+  """
   @spec permission_mode(t(), permission_mode()) :: t()
   def permission_mode(%__MODULE__{} = q, mode), do: %{q | permission_mode: mode}
 
@@ -389,9 +427,29 @@ defmodule ClaudeWrapper.Query do
   @spec tmux(t()) :: t()
   def tmux(%__MODULE__{} = q), do: %{q | tmux: true}
 
-  @doc "Enable prompt suggestions (`--prompt-suggestions`)."
+  @doc """
+  Enable prompt suggestions (bare `--prompt-suggestions`).
+
+  Same as `prompt_suggestions(q, true)`. See `prompt_suggestions/2` to turn
+  them off explicitly.
+  """
   @spec prompt_suggestions(t()) :: t()
   def prompt_suggestions(%__MODULE__{} = q), do: %{q | prompt_suggestions: true}
+
+  @doc """
+  Set prompt suggestions explicitly.
+
+    * `true` emits the bare `--prompt-suggestions` flag (as `prompt_suggestions/1`).
+    * `false` emits `--prompt-suggestions false`, turning suggestions off
+      rather than leaving the CLI default in place.
+
+  When never set (the field is `nil`), nothing is emitted and the CLI
+  default applies. The keyword form `prompt_suggestions: false` also emits
+  `--prompt-suggestions false`; `prompt_suggestions: nil` leaves it unset.
+  """
+  @spec prompt_suggestions(t(), boolean()) :: t()
+  def prompt_suggestions(%__MODULE__{} = q, enabled) when is_boolean(enabled),
+    do: %{q | prompt_suggestions: enabled}
 
   @doc "Re-emit user messages from stdin (`--replay-user-messages`). Mainly for stream/duplex use."
   @spec replay_user_messages(t()) :: t()
@@ -413,6 +471,144 @@ defmodule ClaudeWrapper.Query do
   @spec exclude_dynamic_system_prompt_sections(t()) :: t()
   def exclude_dynamic_system_prompt_sections(%__MODULE__{} = q),
     do: %{q | exclude_dynamic_system_prompt_sections: true}
+
+  @doc """
+  Run in restricted mode (`--restricted`).
+
+  Listed in `claude --help` on Claude Code 2.1.316; see the CLI help for
+  what the installed version restricts.
+  """
+  @spec restricted(t()) :: t()
+  def restricted(%__MODULE__{} = q), do: %{q | restricted: true}
+
+  @doc """
+  Choose where permission prompts go (`--permission-prompts host|none`).
+
+  `mode` is `:host` or `:none`. Any other value raises `ArgumentError` when
+  the arguments are built.
+  """
+  @spec permission_prompts(t(), permission_prompts()) :: t()
+  def permission_prompts(%__MODULE__{} = q, mode), do: %{q | permission_prompts: mode}
+
+  @doc """
+  Control system-prompt snapshot reuse (`--system-prompt-snapshot on|off`).
+
+  Per `claude --help` on Claude Code 2.1.316:
+
+    * `:on` reuses the system prompt recorded for the conversation until the
+      next compaction. This is the CLI default, except under `--bare`
+      outside cloud and background sessions.
+    * `:off` renders the system prompt fresh for the turn.
+
+  Pass `:off` when resuming a conversation (`resume/2`, or a second
+  `ClaudeWrapper.Session.send/3` turn) with a changed `system_prompt/2`, so
+  the new prompt is not replaced by the recorded one. When unset, nothing
+  is emitted and the CLI default applies. Any other value raises
+  `ArgumentError` when the arguments are built.
+  """
+  @spec system_prompt_snapshot(t(), system_prompt_snapshot()) :: t()
+  def system_prompt_snapshot(%__MODULE__{} = q, mode), do: %{q | system_prompt_snapshot: mode}
+
+  @doc """
+  Set the auto-compaction threshold (`--autocompact auto|<tokens>`).
+
+  `value` is `:auto` or a positive integer token count, emitted in decimal.
+  The CLI validates its supported range (`claude --help` on Claude Code
+  2.1.316 gives 100k to 1M tokens). Any other value raises `ArgumentError`
+  when the arguments are built.
+  """
+  @spec autocompact(t(), autocompact()) :: t()
+  def autocompact(%__MODULE__{} = q, value), do: %{q | autocompact: value}
+
+  @doc """
+  Make permission bypass available without enabling it
+  (`--allow-dangerously-skip-permissions`).
+
+  The session starts in its normal permission mode; bypass becomes a mode
+  that can be switched to later (for example with
+  `ClaudeWrapper.DuplexSession.set_permission_mode/3` and
+  `:bypass_permissions`). This does not emit
+  `--dangerously-skip-permissions`; that flag stays on
+  `dangerously_skip_permissions/1` and the env-gated
+  `ClaudeWrapper.DangerousClient`.
+  """
+  @spec allow_dangerously_skip_permissions(t()) :: t()
+  def allow_dangerously_skip_permissions(%__MODULE__{} = q),
+    do: %{q | allow_dangerously_skip_permissions: true}
+
+  @doc """
+  Turn the Claude in Chrome integration on or off.
+
+  `true` emits `--chrome`; `false` emits `--no-chrome`. When never set (the
+  field is `nil`), neither flag is emitted and the CLI default applies. The
+  keyword form accepts `true`, `false` and `nil` (unset).
+  """
+  @spec chrome(t(), boolean()) :: t()
+  def chrome(%__MODULE__{} = q, enabled) when is_boolean(enabled), do: %{q | chrome: enabled}
+
+  @doc """
+  Forward subagent text into the parent's output stream
+  (`--forward-subagent-text`).
+
+  The CLI accepts this only in print mode with `--output-format
+  stream-json`. `stream/2` and `ClaudeWrapper.DuplexSession` (through its
+  `:query` option) always use stream-json. `execute/2` uses `--output-format
+  json` unless runner options select evidenced execution, so the CLI may
+  reject the flag there.
+  """
+  @spec forward_subagent_text(t()) :: t()
+  def forward_subagent_text(%__MODULE__{} = q), do: %{q | forward_subagent_text: true}
+
+  @doc "Append text to every subagent's system prompt (`--append-subagent-system-prompt`). Hidden from `claude --help`; recognized by Claude Code 2.1.316."
+  @spec append_subagent_system_prompt(t(), String.t()) :: t()
+  def append_subagent_system_prompt(%__MODULE__{} = q, prompt),
+    do: %{q | append_subagent_system_prompt: prompt}
+
+  @doc "Append a file's contents to every subagent's system prompt (`--append-subagent-system-prompt-file`). Hidden from `claude --help`; recognized by Claude Code 2.1.316."
+  @spec append_subagent_system_prompt_file(t(), String.t()) :: t()
+  def append_subagent_system_prompt_file(%__MODULE__{} = q, path),
+    do: %{q | append_subagent_system_prompt_file: path}
+
+  @doc "Set the advisor (`--advisor <value>`). Hidden from `claude --help`; recognized by Claude Code 2.1.316. The value is passed through unchanged."
+  @spec advisor(t(), String.t()) :: t()
+  def advisor(%__MODULE__{} = q, value), do: %{q | advisor: value}
+
+  @doc """
+  Append raw CLI arguments, the escape hatch for flags not yet on `Query`.
+
+  `args` must be a list of strings; anything else raises `ArgumentError`.
+  Each element is one argv token, passed unchanged (no splitting or
+  quoting), and calls accumulate in order. The arguments follow every flag
+  `Query` emits and come before the `--` prompt separator, so the prompt is
+  still delivered on stdin or argv as `prompt_input/2` selects. A `"--"`
+  element is rejected because it would end option parsing before the
+  prompt separator.
+
+  The wrapper does not check these arguments against the CLI; an
+  unsupported flag fails at spawn time like any other CLI error.
+  """
+  @spec extra_args(t(), [String.t()]) :: t()
+  def extra_args(%__MODULE__{} = q, args) do
+    check_extra_args!(args)
+    %{q | extra_args: q.extra_args ++ args}
+  end
+
+  defp check_extra_args!(args) when is_list(args) do
+    cond do
+      not Enum.all?(args, &is_binary/1) ->
+        raise ArgumentError, "extra_args must be a list of strings, got: #{inspect(args)}"
+
+      "--" in args ->
+        raise ArgumentError,
+              "extra_args must not contain \"--\"; the prompt separator is added by Query"
+
+      true ->
+        :ok
+    end
+  end
+
+  defp check_extra_args!(args),
+    do: raise(ArgumentError, "extra_args must be a list of strings, got: #{inspect(args)}")
 
   @doc """
   Seal the ambient `~/.claude` config so a programmatic run's surface is
@@ -498,10 +694,14 @@ defmodule ClaudeWrapper.Query do
   being duplicated across each surface.
 
   Boolean opts (e.g. `:worktree`, `:dangerously_skip_permissions`)
-  are applied when the value is `true` and ignored when `false` or `nil`. List
+  are applied when the value is `true` and ignored when `false` or `nil`.
+  `:prompt_suggestions` and `:chrome` are the exception: `false` is applied
+  and emits the CLI's off spelling (`--prompt-suggestions false`,
+  `--no-chrome`), and only `nil` leaves them unset. List
   opts (e.g. `:allowed_tools`, `:add_dir`) reduce over their list,
   applying the per-item setter for each entry; a single string is one
-  entry.
+  entry. `:extra_args` is different: it takes only a list of strings, each
+  one argv token, appended in order (see `extra_args/2`).
 
   ## Examples
 
@@ -547,7 +747,13 @@ defmodule ClaudeWrapper.Query do
     :betas,
     :name,
     :setting_sources,
-    :prompt_input
+    :prompt_input,
+    :permission_prompts,
+    :system_prompt_snapshot,
+    :autocompact,
+    :append_subagent_system_prompt,
+    :append_subagent_system_prompt_file,
+    :advisor
   ]
 
   @bool_opts [
@@ -559,14 +765,20 @@ defmodule ClaudeWrapper.Query do
     :strict_mcp_config,
     :include_partial_messages,
     :tmux,
-    :prompt_suggestions,
     :replay_user_messages,
     :bare,
     :disable_slash_commands,
     :include_hook_events,
     :safe_mode,
-    :exclude_dynamic_system_prompt_sections
+    :exclude_dynamic_system_prompt_sections,
+    :restricted,
+    :allow_dangerously_skip_permissions,
+    :forward_subagent_text
   ]
+
+  # Flags with an explicit off spelling: `true` and `false` are both applied
+  # (and emitted); `nil` leaves the CLI default.
+  @tristate_opts [:prompt_suggestions, :chrome]
 
   @list_opts [
     :allowed_tools,
@@ -579,7 +791,8 @@ defmodule ClaudeWrapper.Query do
     :mcp_config
   ]
 
-  @known_opts @value_opts ++ @bool_opts ++ @list_opts ++ [:worktree, :hermetic]
+  @special_opts [:worktree, :hermetic, :extra_args]
+  @known_opts @value_opts ++ @bool_opts ++ @tristate_opts ++ @list_opts ++ @special_opts
 
   @doc false
   @spec known_opts() :: [atom()]
@@ -605,6 +818,16 @@ defmodule ClaudeWrapper.Query do
   # Boolean flags: apply on true, ignore false, raise on anything else.
   defp apply_opt({key, true}, q) when key in @bool_opts, do: apply(__MODULE__, key, [q])
   defp apply_opt({key, unset}, q) when key in @bool_opts and unset in [false, nil], do: q
+
+  # Tri-state flags: true and false are both explicit; nil leaves them unset.
+  defp apply_opt({key, value}, q) when key in @tristate_opts and is_boolean(value),
+    do: apply(__MODULE__, key, [q, value])
+
+  defp apply_opt({key, nil}, q) when key in @tristate_opts, do: q
+
+  # Raw argv: a validated list of strings, not the single-string list shorthand.
+  defp apply_opt({:extra_args, nil}, q), do: q
+  defp apply_opt({:extra_args, args}, q), do: extra_args(q, args)
 
   defp apply_opt({:worktree, true}, q), do: worktree(q)
   defp apply_opt({:worktree, name}, q) when is_binary(name), do: worktree(q, name)
@@ -1580,7 +1803,7 @@ defmodule ClaudeWrapper.Query do
     |> add_bool("--safe-mode", q.safe_mode)
     |> add_opt("--setting-sources", q.setting_sources)
     |> add_bool("--tmux", q.tmux)
-    |> add_bool("--prompt-suggestions", q.prompt_suggestions)
+    |> add_prompt_suggestions(q.prompt_suggestions)
     |> add_bool("--replay-user-messages", q.replay_user_messages)
     |> add_bool("--bare", q.bare)
     |> add_bool("--disable-slash-commands", q.disable_slash_commands)
@@ -1589,6 +1812,17 @@ defmodule ClaudeWrapper.Query do
       "--exclude-dynamic-system-prompt-sections",
       q.exclude_dynamic_system_prompt_sections
     )
+    |> add_bool("--restricted", q.restricted)
+    |> add_opt("--permission-prompts", format_permission_prompts(q.permission_prompts))
+    |> add_opt("--system-prompt-snapshot", format_snapshot(q.system_prompt_snapshot))
+    |> add_opt("--autocompact", format_autocompact(q.autocompact))
+    |> add_bool("--allow-dangerously-skip-permissions", q.allow_dangerously_skip_permissions)
+    |> add_chrome(q.chrome)
+    |> add_bool("--forward-subagent-text", q.forward_subagent_text)
+    |> add_opt("--append-subagent-system-prompt", q.append_subagent_system_prompt)
+    |> add_opt("--append-subagent-system-prompt-file", q.append_subagent_system_prompt_file)
+    |> add_opt("--advisor", q.advisor)
+    |> add_extra_args(q.extra_args)
     |> append_prompt(q.prompt)
   end
 
@@ -1657,6 +1891,29 @@ defmodule ClaudeWrapper.Query do
   defp add_betas(args, betas) when is_list(betas), do: add_variadic(args, "--betas", betas)
   defp add_betas(args, beta) when is_binary(beta), do: add_opt(args, "--betas", beta)
 
+  # Unset emits nothing; true keeps the historical bare flag; false is the
+  # explicit off value.
+  defp add_prompt_suggestions(args, nil), do: args
+  defp add_prompt_suggestions(args, true), do: args ++ ["--prompt-suggestions"]
+  defp add_prompt_suggestions(args, false), do: args ++ ["--prompt-suggestions", "false"]
+
+  defp add_prompt_suggestions(_args, other),
+    do: invalid_enum!(:prompt_suggestions, other, [true, false, nil])
+
+  defp add_chrome(args, nil), do: args
+  defp add_chrome(args, true), do: args ++ ["--chrome"]
+  defp add_chrome(args, false), do: args ++ ["--no-chrome"]
+  defp add_chrome(_args, other), do: invalid_enum!(:chrome, other, [true, false, nil])
+
+  # Raw caller argv, last before the prompt separator. Re-checked here so a
+  # struct built without extra_args/2 is held to the same shape.
+  defp add_extra_args(args, []), do: args
+
+  defp add_extra_args(args, extra) do
+    check_extra_args!(extra)
+    args ++ extra
+  end
+
   defp format_output_format(nil), do: nil
   defp format_output_format(:text), do: "text"
   defp format_output_format(:json), do: "json"
@@ -1678,14 +1935,39 @@ defmodule ClaudeWrapper.Query do
   defp format_permission_mode(:dont_ask), do: "dontAsk"
   defp format_permission_mode(:plan), do: "plan"
   defp format_permission_mode(:auto), do: "auto"
+  defp format_permission_mode(:manual), do: "manual"
 
   defp format_permission_mode(other),
     do:
       invalid_enum!(
         :permission_mode,
         other,
-        [:default, :accept_edits, :bypass_permissions, :dont_ask, :plan, :auto]
+        [:default, :accept_edits, :bypass_permissions, :dont_ask, :plan, :auto, :manual]
       )
+
+  defp format_permission_prompts(nil), do: nil
+  defp format_permission_prompts(:host), do: "host"
+  defp format_permission_prompts(:none), do: "none"
+
+  defp format_permission_prompts(other),
+    do: invalid_enum!(:permission_prompts, other, [:host, :none])
+
+  defp format_snapshot(nil), do: nil
+  defp format_snapshot(:on), do: "on"
+  defp format_snapshot(:off), do: "off"
+  defp format_snapshot(other), do: invalid_enum!(:system_prompt_snapshot, other, [:on, :off])
+
+  # The CLI validates the supported range; only the shape is checked here.
+  defp format_autocompact(nil), do: nil
+  defp format_autocompact(:auto), do: "auto"
+
+  defp format_autocompact(tokens) when is_integer(tokens) and tokens > 0,
+    do: Integer.to_string(tokens)
+
+  defp format_autocompact(other) do
+    raise ArgumentError,
+          "invalid autocompact #{inspect(other)}; expected :auto or a positive integer token count"
+  end
 
   defp format_effort(nil), do: nil
   defp format_effort(:low), do: "low"

@@ -186,6 +186,38 @@ Query.new("Fix the tests")
 |> Query.execute(Config.new(working_dir: "/path/to/project"))
 ```
 
+### Print flags added for Claude Code 2.1.31x
+
+Each has a setter and a matching `apply_opts/2` key:
+
+| Setter / option | Emits |
+|---|---|
+| `restricted/1`, `restricted: true` | `--restricted` |
+| `permission_prompts/2`, `:host \| :none` | `--permission-prompts host\|none` |
+| `system_prompt_snapshot/2`, `:on \| :off` | `--system-prompt-snapshot on\|off` |
+| `autocompact/2`, `:auto` or a positive integer token count | `--autocompact auto\|<tokens>` |
+| `allow_dangerously_skip_permissions/1` | `--allow-dangerously-skip-permissions` |
+| `chrome/2`, `true \| false` | `--chrome` / `--no-chrome` |
+| `forward_subagent_text/1` | `--forward-subagent-text` |
+| `append_subagent_system_prompt/2` | `--append-subagent-system-prompt <text>` |
+| `append_subagent_system_prompt_file/2` | `--append-subagent-system-prompt-file <path>` |
+| `advisor/2` | `--advisor <value>` |
+| `prompt_suggestions/2`, `true \| false` | `--prompt-suggestions` / `--prompt-suggestions false` |
+| `permission_mode(:manual)` | `--permission-mode manual` |
+| `extra_args/2`, a list of strings | each string as one argv token |
+
+- **Unset means no flag.** `chrome` and `prompt_suggestions` default to `nil`, which emits nothing and leaves the CLI default. `prompt_suggestions(true)` (or `prompt_suggestions/1`) keeps the bare flag; `false` emits `--prompt-suggestions false`. In `apply_opts/2`, `false` is passed through for these two, unlike the other boolean options.
+- **Validation.** An unknown `permission_prompts`, `system_prompt_snapshot` or `permission_mode` atom, and an `autocompact` value other than `:auto` or a positive integer, raise `ArgumentError` when the arguments are built. The CLI validates the token range itself (2.1.316 help gives 100k to 1M).
+- **System-prompt snapshot.** `on` reuses the system prompt recorded for the conversation until compaction (the CLI default, except under `--bare` outside cloud and background sessions); `off` renders it fresh. To change the system prompt of a resumed `Session` turn, pass the new prompt with `system_prompt_snapshot: :off`.
+- **Forwarding subagent text** needs print mode with `--output-format stream-json`. `Query.stream/2` and a `DuplexSession` started with `query:` always use stream-json; `execute/2` uses JSON output and the CLI may reject the flag there.
+- **Bypass.** `allow_dangerously_skip_permissions/1` makes bypass a mode that can be switched to later; it does not turn bypass on. `--dangerously-skip-permissions` stays behind `ClaudeWrapper.DangerousClient`.
+- **`extra_args`** accepts only a list of strings, keeps their order and boundaries, and places them after every `Query` flag and before the `--` prompt separator, so the prompt still goes on stdin or argv as configured. A `"--"` element is rejected. The arguments are not checked against the CLI.
+- **`:default` permission mode** still emits `default` for compatibility.
+
+Version provenance: the issue (#328) reports these flags on Claude Code 2.1.305, 2.1.311 and 2.1.312. They were checked against the help output of an installed 2.1.316, and the three hidden value flags (`--append-subagent-system-prompt`, `--append-subagent-system-prompt-file`, `--advisor`) by their missing-operand errors on 2.1.316. `mix claude.contract` checks flag names only, not values or combinations.
+
+Out of scope: these launch flags are not on `Query` (use `extra_args/2` if needed): `--ax-screen-reader`, `--bg`/`--background`, `--cloud`, `--desktop`, `--environment`, `--ide`, `--remote-control`, `--remote-control-session-name-prefix`, `--teleport`.
+
 Supporting builders: `ClaudeWrapper.Prompt` (composable prompts with deferred file/git expansion), `ClaudeWrapper.McpConfig` (programmatic `.mcp.json`), and `ClaudeWrapper.ToolPattern` (typed, validated tool specs).
 
 ```elixir

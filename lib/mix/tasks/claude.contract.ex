@@ -33,9 +33,15 @@ defmodule Mix.Tasks.Claude.Contract do
 
   @requirements ["app.start"]
 
-  # These required-value flags are hidden on 2.1.309. A missing-operand
-  # parse error proves recognition on each run, rather than waiving drift.
-  @hidden_value_flags ~w(--max-turns --system-prompt-file --append-system-prompt-file --permission-prompt-tool --max-thinking-tokens)
+  # These required-value flags are hidden from help (the first five on
+  # 2.1.309, the subagent prompt and advisor flags on 2.1.316). A
+  # missing-operand parse error proves recognition on each run, rather than
+  # waiving drift.
+  @hidden_value_flags ~w(--max-turns --system-prompt-file --append-system-prompt-file --permission-prompt-tool --max-thinking-tokens --append-subagent-system-prompt --append-subagent-system-prompt-file --advisor)
+
+  @doc false
+  @spec hidden_value_flags() :: [String.t()]
+  def hidden_value_flags, do: @hidden_value_flags
 
   @impl true
   def run(_argv) do
@@ -211,24 +217,47 @@ defmodule Mix.Tasks.Claude.Contract do
       bare: true,
       disable_slash_commands: true,
       include_hook_events: true,
-      exclude_dynamic_system_prompt_sections: true
+      exclude_dynamic_system_prompt_sections: true,
+      restricted: true,
+      permission_prompts: :host,
+      system_prompt_snapshot: :off,
+      autocompact: 200_000,
+      allow_dangerously_skip_permissions: true,
+      chrome: true,
+      forward_subagent_text: true,
+      append_subagent_system_prompt: "contract",
+      append_subagent_system_prompt_file: "/tmp/subagent",
+      advisor: "contract"
     )
   end
 
-  defp specs do
+  # Specimens for the flags whose other spelling the maximal query cannot
+  # carry at the same time.
+  @doc false
+  @spec alternate_queries() :: [Query.t()]
+  def alternate_queries do
+    [
+      # build_args/1 rejects --continue with --resume.
+      Query.new("contract prompt") |> Query.continue_session(),
+      # --no-chrome and the explicit prompt-suggestions off value.
+      Query.new("contract prompt") |> Query.chrome(false) |> Query.prompt_suggestions(false)
+    ]
+  end
+
+  @doc false
+  @spec query_specs() :: [{[String.t()], [String.t()]}]
+  def query_specs do
     query = maximal_query()
-    query_args = Query.build_args(query)
-    # build_args/1 rejects --continue with --resume, so --continue is checked
-    # on its own query.
-    continue_args =
-      "contract prompt" |> Query.new() |> Query.continue_session() |> Query.build_args()
 
     spawn_args =
       Query.spawn_args(query) ++
         ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
 
-    [{[], query_args}, {[], continue_args}, {[], spawn_args}] ++ command_specs()
+    [{[], Query.build_args(query)}] ++
+      Enum.map(alternate_queries(), &{[], Query.build_args(&1)}) ++ [{[], spawn_args}]
   end
+
+  defp specs, do: query_specs() ++ command_specs()
 
   defp command_specs do
     [
