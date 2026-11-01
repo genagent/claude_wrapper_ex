@@ -208,7 +208,7 @@ defmodule ClaudeWrapper.Run do
   """
   @spec await(t(), timeout()) :: outcome() | :timeout | {:error, Error.t()}
   def await(%__MODULE__{pid: pid}, timeout \\ 5_000) when timeout_value?(timeout),
-    do: call(pid, {:await, timeout}, :infinity)
+    do: wait(pid, :await, timeout)
 
   @doc """
   Cancel the run and wait up to `timeout` milliseconds for its outcome.
@@ -217,11 +217,27 @@ defmodule ClaudeWrapper.Run do
   """
   @spec cancel(t(), timeout()) :: outcome() | :timeout | {:error, Error.t()}
   def cancel(%__MODULE__{pid: pid}, timeout \\ 5_000) when timeout_value?(timeout),
-    do: call(pid, {:cancel, timeout}, :infinity)
+    do: wait(pid, :cancel, timeout)
 
-  # await/2 and cancel/2 call without a client timeout: the run process owns
-  # each waiter's deadline and replies :timeout itself, so a timed-out wait
-  # leaves no entry behind. A waiter that exits is removed through its monitor.
+  # The caller's own call timeout bounds the wait, including time queued in
+  # the run process. On a timeout the caller tells the run process to drop
+  # its waiter. The run process also drops it at the same absolute deadline
+  # and when the caller exits, so no entry outlives its wait.
+  defp wait(pid, request, :infinity), do: call(pid, {request, make_ref(), :infinity}, :infinity)
+
+  defp wait(pid, request, timeout) do
+    tag = make_ref()
+
+    case call(pid, {request, tag, now() + timeout}, timeout) do
+      :timeout ->
+        GenServer.cast(pid, {:abandon, tag})
+        :timeout
+
+      reply ->
+        reply
+    end
+  end
+
   defp call(pid, message, timeout) do
     GenServer.call(pid, message, timeout)
   catch
@@ -315,15 +331,18 @@ defmodule ClaudeWrapper.Run do
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, snapshot_of(state), state}
 
-  def handle_call({request, _timeout}, _from, %{outcome: outcome} = state)
+  def handle_call({request, _tag, _deadline}, _from, %{outcome: outcome} = state)
       when request in [:await, :cancel] and outcome != nil,
       do: {:reply, outcome, state}
 
-  def handle_call({:await, timeout}, from, state),
-    do: {:noreply, add_waiter(state, from, timeout)}
+  def handle_call({:await, tag, deadline}, from, state),
+    do: {:noreply, add_waiter(state, from, tag, deadline)}
 
-  def handle_call({:cancel, timeout}, from, state),
-    do: {:noreply, state |> request_cancel() |> add_waiter(from, timeout)}
+  def handle_call({:cancel, tag, deadline}, from, state),
+    do: {:noreply, state |> request_cancel() |> add_waiter(from, tag, deadline)}
+
+  @impl true
+  def handle_cast({:abandon, tag}, state), do: {:noreply, drop_waiter(state, tag)}
 
   @impl true
   def handle_info({:frame, event}, %{outcome: nil} = state) do
@@ -371,17 +390,8 @@ defmodule ClaudeWrapper.Run do
 
   def handle_info(:cancel_grace, state), do: {:noreply, state}
 
-  def handle_info({:wait_timeout, tag}, state) do
-    case Map.pop(state.waiters, tag) do
-      {nil, _waiters} ->
-        {:noreply, state}
-
-      {{from, _timer, monitor}, waiters} ->
-        Process.demonitor(monitor, [:flush])
-        GenServer.reply(from, :timeout)
-        {:noreply, %{state | waiters: waiters}}
-    end
-  end
+  # Backstop for a caller whose abandon message has not arrived.
+  def handle_info({:wait_timeout, tag}, state), do: {:noreply, drop_waiter(state, tag)}
 
   def handle_info({:DOWN, monitor, :process, _owner, _reason}, %{owner_monitor: monitor} = state) do
     if state.outcome == nil do
@@ -405,11 +415,25 @@ defmodule ClaudeWrapper.Run do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp add_waiter(state, {pid, _} = from, timeout) do
-    tag = make_ref()
-    timer = if timeout != :infinity, do: Process.send_after(self(), {:wait_timeout, tag}, timeout)
+  defp add_waiter(state, {pid, _} = from, tag, deadline) do
+    timer =
+      if deadline != :infinity,
+        do: Process.send_after(self(), {:wait_timeout, tag}, max(deadline - now(), 0))
+
     waiter = {from, timer, Process.monitor(pid)}
     %{state | waiters: Map.put(state.waiters, tag, waiter)}
+  end
+
+  defp drop_waiter(state, tag) do
+    case Map.pop(state.waiters, tag) do
+      {nil, _waiters} ->
+        state
+
+      {{_from, timer, monitor}, waiters} ->
+        cancel_timer(timer)
+        Process.demonitor(monitor, [:flush])
+        %{state | waiters: waiters}
+    end
   end
 
   defp cancel_timer(nil), do: true

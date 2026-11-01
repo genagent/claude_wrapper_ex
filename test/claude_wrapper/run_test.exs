@@ -274,6 +274,22 @@ defmodule ClaudeWrapper.RunTest do
       assert {:error, %Error{kind: :cancelled}, _} = Run.cancel(run, 5_000)
     end
 
+    test "a finite await is bounded while the run process is suspended" do
+      config = Config.new(binary: "/bin/sh", runner: __MODULE__.IgnoresCancel, runner_options: [])
+      {:ok, run} = Run.start(Query.new("hi"), config, cancel_grace_ms: 50)
+
+      :sys.suspend(run.pid)
+      {micros, reply} = :timer.tc(fn -> Run.await(run, 50) end)
+      assert reply == :timeout
+      assert micros < 1_000_000
+      :sys.resume(run.pid)
+
+      # The queued request is dropped by the caller's abandon message or the
+      # deadline backstop, whichever the run process sees first.
+      wait_until(fn -> :sys.get_state(run.pid).waiters == %{} end)
+      assert {:error, %Error{kind: :cancelled}, _} = Run.cancel(run, 5_000)
+    end
+
     test "cancel observes a complete final event written without a newline", context do
       json = Jason.encode!(init())
 
@@ -307,9 +323,19 @@ defmodule ClaudeWrapper.RunTest do
         )
 
       assert {:ok, _result, evidence} = Run.await(run, 5_000)
-      assert_receive {^reference, %ClaudeWrapper.SessionObservation{session_id: "native-session"}}
-      assert_receive {^reference, %RateLimitObservation{status: "allowed"}}
-      assert_receive {^reference, ^evidence}
+
+      messages =
+        for _ <- 1..3 do
+          assert_receive {^reference, message}
+          message
+        end
+
+      assert [
+               %ClaudeWrapper.SessionObservation{session_id: "native-session"},
+               %RateLimitObservation{status: "allowed"},
+               ^evidence
+             ] = messages
+
       refute_receive {^reference, _}, 50
       refute_received {_, {:frame, _}}
     end
