@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.19.0...v0.20.0) (2026-11-02)
+
+
+### Features
+
+* **run:** add an async one-shot run handle with await, snapshot and cancel ([#351](https://github.com/genagent/claude_wrapper_ex/issues/351)) ([3960983](https://github.com/genagent/claude_wrapper_ex/commit/39609835e7bdbd791f3369e239751b93200d534c))
+
 ## [0.19.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.18.0...v0.19.0) (2026-11-01)
 
 
