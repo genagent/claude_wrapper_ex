@@ -165,25 +165,33 @@ defmodule ClaudeWrapper.Runner.ForcolaEvidence do
   @doc false
   # Translate a collector outcome into `run_evidenced/5`'s
   # `{outcome, native_evidence}` pair.
-  @spec translate({:done, term(), map()} | {:helper_down, term(), map()}) ::
+  @spec translate({:done, term(), map()} | {:helper_down, term(), map()} | {:cancelled, map()}) ::
           {term(), Runner.native_evidence()}
-  def translate({:helper_down, reason, stats}) do
-    stdout = Map.get(stats, :stdout, "")
-    stderr = Map.get(stats, :stderr, "")
+  def translate({:helper_down, reason, stats}),
+    do: observer_outcome({{:error, {:helper_down, reason}}, collected(stats)}, stats)
 
-    native =
-      Map.merge(unknown(stats.lines_dropped), %{
-        execution: if(stdout != "" or stderr != "", do: :started, else: :unknown),
-        stdout: stdout,
-        stderr: stderr,
-        output_truncated: Map.get(stats, :output_truncated, :unknown)
-      })
-
-    observer_outcome({{:error, {:helper_down, reason}}, native}, stats)
-  end
+  # The helper owning the Forcola port was ended on request. Forcola's shim
+  # runs its owner-death cleanup, but sends no report after the port closes,
+  # so native status and cleanup stay unknown. The requested cancel is the
+  # outcome: an observer failure recorded earlier in `stats` is not reported
+  # (`ExecutionEvidence` has no field for it).
+  def translate({:cancelled, stats}),
+    do: {{:error, :cancelled}, %{collected(stats) | reason: :cancelled}}
 
   def translate({:done, outcome, stats}),
     do: observer_outcome(outcome(outcome, stats.lines_dropped), stats)
+
+  defp collected(stats) do
+    stdout = Map.get(stats, :stdout, "")
+    stderr = Map.get(stats, :stderr, "")
+
+    Map.merge(unknown(stats.lines_dropped), %{
+      execution: if(stdout != "" or stderr != "", do: :started, else: :unknown),
+      stdout: stdout,
+      stderr: stderr,
+      output_truncated: Map.get(stats, :output_truncated, :unknown)
+    })
+  end
 
   defp observer_outcome({outcome, native}, stats) do
     case Map.get(stats, :observer_error) do

@@ -26,7 +26,18 @@ defmodule ClaudeWrapper.Runner.Collector do
   # `{:helper_down, reason, stats}`. No process here signals or kills the
   # native child; cleanup stays with the native supervisor.
   #
-  # After either outcome every message tagged with the private reference is
+  # Cancellation: with `cancel: reference`, a `{reference, :cancel}` message
+  # in the caller ends the helper with `{:shutdown, :cancelled}`. Its native
+  # port closes, which the native supervisor treats as owner death (for
+  # Forcola: the configured interrupt, then TERM/KILL of the process group).
+  # Frames already sent are still collected (a buffered final line is
+  # observed), and the run is reported as `{:cancelled, stats}`. No native
+  # report follows owner death, so cleanup stays unknown. An observer failure
+  # recorded before the cancel is not reported: the cancel is the outcome.
+  # If the helper reported its outcome before the cancel took effect, that
+  # outcome is returned unchanged.
+  #
+  # After any outcome every message tagged with the private reference is
   # flushed, so none linger in the caller's mailbox.
 
   @default_max_line_bytes 1_048_576
@@ -48,7 +59,7 @@ defmodule ClaudeWrapper.Runner.Collector do
 
   @doc false
   @spec run(({pid(), reference()} -> term()), observer(), keyword()) ::
-          {:done, term(), stats()} | {:helper_down, term(), stats()}
+          {:done, term(), stats()} | {:helper_down, term(), stats()} | {:cancelled, stats()}
   def run(fun, observer, opts \\ []) when is_function(fun, 1) do
     caller = self()
     ref = make_ref()
@@ -56,6 +67,8 @@ defmodule ClaudeWrapper.Runner.Collector do
 
     state = %{
       ref: ref,
+      cancel: Keyword.get(opts, :cancel) || make_ref(),
+      cancelled: false,
       helper: helper,
       monitor: monitor,
       observer: observer,
@@ -102,7 +115,7 @@ defmodule ClaudeWrapper.Runner.Collector do
     end
   end
 
-  defp collect(%{ref: ref, monitor: monitor, helper: helper} = state) do
+  defp collect(%{ref: ref, cancel: cancel, monitor: monitor, helper: helper} = state) do
     receive do
       {^ref, {:stdout, bytes}} when is_binary(bytes) ->
         state |> retain(:stdout, bytes) |> frame(bytes) |> collect()
@@ -114,6 +127,15 @@ defmodule ClaudeWrapper.Runner.Collector do
         Process.demonitor(monitor, [:flush])
         state = finish_tail(state)
         {:done, outcome, stats(state)}
+
+      {^cancel, :cancel} ->
+        unless state.cancelled, do: Process.exit(helper, {:shutdown, :cancelled})
+        collect(%{state | cancelled: true})
+
+      # A complete final event written without a newline is still a line
+      # after a cancel, as at normal completion.
+      {:DOWN, ^monitor, :process, ^helper, _reason} when state.cancelled ->
+        {:cancelled, state |> finish_tail() |> stats()}
 
       {:DOWN, ^monitor, :process, ^helper, reason} ->
         {:helper_down, reason, stats(state)}

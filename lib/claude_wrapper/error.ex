@@ -37,13 +37,22 @@ defmodule ClaudeWrapper.Error do
     * `:output_limit` -- an output bound cancelled an evidenced run
       (`:reason` is `%{limit: :max_output_bytes | :observer_overflow,
       max_output_bytes:}`); partial output is in the execution evidence
+    * `:invalid_run_options` -- `ClaudeWrapper.Run.start/3` got an invalid
+      run option (`:reason` is `{key, value}` or `{:duplicate, key}`)
+    * `:cancelled` -- an evidenced run was cancelled through
+      `ClaudeWrapper.Run.cancel/2`, by its owner exiting, or by a non-normal
+      exit signal to the run process; the execution evidence records
+      `reason: :cancelled`
     * Evidenced runner callback raises, throws and catchable exits are `:io`
       with `:reason` `{:runner_failed, kind, reason}`. Collector observer
       failures use `{:observer_failed, kind, reason}`; helper death uses
-      `{:helper_down, reason}`. A failure converting the runner's outcome
-      into a reply uses `{:reply_failed, kind, reason}`. Terminal evidence
-      retains available partial facts without claiming unknown native
-      cleanup.
+      `{:helper_down, reason}`. In `ClaudeWrapper.Run`, a run process that
+      could not be started after preflight uses `{:run_start_failed, reason}`,
+      and an execution process that exited without reporting, while not
+      cancelling, uses `{:run_down, reason}`. A failure converting the
+      runner's outcome into a reply uses `{:reply_failed, kind, reason}`.
+      Terminal evidence retains available partial facts without claiming
+      unknown native cleanup.
     * `:unsupported_command` -- an operation the native CLI cannot perform
     * `:binary_not_found` -- the `claude` binary could not be launched
     * `:command_failed` -- the CLI exited non-zero (`:exit_code`,
@@ -136,6 +145,8 @@ defmodule ClaudeWrapper.Error do
           | :invalid_runner_options
           | :evidence_unsupported
           | :output_limit
+          | :cancelled
+          | :invalid_run_options
           | :binary_not_found
           | :unsupported_command
           | :command_failed
@@ -251,6 +262,11 @@ defmodule ClaudeWrapper.Error do
 
   defp default_message(%{kind: :output_limit, reason: reason}),
     do: "claude output exceeded a bound: #{inspect(reason)}"
+
+  defp default_message(%{kind: :cancelled}), do: "the run was cancelled"
+
+  defp default_message(%{kind: :invalid_run_options, reason: reason}),
+    do: "invalid run option: #{inspect(reason)}"
 
   defp default_message(%{kind: :binary_not_found, reason: bin}),
     do: "claude binary not found: #{inspect(bin)}"

@@ -59,7 +59,13 @@ if Code.ensure_loaded?(Forcola) do
     The native run executes in an owned helper process; Forcola's
     `:output_observer` frames arrive in the execution caller, which frames
     stdout lines and runs the observer itself. Forcola cancels the run if the
-    caller's queue reaches its observer bound. If the execution caller dies,
+    caller's queue reaches its observer bound. A `{reference, :cancel}`
+    message for the `opts[:cancel]` reference (passed by `ClaudeWrapper.Run`)
+    ends the helper, closing its port; the shim then runs its owner-death
+    sequence (the configured interrupt, then TERM/KILL of the process group)
+    and the call returns `{:error, :cancelled}` with `reason: :cancelled` and
+    unknown cleanup, since Forcola 0.7 sends no report after the port closes.
+    If the execution caller dies,
     the helper exits and Forcola's shim cleans up as for owner death. If the
     helper dies, the call returns `{:error, {:helper_down, reason}}` with
     unknown cleanup. This module never signals the child itself.
@@ -213,12 +219,28 @@ if Code.ensure_loaded?(Forcola) do
         run
         |> Collector.run(observer,
           max_line_bytes: max_line,
-          max_output_bytes: forcola_opts[:max_output_bytes]
+          max_output_bytes: forcola_opts[:max_output_bytes],
+          cancel: opts[:cancel]
         )
         |> ForcolaEvidence.translate()
       else
         {:error, reason} -> {{:error, reason}, ClaudeWrapper.Runner.not_started_evidence()}
       end
+    end
+
+    @doc """
+    Validate the options and timeout `run_evidenced/5` would receive, without
+    spawning. See `c:ClaudeWrapper.Runner.check_evidenced/2`.
+    """
+    @spec check_evidenced(keyword(), timeout() | nil) ::
+            :ok | {:error, ClaudeWrapper.Runner.evidenced_error()}
+    @impl true
+    def check_evidenced(opts, timeout) do
+      {_argv, opts} = env_argv("claude", [], opts)
+
+      with :ok <- evidence_supported(),
+           {:ok, _forcola_opts, _max_line} <- ForcolaEvidence.build(opts, timeout),
+           do: :ok
     end
 
     defp evidence_supported do

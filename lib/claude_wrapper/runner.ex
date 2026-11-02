@@ -89,6 +89,27 @@ defmodule ClaudeWrapper.Runner do
   runner without it is rejected before it is invoked; there is no fallback
   to another runner or callback.
 
+  ## Cancellation and preflight
+
+  `ClaudeWrapper.Run` starts evidenced runs asynchronously. It passes a
+  reference under `opts[:cancel]` to `run_evidenced/5`. When the calling
+  process receives `{reference, :cancel}`, a runner that supports
+  cancellation stops the native run and returns `{:error, :cancelled}` with
+  its evidence, `reason: :cancelled`, and whatever cleanup facts it can
+  report. The cancel is the outcome even if a line observer failed earlier
+  in the run; that failure is not reported. If the run had already
+  finished, the runner returns that outcome instead. A runner that ignores
+  `:cancel` is stopped by `ClaudeWrapper.Run` ending the calling process
+  after a grace period.
+
+  `check_evidenced/2` is optional. It validates the options
+  `run_evidenced/5` would receive (including `:runner_options`) and the
+  timeout, without spawning, and returns `:ok` or the same
+  `{:error, {:invalid_runner_options, reason}}` /
+  `{:error, {:evidence_unsupported, reason}}` that `run_evidenced/5` would
+  return. `ClaudeWrapper.Run.start/3` calls it so these rejections are
+  returned before a run is started.
+
   ## Contract
 
   `run/4` returns `System.cmd/3`'s `{stdout, exit_code}` on completion
@@ -127,6 +148,7 @@ defmodule ClaudeWrapper.Runner do
       the owned native run is drained before returning
     * `{:helper_down, reason}` -- the runner's collector process died before
       reporting an outcome
+    * `:cancelled` -- the run was stopped by a `:cancel` request
   """
   @type evidenced_error ::
           {:runner_failed, :error | :throw | :exit, term()}
@@ -137,6 +159,7 @@ defmodule ClaudeWrapper.Runner do
           | {:invalid_runner_options, term()}
           | {:evidence_unsupported, term()}
           | {:helper_down, term()}
+          | :cancelled
 
   @typedoc """
   Native execution evidence returned by `run_evidenced/5`.
@@ -149,7 +172,8 @@ defmodule ClaudeWrapper.Runner do
       example `:exit`, `:malformed_exit`, `:backstop`, `{:transport, status}`,
       `{:spawn, reason}`), `:not_started`, or `:unknown`
     * `:reason` -- `nil` or the bound that cancelled the run (`:timeout`,
-      `:idle_timeout`, `:max_output_bytes`, `:observer_overflow`)
+      `:idle_timeout`, `:max_output_bytes`, `:observer_overflow`), or
+      `:cancelled` after a `:cancel` request
     * `:output_truncated` -- `true`, `false`, or `:unknown`
     * `:cleanup` -- `:confirmed`, `:unconfirmed`, `:unknown`, or
       `:not_applicable`
@@ -168,7 +192,8 @@ defmodule ClaudeWrapper.Runner do
           child_status: non_neg_integer() | nil,
           child_signal: pos_integer() | nil,
           termination: term(),
-          reason: nil | :timeout | :idle_timeout | :max_output_bytes | :observer_overflow,
+          reason:
+            nil | :timeout | :idle_timeout | :max_output_bytes | :observer_overflow | :cancelled,
           output_truncated: boolean() | :unknown,
           cleanup: :confirmed | :unconfirmed | :unknown | :not_applicable,
           scope: :process_group | :active_cgroup | :unknown | :not_applicable,
@@ -185,7 +210,8 @@ defmodule ClaudeWrapper.Runner do
     * `:env` -- list of `{name, value}` string tuples
     * `:stderr_to_stdout` -- merge stderr into stdout (default `false`)
 
-  `run_evidenced/5` additionally receives `:runner_options`.
+  `run_evidenced/5` additionally receives `:runner_options`, and `:cancel`
+  when started through `ClaudeWrapper.Run`.
   """
   @type opts :: keyword()
 
@@ -221,7 +247,10 @@ defmodule ClaudeWrapper.Runner do
               observer :: line_observer()
             ) :: evidenced_result()
 
-  @optional_callbacks run_observed: 5, run_evidenced: 5
+  @callback check_evidenced(opts :: opts(), timeout :: timeout() | nil) ::
+              :ok | {:error, evidenced_error()}
+
+  @optional_callbacks run_observed: 5, run_evidenced: 5, check_evidenced: 2
 
   @callback stream_lines(
               binary :: String.t(),

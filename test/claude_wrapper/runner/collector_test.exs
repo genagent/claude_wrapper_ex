@@ -224,4 +224,39 @@ defmodule ClaudeWrapper.Runner.CollectorTest do
     assert {:done, :finished, _} = Collector.run(run, observer)
     assert observed(tag) == lines
   end
+
+  describe "cancel" do
+    test "a cancel message ends the helper and reports the frames already collected" do
+      {observer, tag} = recorder()
+      cancel = make_ref()
+      test = self()
+
+      run = fn {pid, ref} ->
+        send(test, {:helper, self()})
+        send(pid, {ref, {:stdout, "one\n"}})
+        send(pid, {cancel, :cancel})
+        Process.sleep(:infinity)
+      end
+
+      assert {:cancelled, %{stdout: "one\n"}} = Collector.run(run, observer, cancel: cancel)
+      assert_received {:helper, helper}
+      refute Process.alive?(helper)
+      assert observed(tag) == ["one"]
+    end
+
+    test "an outcome reported before the cancel takes effect is returned unchanged" do
+      cancel = make_ref()
+      run = fn _target -> :finished end
+      assert {:done, :finished, _} = Collector.run(run, nil, cancel: cancel)
+      send(self(), {cancel, :cancel})
+      # A cancel after completion is not consumed by a finished collector.
+      assert_received {^cancel, :cancel}
+    end
+
+    test "without a cancel reference, cancel-shaped messages are ignored" do
+      send(self(), {nil, :cancel})
+      assert {:done, :finished, _} = Collector.run(fn _ -> :finished end, nil)
+      assert_received {nil, :cancel}
+    end
+  end
 end
