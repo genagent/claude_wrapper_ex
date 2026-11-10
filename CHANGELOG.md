@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.20.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.19.0...v0.20.0) (2026-11-10)
+
+
+### Features
+
+* **forcola:** send SIGINT before the group SIGTERM on every Forcola path (closes [#307](https://github.com/genagent/claude_wrapper_ex/issues/307)) ([#358](https://github.com/genagent/claude_wrapper_ex/issues/358)) ([7b6f405](https://github.com/genagent/claude_wrapper_ex/commit/7b6f4058b25e27edad53e09338d81e7941b33f51))
+* **run:** add an async one-shot run handle with await, snapshot and cancel ([#351](https://github.com/genagent/claude_wrapper_ex/issues/351)) ([3960983](https://github.com/genagent/claude_wrapper_ex/commit/39609835e7bdbd791f3369e239751b93200d534c))
+* **stream:** accept an execution observer and runner options on streams (closes [#314](https://github.com/genagent/claude_wrapper_ex/issues/314)) ([#360](https://github.com/genagent/claude_wrapper_ex/issues/360)) ([2399d06](https://github.com/genagent/claude_wrapper_ex/commit/2399d06305234d38547803a711a309d20bebb200))
+* **stream:** bound idle gaps separately from the whole-run timeout (closes [#313](https://github.com/genagent/claude_wrapper_ex/issues/313)) ([#357](https://github.com/genagent/claude_wrapper_ex/issues/357)) ([7eb975c](https://github.com/genagent/claude_wrapper_ex/commit/7eb975c82801fabe13b183e4be34f628b8d9bae4))
+* **telemetry:** add permission, interrupt and rate-limit events and usage metadata ([#359](https://github.com/genagent/claude_wrapper_ex/issues/359)) ([bb75d21](https://github.com/genagent/claude_wrapper_ex/commit/bb75d21d0e0857ee5f3b079eee0807fe6d922e8d))
+
 ## [0.19.0](https://github.com/genagent/claude_wrapper_ex/compare/v0.18.0...v0.19.0) (2026-11-01)
 
 
