@@ -20,29 +20,32 @@ defmodule ClaudeWrapper.StreamTest do
     Port.command(state.port, [Jason.encode!(term), ?\n])
   end
 
-  # Wait until the stream consumer has subscribed, then feed the turn's
-  # events from this (separate) process so the consumer can pull them
-  # while it blocks in the stream's receive loop. No sleeps.
+  # Wait until the stream's turn is in flight, then feed the turn's events
+  # from this (separate) process so the consumer can pull them while it
+  # blocks in the stream's receive loop. The stream subscribes before it
+  # sends, so a subscriber alone is not enough: a `result` injected before
+  # `send/3` registers the pending turn is dispatched as unsolicited and the
+  # turn never completes (#352). No sleeps.
   defp feed_turn(pid, events) do
     spawn(fn ->
-      wait_for_subscriber(pid)
+      wait_for_pending_turn(pid)
       Enum.each(events, &inject(pid, &1))
     end)
   end
 
-  defp wait_for_subscriber(pid, deadline \\ nil) do
+  defp wait_for_pending_turn(pid, deadline \\ nil) do
     deadline = deadline || System.monotonic_time(:millisecond) + 2_000
 
     cond do
-      :sys.get_state(pid).subscribers != %{} ->
+      :sys.get_state(pid).pending_turn != nil ->
         :ok
 
       System.monotonic_time(:millisecond) > deadline ->
-        flunk("no subscriber registered within 2s")
+        flunk("no turn went in flight within 2s")
 
       true ->
         Process.sleep(2)
-        wait_for_subscriber(pid, deadline)
+        wait_for_pending_turn(pid, deadline)
     end
   end
 
@@ -157,7 +160,7 @@ defmodule ClaudeWrapper.StreamTest do
       # Occupy the session with a turn that never completes, so the
       # stream's own send hits :turn_in_flight.
       spawn(fn -> DuplexSession.send(pid, "occupy", 5_000) end)
-      wait_for_subscriber_free(pid)
+      wait_for_pending_turn(pid)
 
       events = pid |> CWStream.stream("second") |> Enum.to_list()
 
@@ -176,36 +179,18 @@ defmodule ClaudeWrapper.StreamTest do
       # kill below does not also take down the test.
       Process.unlink(pid)
 
-      # Once the stream has subscribed, the turn's send/3 is a GenServer.call in
+      # Once the turn is pending, the stream's send/3 is a GenServer.call in
       # flight; brutally killing the session makes that call exit abnormally, so
       # the stream's monitored turn process goes DOWN non-:normal -- the branch
       # under test (and cleanup/1's unsubscribe then hits a dead session).
       spawn(fn ->
-        wait_for_subscriber(pid)
+        wait_for_pending_turn(pid)
         Process.exit(pid, :kill)
       end)
 
       events = pid |> CWStream.stream("hi") |> Enum.to_list()
 
       assert {:error, %ClaudeWrapper.Error{kind: :duplex_closed}} = List.last(events)
-    end
-
-    # The occupying turn registers a pending_turn but no subscriber; wait
-    # for the pending turn to be in flight before the stream sends.
-    defp wait_for_subscriber_free(pid, deadline \\ nil) do
-      deadline = deadline || System.monotonic_time(:millisecond) + 2_000
-
-      cond do
-        :sys.get_state(pid).pending_turn != nil ->
-          :ok
-
-        System.monotonic_time(:millisecond) > deadline ->
-          flunk("occupying turn never went in flight")
-
-        true ->
-          Process.sleep(2)
-          wait_for_subscriber_free(pid, deadline)
-      end
     end
   end
 end
