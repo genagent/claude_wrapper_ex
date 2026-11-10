@@ -292,6 +292,8 @@ defmodule ClaudeWrapper.DuplexSession do
           max_output_bytes: pos_integer() | :infinity,
           output_bytes: non_neg_integer(),
           deferred_permissions: MapSet.t(String.t()),
+          permission_requests: %{String.t() => {integer(), String.t() | nil}},
+          interrupt_spans: %{String.t() => {integer(), map()}},
           deferred_controls: MapSet.t(String.t()),
           initialize: :not_requested | :pending | {:ok, map()} | {:error, Error.t()},
           initialize_waiters: [GenServer.from()],
@@ -330,6 +332,8 @@ defmodule ClaudeWrapper.DuplexSession do
     max_output_bytes: :infinity,
     output_bytes: 0,
     deferred_permissions: MapSet.new(),
+    permission_requests: %{},
+    interrupt_spans: %{},
     deferred_controls: MapSet.new(),
     initialize: :not_requested,
     initialize_waiters: [],
@@ -1158,9 +1162,15 @@ defmodule ClaudeWrapper.DuplexSession do
   def handle_call({:respond_to_permission, request_id, decision}, _from, state) do
     if MapSet.member?(state.deferred_permissions, request_id) do
       write_permission_response(state, request_id, decision)
+      {{requested, tool_name}, requests} = Map.pop(state.permission_requests, request_id)
+      emit_permission_decision(state, requested, request_id, tool_name, decision, :deferred)
 
       {:reply, :ok,
-       %{state | deferred_permissions: MapSet.delete(state.deferred_permissions, request_id)}}
+       %{
+         state
+         | deferred_permissions: MapSet.delete(state.deferred_permissions, request_id),
+           permission_requests: requests
+       }}
     else
       # A genuine no-op for a request_id the session has no record of: never
       # deferred, or already answered / resolved by an interrupt. Previously this
@@ -1190,19 +1200,23 @@ defmodule ClaudeWrapper.DuplexSession do
 
   def handle_call(:initialize_response, _from, state), do: {:reply, state.initialize, state}
 
-  def handle_call({:control, _request}, _from, %{port: nil} = state) do
+  def handle_call({:control, request}, _from, %{port: nil} = state) do
+    if interrupt_request?(request), do: Telemetry.interrupt_stop(interrupt_span(state), :closed)
     {:reply, {:error, Error.new(:duplex_closed)}, state}
   end
 
   def handle_call({:control, request}, from, state) do
     request_id = generate_request_id()
     msg = %{type: "control_request", request_id: request_id, request: request}
+    span = if interrupt_request?(request), do: interrupt_span(state)
 
     case state.adapter.command(state.port, [Jason.encode!(msg), ?\n]) do
       :ok ->
-        {:noreply, %{state | pending_control: Map.put(state.pending_control, request_id, from)}}
+        state = %{state | pending_control: Map.put(state.pending_control, request_id, from)}
+        {:noreply, track_interrupt(state, request_id, span)}
 
       {:error, reason} ->
+        if span, do: Telemetry.interrupt_stop(span, :closed)
         {:reply, {:error, Error.new(:terminated, reason: {:transport_write, reason})}, state}
     end
   end
@@ -1430,16 +1444,23 @@ defmodule ClaudeWrapper.DuplexSession do
     tool_name = req["tool_name"]
     input = req["input"] || %{}
 
-    decision =
+    requested =
+      Telemetry.permission_request(%{
+        session_id: state.session_id,
+        request_id: id,
+        tool_name: tool_name
+      })
+
+    {decision, source} =
       try do
-        invoke_permission_handler(state.on_permission, tool_name, input, id)
+        {invoke_permission_handler(state.on_permission, tool_name, input, id), :handler}
       rescue
         e ->
           Logger.error(
             "DuplexSession: on_permission raised for #{inspect(tool_name)}: #{inspect(e)}"
           )
 
-          {:deny, "permission handler raised: #{Exception.message(e)}"}
+          {{:deny, "permission handler raised: #{Exception.message(e)}"}, :handler_raised}
       end
 
     case decision do
@@ -1447,7 +1468,13 @@ defmodule ClaudeWrapper.DuplexSession do
         if handler_arity(state.on_permission) == 3 do
           # 3-arity handler deferred: track the id so respond_to_permission/3 can
           # answer it later, and so an unknown/duplicate id is a genuine no-op.
-          %{state | deferred_permissions: MapSet.put(state.deferred_permissions, id)}
+          emit_permission_decision(state, requested, id, tool_name, :defer, source)
+
+          %{
+            state
+            | deferred_permissions: MapSet.put(state.deferred_permissions, id),
+              permission_requests: Map.put(state.permission_requests, id, {requested, tool_name})
+          }
         else
           # A 2-arity handler never receives the request_id, so no process can
           # answer -- the turn would wedge permanently with `alive?/1` still true.
@@ -1460,11 +1487,22 @@ defmodule ClaudeWrapper.DuplexSession do
           )
 
           write_permission_response(state, id, {:deny, "2-arity on_permission cannot defer"})
+
+          emit_permission_decision(
+            state,
+            requested,
+            id,
+            tool_name,
+            {:deny, "2-arity on_permission cannot defer"},
+            :defer_unsupported
+          )
+
           state
         end
 
       _ ->
         write_permission_response(state, id, default_allow_input(decision, input))
+        emit_permission_decision(state, requested, id, tool_name, decision, source)
         state
     end
   end
@@ -1534,7 +1572,8 @@ defmodule ClaudeWrapper.DuplexSession do
     %{
       state
       | deferred_controls: MapSet.delete(state.deferred_controls, id),
-        deferred_permissions: MapSet.delete(state.deferred_permissions, id)
+        deferred_permissions: MapSet.delete(state.deferred_permissions, id),
+        permission_requests: Map.delete(state.permission_requests, id)
     }
   end
 
@@ -1553,8 +1592,10 @@ defmodule ClaudeWrapper.DuplexSession do
         settle_initialize(%{state | pending_control: rest}, control_reply(resp))
 
       {from, rest} ->
-        GenServer.reply(from, control_reply(resp))
-        %{state | pending_control: rest}
+        reply = control_reply(resp)
+        GenServer.reply(from, reply)
+        state = %{state | pending_control: rest}
+        finish_interrupt(state, id, if(match?({:ok, _}, reply), do: :ok, else: :error))
     end
   end
 
@@ -1599,8 +1640,12 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defp dispatch(%{"type" => "rate_limit_event"} = msg, state) do
     case RateLimitObservation.from_event(msg) do
-      {:ok, observation} -> broadcast(state, {:rate_limit, observation})
-      :error -> broadcast(state, {:raw, msg})
+      {:ok, observation} ->
+        Telemetry.rate_limit(observation, msg["session_id"] || state.session_id)
+        broadcast(state, {:rate_limit, observation})
+
+      :error ->
+        broadcast(state, {:raw, msg})
     end
 
     state
@@ -1619,13 +1664,16 @@ defmodule ClaudeWrapper.DuplexSession do
     reply_turn(from, Query.classify_api_error(result, nil, nil, nil))
     state = clear_turn_guards(state)
 
-    Telemetry.duplex_turn_stop(state.turn_span, %{
-      command: :duplex_turn,
-      session_id: result.session_id || state.session_id,
-      cost_usd: result.cost_usd,
-      turn_cost_usd: Result.turn_cost(result, state.cost_baseline),
-      exit_code: 0
-    })
+    Telemetry.duplex_turn_stop(
+      state.turn_span,
+      Map.merge(Telemetry.result_metadata(result), %{
+        command: :duplex_turn,
+        session_id: result.session_id || state.session_id,
+        cost_usd: result.cost_usd,
+        turn_cost_usd: Result.turn_cost(result, state.cost_baseline),
+        exit_code: 0
+      })
+    )
 
     state = advance_cost_baseline(state, result)
 
@@ -1636,7 +1684,8 @@ defmodule ClaudeWrapper.DuplexSession do
       | pending_turn: nil,
         turn_uuid: nil,
         turn_span: nil,
-        deferred_permissions: MapSet.new()
+        deferred_permissions: MapSet.new(),
+        permission_requests: %{}
     }
   end
 
@@ -1764,6 +1813,49 @@ defmodule ClaudeWrapper.DuplexSession do
     arity
   end
 
+  # Permission and interrupt telemetry (#324). Metadata carries no tool input.
+  defp emit_permission_decision(state, requested, request_id, tool_name, decision, source) do
+    Telemetry.permission_decision(requested, %{
+      session_id: state.session_id,
+      request_id: request_id,
+      tool_name: tool_name,
+      decision: decision_kind(decision),
+      source: source
+    })
+  end
+
+  defp decision_kind(:allow), do: :allow
+  defp decision_kind({:allow, _input}), do: :allow_updated
+  defp decision_kind({:deny, _message}), do: :deny
+  defp decision_kind(:defer), do: :defer
+  defp decision_kind(_other), do: :unknown
+
+  defp interrupt_request?(request),
+    do: (Map.get(request, :subtype) || Map.get(request, "subtype")) == "interrupt"
+
+  defp interrupt_span(state) do
+    Telemetry.interrupt_start(%{
+      session_id: state.session_id,
+      turn_pending?: state.pending_turn != nil
+    })
+  end
+
+  defp track_interrupt(state, _request_id, nil), do: state
+
+  defp track_interrupt(state, request_id, span),
+    do: %{state | interrupt_spans: Map.put(state.interrupt_spans, request_id, span)}
+
+  defp finish_interrupt(state, request_id, outcome) do
+    case Map.pop(state.interrupt_spans, request_id) do
+      {nil, _} ->
+        state
+
+      {span, rest} ->
+        Telemetry.interrupt_stop(span, outcome)
+        %{state | interrupt_spans: rest}
+    end
+  end
+
   defp broadcast(%{subscribers: subs}, _event) when map_size(subs) == 0, do: :ok
 
   defp broadcast(%{subscribers: subs}, event) do
@@ -1804,6 +1896,10 @@ defmodule ClaudeWrapper.DuplexSession do
 
   defp fail_pending_control(%{pending_control: pending} = state, reason) do
     error = fail_reason_to_error(reason)
+
+    Enum.each(state.interrupt_spans, fn {_id, span} -> Telemetry.interrupt_stop(span, :closed) end)
+
+    state = %{state | interrupt_spans: %{}}
 
     Enum.reduce(pending, %{state | pending_control: %{}}, fn
       {_id, :initialize}, acc ->
