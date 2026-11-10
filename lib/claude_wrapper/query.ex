@@ -1698,8 +1698,9 @@ defmodule ClaudeWrapper.Query do
   the stream terminates.
 
   A clean run ends with a terminal `%StreamEvent{type: "result"}`. If the stream
-  halts without one -- a timeout (`Config.timeout` bounds both the whole run
-  and each gap between frames), a non-zero exit, or a spawn failure -- the
+  halts without one -- a timeout (`Config.timeout` bounds the whole run and,
+  unless `Config` `:idle_timeout_ms` is set, each gap between frames), a
+  non-zero exit, or a spawn failure -- the
   stream ends with a terminal
   `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` so the
   truncation is observable.
@@ -1820,7 +1821,11 @@ defmodule ClaudeWrapper.Query do
   end
 
   defp stream_opts(%Config{working_dir: dir} = config) do
-    [cd: dir, env: Config.child_env(config), max_line_bytes: config.max_line_bytes]
+    opts = [cd: dir, env: Config.child_env(config), max_line_bytes: config.max_line_bytes]
+
+    if config.idle_timeout_ms,
+      do: opts ++ [idle_timeout_ms: config.idle_timeout_ms],
+      else: opts
   end
 
   @doc """

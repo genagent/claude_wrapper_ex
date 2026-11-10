@@ -73,7 +73,7 @@ defmodule ClaudeWrapper.Runner.Port do
     max_line = Keyword.get(opts, :max_line_bytes, @default_max_line_bytes)
 
     limits = %{
-      idle_timeout: timeout || @stream_idle_timeout_ms,
+      idle_timeout: Keyword.get(opts, :idle_timeout_ms) || timeout || @stream_idle_timeout_ms,
       deadline: deadline(timeout),
       max_line: max_line
     }

@@ -254,7 +254,10 @@ if Code.ensure_loaded?(Forcola) do
     @impl true
     def stream_lines(binary, args, opts, timeout) do
       whole_timeout = if is_integer(timeout), do: timeout, else: @unbounded_ms
-      idle_timeout = if is_integer(timeout), do: timeout, else: @stream_idle_timeout_ms
+
+      idle_timeout =
+        Keyword.get(opts, :idle_timeout_ms) ||
+          if(is_integer(timeout), do: timeout, else: @stream_idle_timeout_ms)
 
       {argv, opts} = env_argv(binary, args, opts)
 

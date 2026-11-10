@@ -246,9 +246,11 @@ end
 A turn that ends on an API error (HTTP 429, 529, 5xx, a refused connection) is `{:error, %Error{kind: :api_error}}` with `reason: %{status:, category:, num_turns:, session_id:, ...}`; a 401 is `:auth` with reason `:invalid_credentials`. Before 0.19 these came back as `{:ok, %Result{is_error: true}}`.
 
 For streaming calls, `timeout: ms` bounds both the total run and each gap
-between output frames. A stream that ends before its terminal result emits a
-`stream_truncated` error event. Without an explicit timeout, a per-frame idle
-safety deadline still applies. Select the Forcola runner below when timeout
+between output frames. `idle_timeout_ms: ms` bounds the gaps separately, so a
+long run can still detect a stalled CLI early:
+`ClaudeWrapper.stream(prompt, timeout: 1_800_000, idle_timeout_ms: 120_000)`.
+A stream that ends before its terminal result emits a `stream_truncated` error
+event. Without either, a per-frame idle safety deadline (300 s) still applies. Select the Forcola runner below when timeout
 cleanup must terminate the CLI process group.
 
 Each stdout line is bounded by the config's `max_line_bytes` (default 1 MiB);

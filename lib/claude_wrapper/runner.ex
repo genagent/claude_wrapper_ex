@@ -122,8 +122,10 @@ defmodule ClaudeWrapper.Runner do
   lines ends the stream with `{:line_limit, max_line_bytes}` after an
   over-limit line, and stops the CLI. `run_observed/5` gets the same option
   and reports an over-limit line as `{:error, {:limit, {:line, :stdout, n}}}`. A finite streaming timeout bounds
-  both the whole run and each gap between lines. Without one, implementations
-  retain their idle safety deadline.
+  the whole run. `stream_lines/4` `opts` carries `:idle_timeout_ms` when
+  `Config` sets it: the longest gap between lines, independent of the
+  timeout (#313). Without it, a finite timeout also bounds each gap, and
+  without either, implementations retain their idle safety deadline.
   """
 
   @typedoc "Runner error reasons. `:timeout` is common to both runners."

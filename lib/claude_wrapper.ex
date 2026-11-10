@@ -226,8 +226,9 @@ defmodule ClaudeWrapper do
   one-shot only and cannot be honored by a stream: with either, nothing is
   spawned and the stream yields one terminal `%StreamEvent{type: "error"}`
   (`"execution_observer_unsupported"` / `"runner_options_unsupported"`).
-  A finite `:timeout` bounds both the whole run and each gap between frames;
-  without one, a per-frame idle safety deadline still applies. A truncated run
+  A finite `:timeout` bounds the whole run and, unless `:idle_timeout_ms`
+  is given, each gap between frames; without either, a per-frame idle
+  safety deadline still applies. A truncated run
   (timeout, non-zero exit, spawn failure) ends with a terminal
   `%StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}` rather
   than a silent stop; see `ClaudeWrapper.Query.stream/2` for details and the
@@ -298,7 +299,17 @@ defmodule ClaudeWrapper do
   # --- Private ---
 
   @runner_keys [:runner, :runner_options]
-  @config_keys [:binary, :working_dir, :env, :timeout, :verbose, :debug | @runner_keys]
+  @config_keys [
+    :binary,
+    :working_dir,
+    :env,
+    :timeout,
+    :idle_timeout_ms,
+    :max_line_bytes,
+    :release_env,
+    :verbose,
+    :debug | @runner_keys
+  ]
   @execution_keys [:session_observer, :rate_limit_observer, :execution_observer]
 
   defp split_opts(opts) do

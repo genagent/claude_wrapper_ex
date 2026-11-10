@@ -42,13 +42,15 @@ defmodule ClaudeWrapper.Config do
           runner: module() | nil,
           runner_options: keyword() | nil,
           release_env: :scrub | :inherit,
-          max_line_bytes: pos_integer()
+          max_line_bytes: pos_integer(),
+          idle_timeout_ms: pos_integer() | nil
         }
 
   defstruct [
     :binary,
     :working_dir,
     :timeout,
+    :idle_timeout_ms,
     :runner,
     :runner_options,
     env: [],
@@ -85,8 +87,18 @@ defmodule ClaudeWrapper.Config do
       ms by default in Claude Code 2.1.312) counts against this timeout.
       Applies to `query/2`, `Command.run/3`, `raw/2`, and the CLI subcommand
       wrappers (via `exec/2`). For `ClaudeWrapper.stream/2`, a finite value
-      bounds both the whole run and each gap between output frames. Without
-      one, streaming retains its per-frame idle safety deadline.
+      bounds both the whole run and each gap between output frames unless
+      `:idle_timeout_ms` is set. Without one, streaming retains its per-frame
+      idle safety deadline (300000 ms).
+    * `:idle_timeout_ms` - For `ClaudeWrapper.stream/2` and
+      `ClaudeWrapper.Query.stream/2`, the longest gap between output lines,
+      in milliseconds, independently of `:timeout` (default `nil`: the gap
+      bound follows `:timeout` as above). A stream that writes nothing for
+      this long stops the CLI and ends with a `"stream_truncated"` error
+      event, while a run that keeps writing can still take until `:timeout`
+      (#313). One-shot calls ignore it; evidenced execution takes its own
+      `:idle_timeout_ms` runner option. Raises `ArgumentError` unless a
+      positive integer or `nil`.
     * `:max_line_bytes` - The largest stdout line, in bytes, that
       `ClaudeWrapper.Query.stream/2` and observed execution
       (`ClaudeWrapper.Query.execute/3` with a session or rate-limit
@@ -117,6 +129,7 @@ defmodule ClaudeWrapper.Config do
       working_dir: opts[:working_dir],
       env: validate_env!(opts[:env] || []),
       timeout: opts[:timeout],
+      idle_timeout_ms: validate_idle_timeout_ms!(opts[:idle_timeout_ms]),
       verbose: Keyword.get(opts, :verbose, false),
       debug: Keyword.get(opts, :debug, false),
       runner: validate_runner!(opts[:runner]),
@@ -230,6 +243,16 @@ defmodule ClaudeWrapper.Config do
 
   defp validate_max_line_bytes!(other),
     do: raise(ArgumentError, "max_line_bytes must be a positive integer, got: #{inspect(other)}")
+
+  defp validate_idle_timeout_ms!(nil), do: nil
+  defp validate_idle_timeout_ms!(ms) when is_integer(ms) and ms > 0, do: ms
+
+  defp validate_idle_timeout_ms!(other),
+    do:
+      raise(
+        ArgumentError,
+        "idle_timeout_ms must be a positive integer or nil, got: #{inspect(other)}"
+      )
 
   # `System.cmd/3` unsets a variable given `nil`; a struct built without
   # new/1 may still carry `false`.
