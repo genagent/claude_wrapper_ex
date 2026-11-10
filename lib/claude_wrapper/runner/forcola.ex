@@ -14,7 +14,7 @@ if Code.ensure_loaded?(Forcola) do
     with `config :claude_wrapper, runner: ClaudeWrapper.Runner.Forcola`.
     forcola is POSIX-only.
 
-    Requires forcola `~> 0.7.0`. `claude -p` documents piped
+    Requires forcola `~> 0.12`. `claude -p` documents piped
     stdin as a supported input channel ("useful for pipes" in `claude --help`), and
     before 0.3.4 `Forcola.run/2` and `Forcola.Stream.lines/2` left the
     child's stdin open and unfed after spawn -- a child that reads it
@@ -25,7 +25,7 @@ if Code.ensure_loaded?(Forcola) do
     ## Evidenced execution
 
     `run_evidenced/5` runs one `Forcola.run/2` and reports its
-    bounded-execution evidence using Forcola 0.7 and its matching shim.
+    bounded-execution evidence using Forcola 0.12 and its matching shim.
     The shim must support the bounded-run capability exchange. If an
     unsupported Forcola is loaded, it returns `{:error, {:evidence_unsupported, :forcola_result_lacks_evidence}}`
     before spawning. An older shim is rejected by Forcola itself before the
@@ -64,7 +64,7 @@ if Code.ensure_loaded?(Forcola) do
     ends the helper, closing its port; the shim then runs its owner-death
     sequence (the configured interrupt, then TERM/KILL of the process group)
     and the call returns `{:error, :cancelled}` with `reason: :cancelled` and
-    unknown cleanup, since Forcola 0.7 sends no report after the port closes.
+    unknown cleanup, since Forcola sends no report after the port closes.
     If the execution caller dies,
     the helper exits and Forcola's shim cleans up as for owner death. If the
     helper dies, the call returns `{:error, {:helper_down, reason}}` with

@@ -73,7 +73,7 @@ optional `run_evidenced/5` callback, selected by `Query.execute/2,3` when an
 non-empty options before spawning. `Runner.Forcola.run_evidenced/5` runs
 one `Forcola.run/2` in a helper owned by `Runner.Collector` (bounded line
 framing in the execution caller, no second process killer) and translates
-the result through `Runner.ForcolaEvidence`; it requires Forcola `~> 0.7.0`
+the result through `Runner.ForcolaEvidence`; it requires Forcola `~> 0.12`
 and its matching shim. `Runner.Forcola` compiles only when the optional
 `forcola` dep is present; it runs every `claude` under a Rust shim that
 process-group-kills the CLI (and its stdio MCP servers) on timeout, stream
@@ -260,7 +260,7 @@ test code that drives `claude_wrapper`. Evidenced execution is covered with
 fake runners and fake collector runs (`evidenced_execution_test.exs`,
 `runner/collector_test.exs`, `runner/forcola_evidence_test.exs`); the
 real-Forcola suite is tagged `:forcola_evidence` and runs by default,
-requiring Forcola 0.7 and a matching shim. Missing required evidence support
+requiring Forcola 0.12 and a matching shim. Missing required evidence support
 fails the suite rather than excluding these tests. Runner raises, throws and
 catchable exits on the evidenced path return typed `:io` errors and one
 terminal record with bounded observed stdout and the first native ID;
