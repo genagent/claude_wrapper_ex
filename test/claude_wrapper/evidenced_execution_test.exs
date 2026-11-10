@@ -790,29 +790,27 @@ defmodule ClaudeWrapper.EvidencedExecutionTest do
   end
 
   describe "paths that cannot honor runner options" do
-    test "stream yields one terminal error event and spawns nothing" do
-      config = Config.new(binary: "/fake/claude", runner: ScriptRunner, runner_options: [a: 1])
+    test "stream with runner options on a runner without run_evidenced/5 spawns nothing" do
+      config =
+        Config.new(binary: "/fake/claude", runner: LegacyOnlyRunner, runner_options: [a: 1])
+
       events = Enum.to_list(Query.stream(Query.new("hi"), config))
 
-      assert [%StreamEvent{type: "error", data: %{"error" => "runner_options_unsupported"}}] =
-               events
-
-      refute_received {:stream_lines, _, _, _, _}
+      assert [%StreamEvent{type: "error", data: %{"error" => "evidence_unsupported"}}] = events
+      refute_received {:invoked, _}
     end
 
-    test "stream with an execution observer is rejected", context do
+    test "stream with an execution observer needs run_evidenced/5", context do
       opts = [
         binary: "/fake/claude",
-        runner: ScriptRunner,
+        runner: LegacyOnlyRunner,
         execution_observer: {self(), context.reference}
       ]
 
       events = Enum.to_list(ClaudeWrapper.stream("hi", opts))
 
-      assert [%StreamEvent{type: "error", data: %{"error" => "execution_observer_unsupported"}}] =
-               events
-
-      refute_received {:stream_lines, _, _, _, _}
+      assert [%StreamEvent{type: "error", data: %{"error" => "evidence_unsupported"}}] = events
+      refute_received {:invoked, _}
     end
 
     test "stream without options uses the per-config runner" do

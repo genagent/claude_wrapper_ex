@@ -68,9 +68,11 @@ ClaudeWrapper.Runner.Forcola  # opt-in leak-free (process-group kill); needs for
 `config :claude_wrapper, runner: ...` (default `Runner.Port`).
 `Runner.options/1` resolves `:runner_options` the same way (explicit `[]`
 wins over the application default). Runner options are honored only by the
-optional `run_evidenced/5` callback, selected by `Query.execute/2,3` when an
-`:execution_observer` is given or options are non-empty; other paths reject
-non-empty options before spawning. `Runner.Forcola.run_evidenced/5` runs
+optional `run_evidenced/5` callback, selected by `Query.execute/2,3` and
+`Query.stream/2,3` when an `:execution_observer` is given or options are
+non-empty (an evidenced stream runs it in a `ClaudeWrapper.Run` process and
+yields frames as they arrive); other paths reject non-empty options before
+spawning. `Runner.Forcola.run_evidenced/5` runs
 one `Forcola.run/2` in a helper owned by `Runner.Collector` (bounded line
 framing in the execution caller, no second process killer) and translates
 the result through `Runner.ForcolaEvidence`; it requires Forcola `~> 0.12`

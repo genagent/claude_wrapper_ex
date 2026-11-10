@@ -222,10 +222,11 @@ defmodule ClaudeWrapper do
 
   The subprocess starts when the stream is consumed. Accepts the same options as
   `query/2`, except `:session_observer` and `:rate_limit_observer` (one-shot
-  only, ignored here). `:execution_observer` and non-empty runner options are
-  one-shot only and cannot be honored by a stream: with either, nothing is
-  spawned and the stream yields one terminal `%StreamEvent{type: "error"}`
-  (`"execution_observer_unsupported"` / `"runner_options_unsupported"`).
+  only, ignored here). With `:execution_observer` or non-empty runner
+  options the stream is evidenced: it needs a runner with
+  `c:ClaudeWrapper.Runner.run_evidenced/5` and sends one
+  `%ClaudeWrapper.ExecutionEvidence{}` when it ends; see
+  `ClaudeWrapper.Query.stream/3`.
   A finite `:timeout` bounds the whole run and, unless `:idle_timeout_ms`
   is given, each gap between frames; without either, a per-frame idle
   safety deadline still applies. A truncated run
@@ -240,14 +241,7 @@ defmodule ClaudeWrapper do
     config = Config.new(config_opts)
     query = build_query(prompt, query_opts)
 
-    if Keyword.has_key?(execution_opts, :execution_observer) do
-      Query.rejected_stream(
-        "execution_observer_unsupported",
-        "execution_observer is one-shot only; nothing was spawned"
-      )
-    else
-      Query.stream(query, config)
-    end
+    Query.stream(query, config, Keyword.take(execution_opts, [:execution_observer]))
   end
 
   @doc """
