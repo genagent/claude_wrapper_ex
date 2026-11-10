@@ -33,11 +33,12 @@ defmodule ClaudeWrapper.Runner do
   configured default options. Nothing in this library writes application or
   OS environment state to select a runner.
 
-  Runner options are honored only by `c:run_evidenced/5`. `run/4`,
-  `stream_lines/4` and `run_observed/5` take no runner options, so the paths
-  that dispatch through them (`ClaudeWrapper.Command.run/3`,
-  `ClaudeWrapper.raw/2`, `Query.stream/2`) reject a non-empty resolved
-  option list before spawning instead of silently ignoring it.
+  Runner options are honored only by `c:run_evidenced/5`, which serves
+  evidenced one-shot execution and evidenced streams
+  (`ClaudeWrapper.Query.stream/3`, #314). `run/4` and `run_observed/5`
+  take no runner options, so the paths that dispatch through them
+  (`ClaudeWrapper.Command.run/3`, `ClaudeWrapper.raw/2`) reject a non-empty
+  resolved option list before spawning instead of silently ignoring it.
   `ClaudeWrapper.DuplexSession.start_link/1` rejects one the same way before
   opening any duplex adapter.
 
@@ -66,7 +67,8 @@ defmodule ClaudeWrapper.Runner do
   Legacy callbacks keep their exception behavior. Collector observer failures
   return `{:observer_failed, kind, reason}` after draining the native run.
 
-  `run_evidenced/5` is optional and one-shot only. It has the same observer
+  `run_evidenced/5` is optional. An evidenced stream calls it from a
+  `ClaudeWrapper.Run` process and yields observed lines as they arrive. It has the same observer
   contract as `run_observed/5` (trusted, invoked in the calling process
   before the function returns, stdout only) and additionally:
 

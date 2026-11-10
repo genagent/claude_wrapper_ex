@@ -349,10 +349,13 @@ config =
   )
 ```
 
-Runner options are honored only by evidenced one-shot execution (below).
-Paths that cannot honor them reject non-empty options before spawning:
-`Command.run/3` and `raw/2` return `:invalid_runner_options`, `stream/2` yields
-one terminal `runner_options_unsupported` error event, and
+Runner options are honored only by evidenced execution (below), one-shot or
+streamed: `stream/2` with runner options or an `:execution_observer` yields
+frames as they arrive and sends one `%ExecutionEvidence{}` when the stream
+ends, including on an early halt (`Query.stream/3`). It needs a runner with
+`run_evidenced/5`; otherwise it yields one terminal `evidence_unsupported`
+error event. Paths that cannot honor them reject non-empty options before
+spawning: `Command.run/3` and `raw/2` return `:invalid_runner_options`, and
 `ClaudeWrapper.Config.exec/2` (used by the `Commands.*` wrappers) raises
 `ArgumentError`. `DuplexSession.start_link/1` rejects non-empty resolved options
 before opening any adapter, returning `:invalid_runner_options` with reason

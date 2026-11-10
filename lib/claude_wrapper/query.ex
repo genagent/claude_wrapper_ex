@@ -1716,17 +1716,53 @@ defmodule ClaudeWrapper.Query do
   stream ends early (SIGINT, then SIGTERM and SIGKILL); use the
   `ClaudeWrapper.Runner.Forcola` runner to also stop its process group.
 
-  The runner is `ClaudeWrapper.Runner.impl/1` for `config`. Streaming cannot
-  honor runner options, so when `ClaudeWrapper.Runner.options/1` is non-empty
-  nothing is spawned and the stream yields one terminal
-  `%StreamEvent{type: "error", data: %{"error" => "runner_options_unsupported"}}`.
+  The runner is `ClaudeWrapper.Runner.impl/1` for `config`. When
+  `ClaudeWrapper.Runner.options/1` is non-empty the stream is evidenced; see
+  `stream/3`.
   """
   @spec stream(t(), Config.t()) :: Enumerable.t()
-  def stream(%__MODULE__{} = query, %Config{} = config) do
+  def stream(%__MODULE__{} = query, %Config{} = config), do: stream(query, config, [])
+
+  @doc """
+  Like `stream/2`, with an `:execution_observer` and runner options (#314).
+
+  With `execution_observer: {pid, reference}`, or when
+  `ClaudeWrapper.Runner.options/1` is non-empty, the stream runs one
+  evidenced execution (see "Evidenced execution" in `execute/3`) and yields
+  its frames as they arrive. When the stream ends, on every path (clean end,
+  timeout, nonzero exit, spawn failure, early halt, or a raise in the
+  consumer), the observer receives exactly one
+  `{reference, %ClaudeWrapper.ExecutionEvidence{}}`. Runner options are
+  validated as for `execute/3`, before anything is spawned.
+
+  The runner must implement `c:ClaudeWrapper.Runner.run_evidenced/5`
+  (`ClaudeWrapper.Runner.Forcola`). A preflight rejection yields one terminal
+  `%StreamEvent{type: "error"}` whose `"error"` is the `ClaudeWrapper.Error`
+  kind (`"evidence_unsupported"`, `"invalid_runner_options"`,
+  `"invalid_execution_observer"`, ...); a valid observer still receives one
+  not-started record.
+
+  The run executes in a `ClaudeWrapper.Run` process that sends frames to the
+  consuming process without waiting for it, so there is no backpressure;
+  the runner's `:max_output_bytes` (64 MiB by default) bounds what can
+  queue. Halting early cancels the run (evidence `reason: :cancelled`);
+  Forcola reports no cleanup facts after a cancel, so `:cleanup` is
+  `:unknown`. `Config` `:idle_timeout_ms` becomes the `:idle_timeout_ms`
+  runner option when the options do not set one. A stdout line over the
+  runner's `:max_line_bytes` is not yielded; the stream then ends with an
+  `%StreamEvent{type: "error", data: %{"error" => "lines_dropped"}}` event.
+  A run that ends without a terminal `result` ends with
+  `"stream_truncated"`, as in `stream/2`, with the error kind under
+  `"kind"`. The run's exec telemetry span is emitted inside the stream span.
+
+  `opts` takes only `:execution_observer`; an empty list is `stream/2`.
+  """
+  @spec stream(t(), Config.t(), keyword()) :: Enumerable.t()
+  def stream(%__MODULE__{} = query, %Config{} = config, opts) when is_list(opts) do
     query = %{query | output_format: :stream_json}
     config = with_spawn_env(query, config)
 
-    Telemetry.span_stream(query, fn -> do_stream(query, config) end)
+    Telemetry.span_stream(query, fn -> do_stream(query, config, opts) end)
   end
 
   @doc false
@@ -1735,16 +1771,107 @@ defmodule ClaudeWrapper.Query do
     [%StreamEvent{type: "error", data: %{"error" => error, "message" => message}, raw: nil}]
   end
 
-  defp do_stream(%__MODULE__{} = query, %Config{} = config) do
-    if Runner.options(config) == [] do
+  defp do_stream(%__MODULE__{} = query, %Config{} = config, opts) do
+    if opts == [] and Runner.options(config) == [] do
       do_stream_lines(query, config)
     else
-      rejected_stream(
-        "runner_options_unsupported",
-        "runner_options are only honored by evidenced one-shot execution; nothing was spawned"
-      )
+      evidenced_stream(query, config, opts)
     end
   end
+
+  # Frames queued for the consumer before Run starts dropping them. The
+  # runner's output bound is the real limit; a drop is reported at the end.
+  @evidenced_stream_frames 100_000
+
+  defp evidenced_stream(query, config, opts) do
+    config = idle_runner_option(config)
+
+    Stream.resource(
+      fn -> start_evidenced_stream(query, config, opts) end,
+      &next_evidenced/1,
+      &stop_evidenced/1
+    )
+  end
+
+  defp idle_runner_option(%Config{idle_timeout_ms: nil} = config), do: config
+
+  defp idle_runner_option(%Config{idle_timeout_ms: ms} = config) do
+    options = Runner.options(config)
+
+    if Keyword.keyword?(options) and not Keyword.has_key?(options, :idle_timeout_ms),
+      do: %{config | runner_options: options ++ [idle_timeout_ms: ms]},
+      else: config
+  end
+
+  defp start_evidenced_stream(query, config, opts) do
+    run_opts = [events_to: self(), max_queued_frames: @evidenced_stream_frames]
+
+    case ClaudeWrapper.Run.start(query, config, opts ++ run_opts) do
+      {:ok, run} -> {:running, run, false}
+      {:error, %Error{} = error} -> {:rejected, error}
+    end
+  end
+
+  defp next_evidenced({:rejected, error}),
+    do: {rejected_stream(Atom.to_string(error.kind), Exception.message(error)), :done}
+
+  defp next_evidenced({:running, run, saw_result?} = state) do
+    ref = run.ref
+
+    receive do
+      {^ref, {:frame, %StreamEvent{type: "result"} = event}} -> {[event], {:running, run, true}}
+      {^ref, {:frame, %StreamEvent{} = event}} -> {[event], state}
+      {^ref, {:done, _status}} -> {finish_evidenced(run, saw_result?), {:finished, run}}
+    end
+  end
+
+  defp next_evidenced(state), do: {:halt, state}
+
+  # The run has ended and its outcome is held by the Run process.
+  defp finish_evidenced(run, saw_result?) do
+    {kind, evidence} =
+      case ClaudeWrapper.Run.await(run, :infinity) do
+        {:ok, _result, evidence} -> {nil, evidence}
+        {:error, %Error{kind: kind}, evidence} -> {kind, evidence}
+      end
+
+    dropped =
+      case ClaudeWrapper.Run.snapshot(run) do
+        %{frames_dropped: n} -> evidence.lines_dropped + n
+        _other -> evidence.lines_dropped
+      end
+
+    lines_dropped_events(dropped) ++ if(saw_result?, do: [], else: [truncation_event(kind)])
+  end
+
+  defp lines_dropped_events(0), do: []
+
+  defp lines_dropped_events(count) do
+    [
+      %StreamEvent{
+        type: "error",
+        data: %{
+          "error" => "lines_dropped",
+          "count" => count,
+          "message" =>
+            "#{count} stdout line(s) were not yielded (over the runner's " <>
+              ":max_line_bytes, or queued past the frame bound); the evidence " <>
+              "stdout retains them"
+        },
+        raw: nil
+      }
+    ]
+  end
+
+  # An early halt or a raise in the consumer: cancel the run, which records
+  # the cancellation in its one evidence record, then free it.
+  defp stop_evidenced({:running, run, _saw_result?}) do
+    ClaudeWrapper.Run.cancel(run, :infinity)
+    ClaudeWrapper.Run.release(run)
+  end
+
+  defp stop_evidenced({:finished, run}), do: ClaudeWrapper.Run.release(run)
+  defp stop_evidenced(_state), do: :ok
 
   defp do_stream_lines(%__MODULE__{} = query, %Config{} = config) do
     # stream-json with --print requires --verbose
@@ -1804,6 +1931,11 @@ defmodule ClaudeWrapper.Query do
       raw: nil
     }
   end
+
+  defp truncation_event(nil), do: truncation_event()
+
+  defp truncation_event(kind),
+    do: update_in(truncation_event().data, &Map.put(&1, "kind", Atom.to_string(kind)))
 
   defp truncation_event do
     %StreamEvent{

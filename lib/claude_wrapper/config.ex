@@ -113,10 +113,11 @@ defmodule ClaudeWrapper.Config do
     * `:runner_options` - A keyword list of runner options for this config
       (default `nil`: the `:runner_options` application env, then `[]`). An
       explicit `[]` disables configured defaults. Runner options are honored
-      only by evidenced one-shot execution (`Query.execute/2,3` through a
-      runner implementing `c:ClaudeWrapper.Runner.run_evidenced/5`); other
-      runner paths and `ClaudeWrapper.DuplexSession` reject non-empty
-      options before spawning. See
+      only by evidenced execution (`Query.execute/2,3` and
+      `Query.stream/2,3` through a runner implementing
+      `c:ClaudeWrapper.Runner.run_evidenced/5`); other runner paths and
+      `ClaudeWrapper.DuplexSession` reject non-empty options before
+      spawning. See
       `ClaudeWrapper.Runner.Forcola` for the keys it accepts.
 
   Raises `ArgumentError` when `:runner` is not a module atom or
@@ -325,7 +326,7 @@ defmodule ClaudeWrapper.Config do
   def exec(%__MODULE__{} = config, args) do
     if ClaudeWrapper.Runner.options(config) != [] do
       raise ArgumentError,
-            "runner_options are only supported by evidenced one-shot Query execution; " <>
+            "runner_options are only supported by evidenced Query execution; " <>
               "Config.exec/2 cannot honor them"
     end
 
