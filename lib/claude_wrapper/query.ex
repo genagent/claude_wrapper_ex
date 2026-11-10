@@ -1469,23 +1469,25 @@ defmodule ClaudeWrapper.Query do
       :continue
     else
       send(pid, {reference, %SessionObservation{session_id: id}})
-
-      if is_nil(rate_limit_observer) do
-        :observed
-      else
-        {:continue, &observe_events(&1, nil, rate_limit_observer)}
-      end
+      # Keep observing for rate-limit telemetry (#324), even without a
+      # rate-limit observer.
+      {:continue, &observe_events(&1, nil, rate_limit_observer)}
     end
   end
 
-  defp maybe_send_rate_limit(data, {pid, reference}) do
-    with {:ok, observation} <- RateLimitObservation.from_event(data),
-         do: send(pid, {reference, observation})
+  # Every observed rate_limit_event also emits `[:claude_wrapper, :rate_limit]`
+  # telemetry (#324), with or without an observer.
+  defp maybe_send_rate_limit(data, observer) do
+    with {:ok, observation} <- RateLimitObservation.from_event(data) do
+      Telemetry.rate_limit(observation, data["session_id"])
+      notify_rate_limit(observer, observation)
+    end
 
     :continue
   end
 
-  defp maybe_send_rate_limit(_data, _observer), do: :continue
+  defp notify_rate_limit({pid, reference}, observation), do: send(pid, {reference, observation})
+  defp notify_rate_limit(_observer, _observation), do: :ok
 
   defp observed_result(stdout, code, stderr) do
     case terminal_result(stdout) do

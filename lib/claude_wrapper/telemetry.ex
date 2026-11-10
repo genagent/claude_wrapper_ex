@@ -32,6 +32,37 @@ defmodule ClaudeWrapper.Telemetry do
       `:stop` on the terminal `result`, `:exception` if the turn fails
       before a result (e.g. the subprocess exits mid-turn).
 
+    * `[:claude_wrapper, :duplex, :permission, :request]` -- a
+      `ClaudeWrapper.DuplexSession` received a `can_use_tool` request.
+      Metadata: `:session_id`, `:request_id`, `:tool_name`.
+
+    * `[:claude_wrapper, :duplex, :permission, :decision]` -- the session
+      answered (or deferred) a permission request. Measurements add
+      `:duration`, from the request to this decision, including any
+      deferral. Metadata adds `:decision` (`:allow`, `:allow_updated` for
+      `{:allow, input}`, `:deny`, `:defer`) and `:source`: `:handler` (the
+      `:on_permission` return), `:deferred` (a later
+      `respond_to_permission/3`), `:handler_raised` (a raising handler,
+      denied) or `:defer_unsupported` (a 2-arity handler returned `:defer`,
+      denied). A deferred request emits a `:defer` decision, then a second
+      decision with `source: :deferred` when it is answered.
+
+    * `[:claude_wrapper, :duplex, :interrupt, :start | :stop]` -- around an
+      interrupt sent with `ClaudeWrapper.DuplexSession.interrupt/2` (or
+      `control/3` with subtype `"interrupt"`). Metadata: `:session_id`,
+      `:turn_pending?`; `:stop` adds `:outcome`: `:ok` (acknowledged),
+      `:error` (the CLI answered with an error) or `:closed` (the session
+      had no transport, or it closed before the answer). Interrupts the
+      session sends on its own (a turn timeout, `cancel_on_caller_exit`)
+      emit nothing.
+
+    * `[:claude_wrapper, :rate_limit]` -- a `rate_limit_event` frame, from a
+      `DuplexSession`, from `ClaudeWrapper.Query.stream/2`, and from one-shot
+      execution that observes stdout (`ClaudeWrapper.Query.execute/3` with
+      a session, rate-limit or execution observer). Measurements:
+      `:system_time`. Metadata: `:session_id` (when known) and
+      `:observation`, a `%ClaudeWrapper.RateLimitObservation{}`.
+
   ## Measurements
 
   Automatically populated by `:telemetry.span/3`:
@@ -66,7 +97,17 @@ defmodule ClaudeWrapper.Telemetry do
       `:cost_usd`, to `ClaudeWrapper.Budget.record/2`.
     * `:exit_code` -- `0` on success, non-zero when the CLI exited
       with an error that still produced output, `nil` for other
-      errors.
+      errors. A duplex turn reports `0` for every result, since the
+      subprocess keeps running; read `:is_error` instead.
+    * `:usage` -- the terminal result's token usage in the
+      `t:ClaudeWrapper.Result.usage/0` shape, or `nil` (no result, or a
+      result without usage).
+    * `:is_error` -- `true` when the call failed or its result has
+      `is_error: true` (for example `error_during_execution`).
+    * `:subtype` -- the terminal result's `subtype` (`"success"`,
+      `"error_during_execution"`, ...), or `nil` without a result.
+
+  Metadata never carries tool input, prompts or result text.
 
   `:exception` events follow the standard `:telemetry.span/3` shape
   and add `:kind`, `:reason`, and `:stacktrace`.
@@ -89,7 +130,7 @@ defmodule ClaudeWrapper.Telemetry do
       )
   """
 
-  alias ClaudeWrapper.{Error, Query, Result, StreamEvent}
+  alias ClaudeWrapper.{Error, Query, RateLimitObservation, Result, StreamEvent}
 
   @type metadata :: %{optional(atom()) => term()}
 
@@ -225,10 +266,106 @@ defmodule ClaudeWrapper.Telemetry do
         reason: reason,
         cost_usd: nil,
         turn_cost_usd: nil,
-        exit_code: nil
+        exit_code: nil,
+        usage: nil,
+        is_error: true,
+        subtype: nil
       })
     )
   end
+
+  @doc "Emit `[:claude_wrapper, :duplex, :permission, :request]` and return its monotonic time."
+  @spec permission_request(metadata()) :: integer()
+  def permission_request(metadata) do
+    monotonic = System.monotonic_time()
+
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :permission, :request],
+      %{monotonic_time: monotonic, system_time: System.system_time()},
+      metadata
+    )
+
+    monotonic
+  end
+
+  @doc """
+  Emit `[:claude_wrapper, :duplex, :permission, :decision]` for a request made
+  at `requested` (a monotonic time from `permission_request/1`).
+  """
+  @spec permission_decision(integer(), metadata()) :: :ok
+  def permission_decision(requested, metadata) do
+    now = System.monotonic_time()
+
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :permission, :decision],
+      %{monotonic_time: now, duration: now - requested},
+      metadata
+    )
+  end
+
+  @doc """
+  Emit `[:claude_wrapper, :duplex, :interrupt, :start]` and return a span
+  context for `interrupt_stop/2`.
+  """
+  @spec interrupt_start(metadata()) :: {integer(), metadata()}
+  def interrupt_start(metadata) do
+    monotonic = System.monotonic_time()
+
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :interrupt, :start],
+      %{monotonic_time: monotonic, system_time: System.system_time()},
+      metadata
+    )
+
+    {monotonic, metadata}
+  end
+
+  @doc "Emit `[:claude_wrapper, :duplex, :interrupt, :stop]` with `outcome`."
+  @spec interrupt_stop({integer(), metadata()}, :ok | :error | :closed) :: :ok
+  def interrupt_stop({monotonic, metadata}, outcome) do
+    now = System.monotonic_time()
+
+    :telemetry.execute(
+      [:claude_wrapper, :duplex, :interrupt, :stop],
+      %{monotonic_time: now, duration: now - monotonic},
+      Map.put(metadata, :outcome, outcome)
+    )
+  end
+
+  @doc "Emit `[:claude_wrapper, :rate_limit]` for one observation."
+  @spec rate_limit(RateLimitObservation.t(), String.t() | nil) :: :ok
+  def rate_limit(%RateLimitObservation{} = observation, session_id) do
+    :telemetry.execute(
+      [:claude_wrapper, :rate_limit],
+      %{system_time: System.system_time()},
+      %{session_id: session_id, observation: observation}
+    )
+  end
+
+  @doc """
+  Emit `[:claude_wrapper, :rate_limit]` when `data` (a decoded
+  `rate_limit_event` frame) parses as an observation. Returns `:ok` either way.
+  """
+  @spec rate_limit_event(map(), String.t() | nil) :: :ok
+  def rate_limit_event(data, session_id) when is_map(data) do
+    case RateLimitObservation.from_event(data) do
+      {:ok, observation} -> rate_limit(observation, data["session_id"] || session_id)
+      :error -> :ok
+    end
+  end
+
+  @doc """
+  The `:usage`, `:is_error` and `:subtype` `:stop` metadata for a terminal
+  result, or for no result (`nil`, with `is_error` as given).
+  """
+  @spec result_metadata(Result.t() | nil, boolean()) :: metadata()
+  def result_metadata(result, is_error \\ false)
+
+  def result_metadata(%Result{} = result, _is_error) do
+    %{usage: Result.usage(result), is_error: result.is_error, subtype: result.extra["subtype"]}
+  end
+
+  def result_metadata(nil, is_error), do: %{usage: nil, is_error: is_error, subtype: nil}
 
   # --- Metadata builders ---
 
@@ -262,36 +399,36 @@ defmodule ClaudeWrapper.Telemetry do
   end
 
   defp exec_stop_metadata({:ok, %Result{} = result}) do
-    %{
+    Map.merge(result_metadata(result), %{
       cost_usd: result.cost_usd,
       exit_code: 0,
       session_id: result.session_id
-    }
+    })
   end
 
   defp exec_stop_metadata({:error, %Error{exit_code: code}}) do
-    %{cost_usd: nil, exit_code: code}
+    Map.merge(result_metadata(nil, true), %{cost_usd: nil, exit_code: code})
   end
 
   defp exec_stop_metadata({:error, _reason}) do
-    %{cost_usd: nil, exit_code: nil}
+    Map.merge(result_metadata(nil, true), %{cost_usd: nil, exit_code: nil})
   end
 
   defp session_turn_stop_metadata({:ok, session, %Result{} = result}) do
-    %{
+    Map.merge(result_metadata(result), %{
       cost_usd: result.cost_usd,
       turn_cost_usd: session |> Map.get(:history, []) |> Result.turn_costs() |> List.last(),
       exit_code: 0,
       session_id: result.session_id
-    }
+    })
   end
 
   defp session_turn_stop_metadata({:error, %Error{exit_code: code}}) do
-    %{cost_usd: nil, turn_cost_usd: nil, exit_code: code}
+    Map.merge(result_metadata(nil, true), %{cost_usd: nil, turn_cost_usd: nil, exit_code: code})
   end
 
   defp session_turn_stop_metadata({:error, _reason}) do
-    %{cost_usd: nil, turn_cost_usd: nil, exit_code: nil}
+    Map.merge(result_metadata(nil, true), %{cost_usd: nil, turn_cost_usd: nil, exit_code: nil})
   end
 
   defp resume?(%Query{resume: resume, continue_session: continue, session_id: sid}) do
@@ -370,6 +507,9 @@ defmodule ClaudeWrapper.Telemetry do
       metadata
       |> Map.put_new(:cost_usd, nil)
       |> Map.put_new(:exit_code, 0)
+      |> Map.put_new(:usage, nil)
+      |> Map.put_new(:is_error, false)
+      |> Map.put_new(:subtype, nil)
 
     :telemetry.execute(
       [:claude_wrapper, :stream, :stop],
@@ -400,13 +540,26 @@ defmodule ClaudeWrapper.Telemetry do
     )
   end
 
-  # Inspect stream events to capture session_id / cost_usd from the
-  # terminal `result` event, so :stop metadata can carry them.
+  # Inspect stream events to capture session_id / cost_usd / usage from the
+  # terminal `result` event, so :stop metadata can carry them, and emit
+  # rate-limit events as they pass.
   defp observe_stream_event(metadata, %StreamEvent{type: "result", data: data})
        when is_map(data) do
     metadata
+    |> Map.merge(result_metadata(Result.from_json(data)))
     |> maybe_put(:cost_usd, data["total_cost_usd"] || data["cost_usd"])
     |> maybe_put(:session_id, data["session_id"])
+  end
+
+  # The wrapper's own terminal error events (truncation, line limit,
+  # rejected options) end a stream that has no result.
+  defp observe_stream_event(metadata, %StreamEvent{type: "error"}),
+    do: Map.put(metadata, :is_error, true)
+
+  defp observe_stream_event(metadata, %StreamEvent{type: "rate_limit_event", data: data})
+       when is_map(data) do
+    rate_limit_event(data, metadata[:session_id])
+    metadata
   end
 
   defp observe_stream_event(metadata, _event), do: metadata

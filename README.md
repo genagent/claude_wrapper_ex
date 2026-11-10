@@ -442,7 +442,7 @@ It needs a runner with `run_evidenced/5` (currently `Runner.Forcola`).
   ClaudeWrapper.Retry.execute(query, config, max_retries: 3, base_delay_ms: 1_000)
   ```
 
-- **`ClaudeWrapper.Telemetry`**: `:telemetry.span/3`-shaped events (`:start` / `:stop` / `:exception`) around every exec path, so one handler observes the whole lifecycle. `:stop` metadata carries `:cost_usd` (the session's running total), `:exit_code`, `:duration`; session and duplex turn stops add `:turn_cost_usd`.
+- **`ClaudeWrapper.Telemetry`**: `:telemetry.span/3`-shaped events (`:start` / `:stop` / `:exception`) around every exec path, so one handler observes the whole lifecycle. `:stop` metadata carries `:cost_usd` (the session's running total), `:exit_code`, `:duration`, `:usage`, `:is_error` and `:subtype`; session and duplex turn stops add `:turn_cost_usd`. Further events cover `DuplexSession` permission requests and decisions (`[:claude_wrapper, :duplex, :permission, :request | :decision]`, with the decision, its source and the time to answer), interrupts (`[:claude_wrapper, :duplex, :interrupt, :start | :stop]`, with the outcome), and every observed `rate_limit_event` (`[:claude_wrapper, :rate_limit]`). Metadata never carries tool input, prompts or result text.
 
   | Event | Emitted by |
   |---|---|
@@ -549,7 +549,7 @@ The `PATH` / `CLAUDE_CLI` default is unchanged for everyone else. See `ClaudeWra
 | `ClaudeWrapper.StreamEvent` | NDJSON streaming event (`partial_message/1`) |
 | `ClaudeWrapper.McpConfig` | `.mcp.json` builder |
 | `ClaudeWrapper.Retry` | Exponential backoff retry |
-| `ClaudeWrapper.Telemetry` | `:telemetry` spans for exec/stream/session/duplex |
+| `ClaudeWrapper.Telemetry` | `:telemetry` spans for exec/stream/session/duplex, plus permission, interrupt and rate-limit events |
 | `ClaudeWrapper.Budget` | Client-side USD budget tracker |
 | `ClaudeWrapper.ToolPattern` | Typed, validated tool-spec builder |
 | `ClaudeWrapper.CliVersion` | Parse/compare the CLI version |
