@@ -34,6 +34,12 @@ defmodule ClaudeWrapper.Runner.ForcolaEvidence do
 
   @known [:max_output_bytes, :max_line_bytes | @passthrough]
 
+  # Claude Code ends an interrupted print-mode run cleanly on SIGINT (exit 0,
+  # an `error_during_execution` result, an interruption entry in the
+  # transcript) and abruptly on SIGTERM (143). Every Forcola path sends INT to
+  # the process group first and waits this long before TERM/KILL (#307).
+  @default_interrupt [interrupt_signal: :int, interrupt_grace_ms: 2_000]
+
   @doc false
   @spec known_options() :: [atom()]
   def known_options, do: @known
@@ -41,6 +47,21 @@ defmodule ClaudeWrapper.Runner.ForcolaEvidence do
   @doc false
   @spec default_max_output_bytes() :: pos_integer()
   def default_max_output_bytes, do: @default_max_output_bytes
+
+  @doc false
+  @spec default_interrupt() :: keyword()
+  def default_interrupt, do: @default_interrupt
+
+  @doc false
+  # The interrupt pair to pass to Forcola: the caller's when it gave one,
+  # otherwise the default.
+  @spec interrupt(keyword()) :: keyword()
+  def interrupt(options) do
+    case Keyword.take(options, [:interrupt_signal, :interrupt_grace_ms]) do
+      [] -> @default_interrupt
+      given -> given
+    end
+  end
 
   @doc false
   # Validate the resolved runner options and build the `Forcola.run/2`
@@ -65,7 +86,9 @@ defmodule ClaudeWrapper.Runner.ForcolaEvidence do
 
       forcola_opts =
         [{:merge_stderr, false} | bounds] ++
-          Keyword.take(opts, [:cd, :env]) ++ Keyword.take(options, @passthrough)
+          Keyword.take(opts, [:cd, :env]) ++
+          Keyword.take(options, @passthrough -- [:interrupt_signal, :interrupt_grace_ms]) ++
+          interrupt(options)
 
       {:ok, forcola_opts, max_line}
     end
