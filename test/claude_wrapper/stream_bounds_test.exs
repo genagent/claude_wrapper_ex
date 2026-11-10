@@ -62,6 +62,38 @@ defmodule ClaudeWrapper.StreamBoundsTest do
         assert [%StreamEvent{type: "error", data: %{"error" => "line_limit"}}] = events
       end
 
+      test "idle_timeout_ms ends a stalled stream before the whole-run timeout", %{tmp_dir: dir} do
+        started = System.monotonic_time(:millisecond)
+
+        events =
+          stream(dir, "echo '#{@init}'\nexec sleep 8\n", unquote(runner), idle_timeout_ms: 500)
+
+        elapsed = System.monotonic_time(:millisecond) - started
+
+        assert [
+                 %StreamEvent{type: "system"},
+                 %StreamEvent{type: "error", data: %{"error" => "stream_truncated"}}
+               ] = events
+
+        assert elapsed < 5_000
+      end
+
+      test "idle_timeout_ms does not end a stream that keeps writing", %{tmp_dir: dir} do
+        tick = ~s({"type":"system","subtype":"tick","session_id":"s"})
+        ticks = Enum.map_join(1..5, "", fn _ -> "sleep 0.3\necho '#{tick}'\n" end)
+
+        events =
+          stream(
+            dir,
+            "echo '#{@init}'\n" <> ticks <> "echo '#{@result}'\n",
+            unquote(runner),
+            idle_timeout_ms: 1_000
+          )
+
+        assert %StreamEvent{type: "result"} = List.last(events)
+        assert length(events) == 7
+      end
+
       test "a line under the bound is delivered whole", %{tmp_dir: dir} do
         text = String.duplicate("x", 300_000)
 
@@ -91,6 +123,48 @@ defmodule ClaudeWrapper.StreamBoundsTest do
 
   test "an invalid max_line_bytes raises" do
     assert_raise ArgumentError, fn -> Config.new(binary: "x", max_line_bytes: 0) end
+  end
+
+  test "idle_timeout_ms defaults to nil and rejects non-positive values" do
+    assert Config.new(binary: "x").idle_timeout_ms == nil
+    assert Config.new(binary: "x", idle_timeout_ms: 1_000).idle_timeout_ms == 1_000
+    assert_raise ArgumentError, fn -> Config.new(binary: "x", idle_timeout_ms: 0) end
+    assert_raise ArgumentError, fn -> Config.new(binary: "x", idle_timeout_ms: "1000") end
+  end
+
+  defmodule OptsRunner do
+    @moduledoc false
+    def stream_lines(_binary, _args, opts, timeout) do
+      send(opts[:test_pid] || self(), {:stream_opts, opts, timeout})
+      []
+    end
+  end
+
+  test "a custom runner receives idle_timeout_ms in stream opts" do
+    config = Config.new(binary: "x", runner: OptsRunner, timeout: 5_000, idle_timeout_ms: 750)
+    Query.new("p") |> Query.stream(config) |> Enum.to_list()
+
+    assert_received {:stream_opts, opts, 5_000}
+    assert opts[:idle_timeout_ms] == 750
+
+    Query.new("p") |> Query.stream(Config.new(binary: "x", runner: OptsRunner)) |> Enum.to_list()
+    assert_received {:stream_opts, opts, nil}
+    refute Keyword.has_key?(opts, :idle_timeout_ms)
+  end
+
+  test "ClaudeWrapper.stream/2 routes idle_timeout_ms and max_line_bytes to Config" do
+    ClaudeWrapper.stream("p",
+      binary: "x",
+      runner: OptsRunner,
+      idle_timeout_ms: 750,
+      max_line_bytes: 2_048,
+      release_env: :inherit
+    )
+    |> Enum.to_list()
+
+    assert_received {:stream_opts, opts, nil}
+    assert opts[:idle_timeout_ms] == 750
+    assert opts[:max_line_bytes] == 2_048
   end
 
   @tag :forcola
