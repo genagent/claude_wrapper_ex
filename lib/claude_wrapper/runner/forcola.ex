@@ -4,11 +4,28 @@ if Code.ensure_loaded?(Forcola) do
     Leak-free runner backed by [forcola](https://hex.pm/packages/forcola).
 
     Every `claude` invocation runs under forcola's Rust shim, which places
-    the CLI in its own process group and kills the whole group (SIGTERM,
-    then SIGKILL) on timeout, on early stream halt, or when the BEAM dies.
-    That reaps `claude` and every stdio MCP server it spawned together,
-    where the default `ClaudeWrapper.Runner.Port` would leave them running
-    (see #185).
+    the CLI in its own process group and stops the whole group on timeout,
+    on early stream halt, or when the BEAM dies. That reaps `claude` and
+    every stdio MCP server it spawned together, where the default
+    `ClaudeWrapper.Runner.Port` would leave them running (see #185).
+
+    ## Signal order
+
+    On every path (`run/4`, `run_observed/5`, `run_evidenced/5`,
+    `stream_lines/4`, and `ClaudeWrapper.DuplexSession.Adapter.Forcola`)
+    the shim sends SIGINT to the process group, waits 2 s, then sends
+    SIGTERM and, after `:kill_grace_ms`, SIGKILL (#307). A timed-out call
+    therefore returns up to that grace later than the timeout. On
+    evidenced runs a caller's `:interrupt_signal` / `:interrupt_grace_ms`
+    pair replaces the default.
+
+    Claude Code 2.1.312 ends an interrupted print-mode run on SIGINT with
+    exit status 0, after writing an `error_during_execution` result with
+    `terminal_reason: "aborted_streaming"` and an interruption entry in the
+    session transcript; on SIGTERM it exits 143 with neither. So
+    `child_status: 0` in `ClaudeWrapper.ExecutionEvidence` does not mean the
+    run succeeded; read the evidence `:reason`. Output written during the
+    grace may not be retained after the run was cancelled.
 
     This module compiles only when `forcola` is a dependency. Select it
     with `config :claude_wrapper, runner: ClaudeWrapper.Runner.Forcola`.
@@ -49,7 +66,9 @@ if Code.ensure_loaded?(Forcola) do
       * `:interrupt_signal` / `:interrupt_grace_ms` - the pair
         `interrupt_signal: :int, interrupt_grace_ms: ms` makes Forcola's
         native supervisor send SIGINT to the process group and wait `ms`
-        before its TERM/KILL escalation
+        before its TERM/KILL escalation. Default
+        `interrupt_signal: :int, interrupt_grace_ms: 2_000` (see "Signal
+        order")
       * `:kill_grace_ms` - Forcola's TERM-to-KILL grace
       * `:shim_path` - a trusted absolute path to a matching Forcola shim
 
@@ -97,8 +116,10 @@ if Code.ensure_loaded?(Forcola) do
 
       forcola_opts =
         [timeout_ms: timeout || @unbounded_ms, merge_stderr: merge_stderr?(opts)] ++
-          Keyword.take(opts, [:cd, :env])
+          Keyword.take(opts, [:cd, :env]) ++ ForcolaEvidence.default_interrupt()
 
+      # The interrupt pair makes this a negotiated (strict) Forcola run, whose
+      # failures after SPAWN carry the partial result.
       case Forcola.run(argv, forcola_opts) do
         {:ok, %Forcola.Result{status: status, stdout: stdout}} when is_integer(status) ->
           {:ok, {stdout, status}}
@@ -108,6 +129,9 @@ if Code.ensure_loaded?(Forcola) do
 
         {:error, {:timeout, _partial}} ->
           {:error, :timeout}
+
+        {:error, {:spawn, {reason, %Forcola.Result{}}}} ->
+          {:error, {:spawn, reason}}
 
         {:error, {:spawn, reason}} ->
           {:error, {:spawn, reason}}
@@ -275,8 +299,10 @@ if Code.ensure_loaded?(Forcola) do
     # Forcola.Stream's demand-driven mode: the shim reads stdout only while the
     # consumer has pulled, and a line over max_line_bytes kills the group with
     # a typed limit (#312). Its own default line bound is 64 KiB.
+    # Streams and observed runs also get the interrupt-first sequence (#307).
     defp bounded_opts(opts) do
-      [backpressure: true, max_line_bytes: Keyword.get(opts, :max_line_bytes, @max_line_bytes)]
+      [backpressure: true, max_line_bytes: Keyword.get(opts, :max_line_bytes, @max_line_bytes)] ++
+        ForcolaEvidence.default_interrupt()
     end
 
     # Forcola takes string env values only; unset entries (#309) become an

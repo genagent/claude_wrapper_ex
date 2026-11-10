@@ -273,7 +273,7 @@ When the VM runs from a mix release (`RELEASE_ROOT` is set), every spawn path re
 
 ### Leak-free execution (opt-in)
 
-On the default Port paths, a timeout, halted stream, closed session, owner death or BEAM death stops `claude` itself: a small `/bin/sh` supervisor (one-shot and streaming) or a lifeline port (`DuplexSession`) sends SIGINT, then SIGTERM 2 s later, then SIGKILL 1 s after that ([#303](https://github.com/genagent/claude_wrapper_ex/issues/303)). A closed duplex session first gets 1 s to exit on its own stdin EOF. Only the `claude` pid is signalled, so processes it started (stdio MCP servers, tool commands) are stopped only if `claude` stops them, and a pid recycled in the moment between `claude`'s exit and a signal is a residual risk. `ClaudeWrapper.Config.exec/2`, used by the `Commands.*` subcommand wrappers, still sends no signal on timeout. Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death), which also reaches the CLI's descendants in its group:
+On the default Port paths, a timeout, halted stream, closed session, owner death or BEAM death stops `claude` itself: a small `/bin/sh` supervisor (one-shot and streaming) or a lifeline port (`DuplexSession`) sends SIGINT, then SIGTERM 2 s later, then SIGKILL 1 s after that ([#303](https://github.com/genagent/claude_wrapper_ex/issues/303)). A closed duplex session first gets 1 s to exit on its own stdin EOF. Only the `claude` pid is signalled, so processes it started (stdio MCP servers, tool commands) are stopped only if `claude` stops them, and a pid recycled in the moment between `claude`'s exit and a signal is a residual risk. `ClaudeWrapper.Config.exec/2`, used by the `Commands.*` subcommand wrappers, still sends no signal on timeout. Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGINT, then SIGTERM 2 s later, then SIGKILL on timeout/halt/close/BEAM-death; [#307](https://github.com/genagent/claude_wrapper_ex/issues/307)), which also reaches the CLI's descendants in its group. An interrupted `claude` exits 0, so a zero exit status after a cancelled run does not mean success:
 
 ```elixir
 # mix.exs:  {:forcola, "~> 0.12"}
@@ -386,8 +386,8 @@ its terminal facts. Uncatchable execution caller death cannot deliver a record.
 
 `Runner.Forcola` implements it around one `Forcola.run/2` with an owned
 bounded collector and accepts `:max_output_bytes` (default 64 MiB), `:idle_timeout_ms`,
-`:max_line_bytes`, `:env_mode`, `:interrupt_signal` / `:interrupt_grace_ms`,
-`:kill_grace_ms` and `:shim_path`. It requires Forcola `~> 0.12` and a
+`:max_line_bytes`, `:env_mode`, `:interrupt_signal` / `:interrupt_grace_ms`
+(default SIGINT with a 2 s grace), `:kill_grace_ms` and `:shim_path`. It requires Forcola `~> 0.12` and a
 matching shim; an incompatible shim is rejected before SPAWN. An unsupported
 Forcola result contract returns `:evidence_unsupported` before spawning.
 Other runners are rejected with

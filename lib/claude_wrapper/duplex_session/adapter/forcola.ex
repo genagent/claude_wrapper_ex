@@ -18,12 +18,15 @@ if Code.ensure_loaded?(Forcola) do
     tail (default 16 KiB). `:terminal_recipient` can name an independent
     process that receives Forcola's terminal record even if the session
     owner dies. `:kill_grace_ms`, `:cgroup`, and `:shim_path` are passed
-    through. Pull delivery and separate stderr are always enabled.
+    through. Pull delivery and separate stderr are always enabled. When the
+    session closes or its owner dies, the group gets SIGINT, then SIGTERM
+    2 s later, as on `ClaudeWrapper.Runner.Forcola` (#307).
     """
 
     @behaviour ClaudeWrapper.DuplexSession.Adapter
 
     alias ClaudeWrapper.Config
+    alias ClaudeWrapper.Runner.ForcolaEvidence
 
     @default_max_line_bytes 1_048_576
     @default_max_output_bytes 64 * 1_048_576
@@ -155,13 +158,13 @@ if Code.ensure_loaded?(Forcola) do
       max_output = positive_option!(opts, :max_output_bytes, @default_max_output_bytes)
       max_pending = positive_option!(opts, :max_pending_bytes, max_line + 1)
 
-      [
-        delivery: :pull,
-        merge_stderr: false,
-        max_line_bytes: max_line,
-        max_output_bytes: max_output,
-        max_pending_bytes: max_pending
-      ]
+      ([
+         delivery: :pull,
+         merge_stderr: false,
+         max_line_bytes: max_line,
+         max_output_bytes: max_output,
+         max_pending_bytes: max_pending
+       ] ++ ForcolaEvidence.default_interrupt())
       |> Keyword.merge(
         Keyword.take(opts, [:terminal_recipient, :kill_grace_ms, :cgroup, :shim_path])
       )
