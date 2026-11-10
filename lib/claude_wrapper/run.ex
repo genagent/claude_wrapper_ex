@@ -88,7 +88,7 @@ defmodule ClaudeWrapper.Run do
   `evidence.reason == :cancelled` and the cleanup facts the runner reported.
   `ClaudeWrapper.Runner.Forcola` stops the run by closing its Forcola port,
   so the shim runs its owner-death sequence (the configured interrupt, then
-  TERM/KILL of the process group); Forcola 0.7 sends no report after that,
+  TERM/KILL of the process group); Forcola sends no report after that,
   so `:cleanup` is `:unknown`. If the runner does not
   stop within `:cancel_grace_ms`, the run process ends the execution process
   and records `reason: :cancelled` with unknown native facts. An execution

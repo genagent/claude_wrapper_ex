@@ -6,7 +6,7 @@ forcola_ready? =
   Code.ensure_loaded?(Forcola) and
     match?({:ok, _}, Forcola.Shim.path())
 
-# Evidenced execution requires the released Forcola 0.7 contract and a
+# Evidenced execution requires the released Forcola 0.12 contract and a
 # matching shim. Those tests deliberately run even when support is missing:
 # an absent required contract must fail, not silently exclude coverage.
 exclude = if forcola_ready?, do: [:integration], else: [:integration, :forcola]

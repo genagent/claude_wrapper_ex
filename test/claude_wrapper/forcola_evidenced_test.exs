@@ -1,5 +1,5 @@
 defmodule ClaudeWrapper.ForcolaEvidencedTest do
-  # Required released-contract coverage: missing Forcola 0.7 or a matching
+  # Required released-contract coverage: missing Forcola 0.12 or a matching
   # shim is a failure, never an implicit skip.
   use ExUnit.Case, async: false
 
@@ -19,7 +19,7 @@ defmodule ClaudeWrapper.ForcolaEvidencedTest do
   alias ClaudeWrapper.Runner.ForcolaEvidence
 
   setup_all do
-    assert Application.spec(:forcola, :vsn) |> to_string() |> Version.match?("~> 0.7.0")
+    assert Application.spec(:forcola, :vsn) |> to_string() |> Version.match?("~> 0.12")
     assert ForcolaEvidence.supported?(Forcola.Result)
     assert {:ok, _path} = Forcola.Shim.path()
     :ok

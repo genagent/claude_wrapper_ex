@@ -274,7 +274,7 @@ When the VM runs from a mix release (`RELEASE_ROOT` is set), every spawn path re
 On the default Port paths, a timeout, halted stream, closed session, owner death or BEAM death stops `claude` itself: a small `/bin/sh` supervisor (one-shot and streaming) or a lifeline port (`DuplexSession`) sends SIGINT, then SIGTERM 2 s later, then SIGKILL 1 s after that ([#303](https://github.com/genagent/claude_wrapper_ex/issues/303)). A closed duplex session first gets 1 s to exit on its own stdin EOF. Only the `claude` pid is signalled, so processes it started (stdio MCP servers, tool commands) are stopped only if `claude` stops them, and a pid recycled in the moment between `claude`'s exit and a signal is a residual risk. `ClaudeWrapper.Config.exec/2`, used by the `Commands.*` subcommand wrappers, still sends no signal on timeout. Add [`forcola`](https://hex.pm/packages/forcola) and select its implementations to run every invocation under a process-group kill (SIGTERM then SIGKILL on timeout/halt/close/BEAM-death), which also reaches the CLI's descendants in its group:
 
 ```elixir
-# mix.exs:  {:forcola, "~> 0.7.0"}
+# mix.exs:  {:forcola, "~> 0.12"}
 config :claude_wrapper,
   runner: ClaudeWrapper.Runner.Forcola,                        # one-shot + streaming
   duplex_adapter: ClaudeWrapper.DuplexSession.Adapter.Forcola  # DuplexSession
@@ -385,7 +385,7 @@ its terminal facts. Uncatchable execution caller death cannot deliver a record.
 `Runner.Forcola` implements it around one `Forcola.run/2` with an owned
 bounded collector and accepts `:max_output_bytes` (default 64 MiB), `:idle_timeout_ms`,
 `:max_line_bytes`, `:env_mode`, `:interrupt_signal` / `:interrupt_grace_ms`,
-`:kill_grace_ms` and `:shim_path`. It requires Forcola `~> 0.7.0` and a
+`:kill_grace_ms` and `:shim_path`. It requires Forcola `~> 0.12` and a
 matching shim; an incompatible shim is rejected before SPAWN. An unsupported
 Forcola result contract returns `:evidence_unsupported` before spawning.
 Other runners are rejected with
@@ -424,7 +424,7 @@ end
 - `cancel/2` is idempotent and returns `{:error, %Error{kind: :cancelled},
   evidence}` with `evidence.reason == :cancelled`. With `Runner.Forcola` the
   run is stopped by closing its Forcola port, so the shim runs its owner-death
-  sequence; Forcola 0.7 sends no report after that, so cleanup is `:unknown`.
+  sequence; Forcola sends no report after that, so cleanup is `:unknown`.
 - If the process that called `start/3` exits, the run is cancelled.
 
 It needs a runner with `run_evidenced/5` (currently `Runner.Forcola`).
